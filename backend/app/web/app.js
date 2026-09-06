@@ -132,7 +132,9 @@ async function refresh(){
 }
 async function showJob(){
   const job=jobs.find(item=>item.id===$("job").value),document=job&&docs[job.document_id];
+  const prepareButton=globalThis.document.querySelector('button[onclick="prepare()"]');
   const confirmButton=globalThis.document.querySelector('button[onclick="confirmJob()"]');
+  if(prepareButton){prepareButton.disabled=!job||job.status!=="WAITING_APPROVAL";prepareButton.title=prepareButton.disabled?"Ce travail est déjà préparé ou envoyé":"Choisissez les réglages puis préparez le travail"}
   if(confirmButton){confirmButton.id="confirmPrintBtn";confirmButton.disabled=!job||job.status!=="READY";confirmButton.title=confirmButton.disabled?"Préparez d’abord le travail":"Confirmer l’impression"}
   if(!document){$("inspection").textContent="Aucun travail sélectionné.";$("preview").classList.add("hidden");return}
   const meta=document.metadata_json||{};
@@ -144,8 +146,8 @@ async function showJob(){
   }catch{$("preview").classList.add("hidden")}
 }
 function printOptions(){return {printer_id:$("printer").value,copies:Number($("copies").value),paper_size:$("paper").value||null,orientation:$("orientation").value||null,color_mode:$("color").value||null,duplex:$("duplex").checked,pages:$("pages").value||null,instructions:$("instructions").value||null}}
-async function prepare(){try{await api("/api/v1/jobs/"+encodeURIComponent($("job").value)+"/prepare",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(printOptions())});tell("Travail préparé. Vérifiez-le puis confirmez l’impression.");await refresh()}catch(error){tell(error.message)}}
-async function confirmJob(){const job=jobs.find(item=>item.id===$("job").value);if(job&&job.status==="WAITING_APPROVAL"){tell("Ce travail doit d’abord être préparé. Cliquez sur 'Préparer' avant de confirmer l’impression.");return}if(!confirm("Envoyer cette impression au PC Windows ?"))return;try{await api("/api/v1/jobs/"+encodeURIComponent($("job").value)+"/confirm",{method:"POST"});tell("Commande envoyée à l’agent Windows.");await refresh()}catch(error){tell(error.message)}}
+async function prepare(){const job=jobs.find(item=>item.id===$("job").value);if(!job||job.status!=="WAITING_APPROVAL"){tell(job?.status==="QUEUED"?"Ce travail est déjà envoyé à l’agent Windows.":"Ce travail n’est plus en attente de préparation.");return}try{await api("/api/v1/jobs/"+encodeURIComponent($("job").value)+"/prepare",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(printOptions())});tell("Travail préparé. Vérifiez-le puis confirmez l’impression.");await refresh()}catch(error){tell(error.message)}}
+async function confirmJob(){const job=jobs.find(item=>item.id===$("job").value);if(!job||job.status!=="READY"){tell(job?.status==="QUEUED"?"Commande déjà envoyée : le PC Windows va traiter ce travail.":"Préparez d’abord le travail avant de confirmer l’impression.");return}if(!confirm("Envoyer cette impression au PC Windows ?"))return;try{await api("/api/v1/jobs/"+encodeURIComponent($("job").value)+"/confirm",{method:"POST"});tell("Commande envoyée à l’agent Windows.");await refresh()}catch(error){tell(error.message)}}
 async function cancelJob(){if(!confirm("Annuler ce travail ?"))return;try{await api("/api/v1/jobs/"+encodeURIComponent($("job").value)+"/cancel",{method:"POST"});tell("Annulation demandée.");await refresh()}catch(error){tell(error.message)}}
 function renderAssistant(data){
   const steps=(data.steps||[]).map(item=>"<li>"+esc(item)+"</li>").join("");
