@@ -1,0 +1,35 @@
+<!doctype html>
+<html lang="fr">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>FUSAA – Aide extension Brave</title>
+    <link rel="stylesheet" href="options.css">
+  </head>
+  <body>
+    <main>
+      <p class="eyebrow">FUSAA SERVICE · BRAVE</p>
+      <h1>Alertes WhatsApp locales</h1>
+      <p id="state" class="state" role="status">Vérification…</p>
+      <section>
+        <h2>Utilisation</h2>
+        <ol>
+          <li>Dans FUSAA, ouvrez <strong>Arrivées</strong> et créez un code de liaison.</li>
+          <li>Ouvrez l’icône FUSAA dans Brave, collez le code, puis associez le navigateur.</li>
+          <li>Gardez WhatsApp Web ouvert. Les nouvelles arrivées apparaissent dans Arrivées.</li>
+        </ol>
+      </section>
+      <section>
+        <h2>Confidentialité</h2>
+        <p>L’extension détecte des marqueurs visuels de message non lu et de bulle entrante. Elle n’extrait pas le texte des messages, les contacts, numéros, médias, fichiers, cookies ou session WhatsApp.</p>
+        <p>Elle communique uniquement avec le serveur FUSAA local <code>192.168.1.68:8000</code>, au moyen d’un code à usage unique. Chaque arrivée envoyée contient seulement un identifiant aléatoire, le type d’alerte et un compteur.</p>
+      </section>
+      <section>
+        <h2>État</h2>
+        <button id="refresh" type="button">Actualiser</button>
+        <button id="disconnect" class="secondary" type="button">Dissocier ce navigateur</button>
+      </section>
+    </main>
+    <script src="options.js"></script>
+  </body>
+</html>

@@ -1,0 +1,23 @@
+{
+  "manifest_version": 3,
+  "name": "FUSAA WhatsApp Local Alerts",
+  "version": "1.0.0",
+  "description": "Alertes locales anonymes pour les arrivées WhatsApp Web dans FUSAA Service.",
+  "permissions": ["storage", "alarms"],
+  "host_permissions": ["http://127.0.0.1:8000/*", "http://192.168.1.68:8000/*"],
+  "background": {
+    "service_worker": "service-worker.js"
+  },
+  "action": {
+    "default_title": "FUSAA – alertes WhatsApp",
+    "default_popup": "popup.html"
+  },
+  "options_page": "options.html",
+  "content_scripts": [
+    {
+      "matches": ["https://web.whatsapp.com/*"],
+      "js": ["content.js"],
+      "run_at": "document_idle"
+    }
+  ]
+}

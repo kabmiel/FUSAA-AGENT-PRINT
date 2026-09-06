@@ -1,0 +1,36 @@
+services:
+  db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: fusaa
+      POSTGRES_USER: fusaa
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U fusaa -d fusaa"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    volumes: [postgres_data:/var/lib/postgresql/data]
+  api:
+    build: ./backend
+    environment:
+      DATABASE_URL: postgresql+psycopg://fusaa:${POSTGRES_PASSWORD}@db:5432/fusaa
+      JWT_SECRET: ${JWT_SECRET:?Set JWT_SECRET in .env}
+      STORAGE_DIR: /data/storage
+      ENVIRONMENT: ${ENVIRONMENT:-production}
+      CORS_ORIGINS: ${CORS_ORIGINS:-http://localhost:8000}
+      TRUSTED_HOSTS: ${TRUSTED_HOSTS:-localhost,127.0.0.1}
+    ports: ["8000:8000"]
+    volumes: [storage_data:/data/storage]
+    depends_on:
+      db:
+        condition: service_healthy
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/readyz')"]
+      interval: 20s
+      timeout: 5s
+      retries: 5
+volumes:
+  postgres_data:
+  storage_data:

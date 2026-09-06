@@ -1,0 +1,289 @@
+import asyncio
+import importlib.util
+import json
+import sys
+from datetime import datetime,timezone
+from pathlib import Path
+from types import SimpleNamespace
+import pytest
+from fastapi import HTTPException
+from sqlalchemy import create_engine
+from sqlalchemy.orm import Session
+ROOT=Path(__file__).parents[1]
+sys.path[:0]=[str(ROOT/"backend"),str(ROOT/"local-agent")]
+from app.database import Base
+from app.models import User,Organization,OrganizationMember,Workshop,WorkshopMember,Document,PrintJob,ComputerAgent,Printer,JobStatus,LocalActivity,BrowserLink
+from app.main import cancel_job,confirm_job,prepare_job,central_supervision,list_jobs,list_documents
+from app.schemas import JobOptions
+from app.ai import execute_safe_tool,OllamaProvider
+from fusaa_agent.main import Agent,Settings
+from fusaa_agent.printing import page_indices
+
+@pytest.fixture
+def setup_db():
+    engine=create_engine("sqlite:///:memory:")
+    Base.metadata.create_all(engine)
+    with Session(engine) as db:
+        user=User(id="viewer",email="v@example.com",display_name="Viewer",password_hash="unused")
+        admin=User(id="admin",email="a@example.com",display_name="Admin",password_hash="unused")
+        db.add_all([user,admin,Organization(id="o",name="Test")]);db.flush()
+        db.add_all([OrganizationMember(user_id=user.id,organization_id="o",role="OPERATOR"),OrganizationMember(user_id=admin.id,organization_id="o",role="OWNER"),Workshop(id="a",organization_id="o",name="A"),Workshop(id="b",organization_id="o",name="B")]);db.flush()
+        db.add(WorkshopMember(user_id=user.id,workshop_id="a",role="VIEWER"))
+        for suffix in ("a","b"):
+            db.add(Document(id="doc-"+suffix,organization_id="o",original_name="test.png",storage_key="original-"+suffix,mime_type="image/png",size_bytes=1,metadata_json={}))
+            db.add(ComputerAgent(id="agent-"+suffix,workshop_id=suffix,name=suffix,enrollment_token="enroll-"+suffix,is_online=True,last_heartbeat_at=datetime.now(timezone.utc)))
+            db.flush()
+            db.add(Printer(id="printer-"+suffix,computer_agent_id="agent-"+suffix,system_name=suffix,name=suffix,status="ONLINE",enabled=True))
+            db.add(PrintJob(id=("aaaaaaaa" if suffix=="a" else "bbbbbbbb")+"-1111-1111-1111-111111111111",organization_id="o",workshop_id=suffix,document_id="doc-"+suffix,status=JobStatus.WAITING_APPROVAL))
+        db.commit()
+        yield db,user,admin
+
+def test_assistant_and_http_share_workshop_scope(setup_db):
+    db,user,_=setup_db
+    assert len(list_jobs(user,db))==1
+    assert len(list_documents(user,db))==1
+    assert len(execute_safe_tool(db,user,"list_print_jobs",{})["jobs"])==1
+    assert len(execute_safe_tool(db,user,"list_printers",{})["printers"])==1
+
+@pytest.mark.parametrize("prefix",["aaaaaaaa","bbbbbbbb"])
+@pytest.mark.parametrize("action",["cancel","confirm","prepare"])
+def test_viewer_cannot_mutate_own_or_other_workshop(setup_db,prefix,action):
+    db,user,_=setup_db;job=prefix+"-1111-1111-1111-111111111111"
+    with pytest.raises(HTTPException) as error:
+        if action=="prepare":prepare_job(job,JobOptions(printer_id="printer-a"),user,db)
+        else:asyncio.run((cancel_job if action=="cancel" else confirm_job)(job,user,db))
+    assert error.value.status_code==403
+    assert db.get(PrintJob,job).status==JobStatus.WAITING_APPROVAL
+
+def test_sqlite_supervision_and_printer_queries(setup_db):
+    db,_,admin=setup_db
+    assert len(central_supervision("o",admin,db)["workshops"])==2
+    assert len(execute_safe_tool(db,admin,"list_printers",{})["printers"])==2
+
+def test_printer_must_match_job_workshop(setup_db):
+    db,_,admin=setup_db
+    with pytest.raises(HTTPException) as error:
+        prepare_job("aaaaaaaa-1111-1111-1111-111111111111",JobOptions(printer_id="printer-b"),admin,db)
+    assert error.value.status_code==422
+
+def test_unknown_dispatch_is_never_replayed(tmp_path,monkeypatch):
+    state=tmp_path/"agent.json"
+    state.write_text(json.dumps({"agent_id":"a","agent_key":"unused","queue":{"c":{"command":{"id":"c","type":"PRINT"},"executed":False,"report":None,"dispatch_started":True}}}))
+    agent=Agent(Settings(state_file=state))
+    monkeypatch.setattr(agent,"execute",lambda cmd:pytest.fail("Physical action must never run"))
+    reports=[]
+    monkeypatch.setattr(agent.client,"post",lambda *a,**kw:(reports.append(kw["json"]) or SimpleNamespace(raise_for_status=lambda:None)))
+    agent.process_queue();agent.process_queue()
+    assert len(reports)==1 and reports[0]["status"]=="FAILED"
+    assert json.loads(state.read_text())["queue"]["c"]["acknowledged"]
+    agent.client.close()
+
+def test_dispatch_intent_persisted_before_execution(tmp_path,monkeypatch):
+    agent=Agent(Settings(state_file=tmp_path/"agent.json"))
+    agent.state={"agent_id":"a","agent_key":"test","queue":{"c":{"command":{"id":"c","type":"CANCEL"},"executed":False,"report":None}}}
+    def execute(cmd):
+        assert json.loads(agent.s.state_file.read_text())["queue"]["c"]["dispatch_started"]
+        return {"ok":True}
+    monkeypatch.setattr(agent,"execute",execute)
+    monkeypatch.setattr(agent.client,"post",lambda *a,**kw:SimpleNamespace(raise_for_status=lambda:None))
+    agent.process_queue()
+    assert agent.queue()["c"]["acknowledged"]
+    agent.client.close()
+
+def test_pages_and_local_ollama_boundary():
+    assert page_indices("1-3,5",5)==[0,1,2,4]
+    for invalid in ("0","6","3-1","1;print"):
+        with pytest.raises(ValueError):page_indices(invalid,5)
+    with pytest.raises(ValueError):OllamaProvider("https://external.example","model")
+
+def test_verified_backup_and_non_destructive_restore(tmp_path):
+    spec=importlib.util.spec_from_file_location("runtime",ROOT/"scripts"/"windows_runtime.py")
+    module=importlib.util.module_from_spec(spec);spec.loader.exec_module(module)
+    root=tmp_path/"source";(root/"backend"/"storage").mkdir(parents=True)
+    (root/"backend"/".env").write_text("DATABASE_URL=sqlite:///./fusaa.db\nSTORAGE_DIR=./storage\n")
+    import sqlite3
+    with sqlite3.connect(root/"backend"/"fusaa.db") as db:
+        db.execute("CREATE TABLE documents(storage_key TEXT, preview_key TEXT)")
+        db.execute("INSERT INTO documents VALUES ('sample.txt',NULL)")
+    (root/"backend"/"storage"/"sample.txt").write_text("sample")
+    folder=module.backup(root,tmp_path/"backups")
+    module.restore(folder,tmp_path/"restored")
+    assert (tmp_path/"restored"/"storage"/"sample.txt").read_text()=="sample"
+    with pytest.raises(RuntimeError):module.restore(folder,root)
+    (folder/"storage"/"sample.txt").write_text("tampered")
+    with pytest.raises(RuntimeError):module.check_snapshot(folder)
+
+def test_gdi_renders_selected_pages_copies_and_driver_options(monkeypatch):
+    from fusaa_agent import printing
+    import fitz,win32gui,win32print,win32con
+    from PIL import ImageWin
+    events=[];selected=[]
+    def pixmap(**kwargs):
+        return SimpleNamespace(n=3,width=2,height=2,samples=bytes(12))
+    class Source:
+        is_pdf=True
+        page_count=3
+        def __getitem__(self,index):
+            selected.append(index);return SimpleNamespace(get_pixmap=pixmap)
+        def close(self):pass
+    monkeypatch.setattr(fitz,"open",lambda _:Source())
+    options={"copies":2,"pages":"1,3","duplex":True,"paper_size":"A4","orientation":"LANDSCAPE","color_mode":"MONOCHROME"}
+    monkeypatch.setattr(printing,"configured_devmode",lambda printer,payload:(events.append(dict(payload)) or "mode"))
+    monkeypatch.setattr(win32gui,"CreateDC",lambda *args:100)
+    monkeypatch.setattr(win32gui,"DeleteDC",lambda *args:None)
+    monkeypatch.setattr(win32print,"GetDeviceCaps",lambda dc,cap:300)
+    monkeypatch.setattr(win32print,"StartDoc",lambda *args:42)
+    for name in ("StartPage","EndPage","EndDoc","AbortDoc"):
+        monkeypatch.setattr(win32print,name,lambda *args:None)
+    monkeypatch.setattr(ImageWin,"Dib",lambda image:SimpleNamespace(draw=lambda *args:None))
+    result=printing.render_job("unused.pdf","mock",options,"test")
+    assert selected==[0,2,0,2]
+    assert events==[options]
+    assert result["spooler_job_id"]==42
+
+def test_viewer_cannot_transform_documents(setup_db):
+    from app.access import require_document_write
+    db,user,_=setup_db
+    with pytest.raises(HTTPException) as error:require_document_write(db,user,db.get(Document,"doc-a"))
+    assert error.value.status_code==403
+
+def test_realtime_events_respect_workshop_permissions(setup_db,monkeypatch):
+    from app import events
+    from contextlib import nullcontext
+    db,user,_=setup_db
+    monkeypatch.setattr(events,"SessionLocal",lambda:nullcontext(db))
+    assert events.EventHub.can_receive(user.id,"o",{"job_id":"aaaaaaaa-1111-1111-1111-111111111111"})
+    assert not events.EventHub.can_receive(user.id,"o",{"job_id":"bbbbbbbb-1111-1111-1111-111111111111"})
+
+def test_realtime_events_never_cross_organizations_for_multi_org_user(setup_db,monkeypatch):
+    from app import events
+    from contextlib import nullcontext
+    db,user,_=setup_db
+    db.add_all([
+        Organization(id="other",name="Other"),
+        OrganizationMember(user_id=user.id,organization_id="other",role="OWNER"),
+        Workshop(id="other-workshop",organization_id="other",name="Other workshop"),
+        Document(id="doc-other",organization_id="other",original_name="other.pdf",storage_key="other.pdf",mime_type="application/pdf",size_bytes=1,metadata_json={}),
+        ComputerAgent(id="agent-other",workshop_id="other-workshop",name="Other agent",enrollment_token="other-enroll"),
+        PrintJob(id="cccccccc-1111-1111-1111-111111111111",organization_id="other",workshop_id="other-workshop",document_id="doc-other",status=JobStatus.WAITING_APPROVAL),
+        LocalActivity(id="activity-other",workshop_id="other-workshop",user_id=user.id,event_key="other-activity-key",source="WHATSAPP",title="Other",detail="Other"),
+    ])
+    db.commit()
+    monkeypatch.setattr(events,"SessionLocal",lambda:nullcontext(db))
+    for payload in ({"job_id":"cccccccc-1111-1111-1111-111111111111"},{"document_id":"doc-other"},{"agent_id":"agent-other"},{"activity_id":"activity-other"}):
+        assert not events.EventHub.can_receive(user.id,"o",payload)
+
+def test_assistant_guides_document_selection_before_print_confirmation(setup_db):
+    from app.assistant_flow import workflow_response
+    from app.assistant_schemas import AssistantRequest
+    db,_,admin=setup_db
+    response=workflow_response(AssistantRequest(message="Je voudrais imprimer un document"),db,admin)
+    assert response.next_view=="upload"
+    assert response.tool_calls==[]
+    assert not response.requires_confirmation
+
+def test_assistant_requires_confirmation_only_for_a_ready_selected_job(setup_db):
+    from app.assistant_flow import workflow_response
+    from app.assistant_schemas import AssistantRequest
+    db,_,admin=setup_db
+    job=db.get(PrintJob,"aaaaaaaa-1111-1111-1111-111111111111")
+    job.status=JobStatus.READY;job.printer_id="printer-a";db.commit()
+    response=workflow_response(AssistantRequest(message="Imprimer ce document",selected_job_id=job.id),db,admin)
+    assert response.requires_confirmation
+    assert [item.name for item in response.tool_calls]==["request_print"]
+
+def test_duplicate_browser_event_still_persists_heartbeat(setup_db):
+    from app.local_monitor import BrowserEvent,browser_event,hash_value
+    db,_,admin=setup_db
+    credential="local-browser-credential"
+    link=BrowserLink(id="browser-link",user_id=admin.id,workshop_id="a",pairing_hash=hash_value("pair"),credential_hash=hash_value(credential),expires_at=datetime.now(timezone.utc),enabled=True)
+    event_id="browser-event-12345"
+    db.add_all([link,LocalActivity(workshop_id="a",user_id=admin.id,event_key=hash_value(link.id+":"+event_id),source="WHATSAPP",title="Existing",detail="Existing")])
+    db.commit()
+    request=SimpleNamespace(headers={"X-Fusaa-Link":credential},client=SimpleNamespace(host="127.0.0.1"))
+    result=asyncio.run(browser_event(BrowserEvent(event_id=event_id,kind="MESSAGE"),request,db))
+    db.refresh(link)
+    assert result["duplicate"] and link.last_seen_at is not None and link.page_ready
+
+def test_browser_unpair_revokes_the_server_credential(setup_db):
+    from app.local_monitor import hash_value,unpair_browser
+    db,_,admin=setup_db
+    credential="credential-to-revoke"
+    link=BrowserLink(user_id=admin.id,workshop_id="a",pairing_hash=hash_value("pair-two"),credential_hash=hash_value(credential),expires_at=datetime.now(timezone.utc),enabled=True)
+    db.add(link);db.commit()
+    request=SimpleNamespace(headers={"X-Fusaa-Link":credential},client=SimpleNamespace(host="127.0.0.1"))
+    assert unpair_browser(request,db)=={"ok":True}
+    db.refresh(link)
+    assert not link.enabled and link.credential_hash is None
+
+def test_safe_assistant_results_are_structured_without_model_prose(setup_db,monkeypatch):
+    from app import main
+    from app.assistant_schemas import AssistantRequest
+    db,_,admin=setup_db
+    monkeypatch.setattr(main,"assistant_provider",SimpleNamespace(understand_command=lambda _:[{"name":"list_print_jobs","arguments":{}}]))
+    response=main.understand_assistant(AssistantRequest(message="Quels sont mes travaux ?"),admin,db)
+    assert response.title=="Travaux d’impression"
+    assert response.steps and response.next_view=="print" and not response.requires_confirmation
+
+def test_claim_recovery_never_requeues_dispatched_job(setup_db):
+    from app.models import AgentCommand,CommandStatus
+    from app.main import poll_commands
+    from datetime import timedelta
+    db,_,_=setup_db
+    agent=db.get(ComputerAgent,"agent-a");agent.agent_key="test-key"
+    for name,result in (("unstarted",None),("dispatched",{"spooler_job_id":42})):
+        db.add(AgentCommand(id=name,computer_agent_id=agent.id,print_job_id="aaaaaaaa-1111-1111-1111-111111111111",idempotency_key=name,status=CommandStatus.CLAIMED,claimed_at=datetime.now(timezone.utc)-timedelta(minutes=10),result=result))
+    db.commit()
+    commands=poll_commands(agent.id,SimpleNamespace(headers={"X-Agent-Key":"test-key"}),db)
+    assert [c["id"] for c in commands]==["unstarted"]
+
+def test_websocket_credentials_are_redacted_from_logs():
+    import logging
+    from app.observability import RedactSessionSecrets
+    record=logging.LogRecord("uvicorn",20,"",0,'WebSocket %s accepted',('/ws/agent/a?key=secret&token=jwt',),None)
+    RedactSessionSecrets().filter(record)
+    assert "secret" not in record.getMessage() and "jwt" not in record.getMessage()
+    assert record.getMessage().count("[REDACTED]")==2
+
+def test_spooler_exit_treated_as_successful_completion(tmp_path,monkeypatch):
+    import pywintypes
+    state = tmp_path / "agent.json"
+    payload = {"agent_id": "a", "agent_key": "test", "queue": {"c": {"command": {"id": "c", "type": "PRINT"}, "executed": True, "report": {"status": "DISPATCHED", "result": {"spooler_job_id": 42, "printer": "mock"}}}}}
+    state.write_text(json.dumps(payload))
+    agent=Agent(Settings(state_file=state))
+    monkeypatch.setattr(agent.client,"post",lambda *a,**kw:SimpleNamespace(raise_for_status=lambda:None))
+    class MockWin32Print:
+        @staticmethod
+        def OpenPrinter(name):return 1
+        @staticmethod
+        def ClosePrinter(handle):pass
+        @staticmethod
+        def GetJob(handle,job_id,level):
+            error=pywintypes.error(87,"GetJob","Invalid parameter")
+            error.winerror=87
+            raise error
+    import sys
+    monkeypatch.setitem(sys.modules,"win32print",MockWin32Print)
+    agent.process_queue()
+    updated=json.loads(state.read_text())["queue"]["c"]
+    assert updated["report"]["status"]=="SUCCESS"
+    assert updated["report"]["result"]["spooler_state"]=="COMPLETED"
+    agent.client.close()
+
+def test_gdi_scaling_formula_fits_device_context():
+    # Simulate a document page and printer device context
+    img_w,img_h = 1654,2338 # A4 at 200 dpi
+    width,height = 4960,7014 # 600 dpi printable area
+    scale = min(width/img_w, height/img_h)
+    w,h = int(img_w*scale), int(img_h*scale)
+    assert w <= width and h <= height
+    # Verify aspect ratio matches within integer rounding
+    assert abs((w/h) - (img_w/img_h)) < 0.001
+
+def test_config_anchors_relative_database_and_storage_paths():
+    from app.config import Settings, BACKEND_DIR
+    custom=Settings(_env_file=None, database_url="sqlite:///./test.db", storage_dir=Path("./my_storage"))
+    assert BACKEND_DIR.as_posix() in custom.database_url
+    assert custom.storage_dir.is_absolute()
+    assert custom.storage_dir == (BACKEND_DIR / "my_storage").resolve()
+

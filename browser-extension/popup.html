@@ -1,0 +1,27 @@
+<!doctype html>
+<html lang="fr">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>FUSAA – alertes WhatsApp</title>
+    <link rel="stylesheet" href="popup.css">
+  </head>
+  <body>
+    <main>
+      <header>
+        <span class="mark">F</span>
+        <div><strong>FUSAA Service</strong><small>Alertes WhatsApp locales</small></div>
+      </header>
+      <p id="state" class="state" role="status">Vérification…</p>
+      <form id="pairForm">
+        <label for="pairCode">Code de liaison FUSAA</label>
+        <input id="pairCode" type="text" minlength="20" maxlength="100" autocomplete="off" spellcheck="false" placeholder="Collez le code ici">
+        <button id="pairButton" type="submit">Associer ce navigateur</button>
+      </form>
+      <button id="disconnect" class="secondary" type="button">Dissocier</button>
+      <p class="privacy">Seuls un identifiant d’événement et son type sont envoyés à FUSAA. Aucun message, contact ou fichier WhatsApp n’est lu.</p>
+      <button id="options" class="link" type="button">Aide et confidentialité</button>
+    </main>
+    <script src="popup.js"></script>
+  </body>
+</html>

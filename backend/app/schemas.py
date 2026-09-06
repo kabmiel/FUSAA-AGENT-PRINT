@@ -1,0 +1,45 @@
+from datetime import datetime
+from typing import Literal
+from pydantic import BaseModel, ConfigDict, EmailStr, Field
+from .models import JobStatus
+
+class ORM(BaseModel): model_config=ConfigDict(from_attributes=True)
+class RegisterIn(BaseModel): email: EmailStr; password: str = Field(min_length=12); display_name: str = Field(min_length=1,max_length=120)
+class LoginIn(BaseModel): email: EmailStr; password: str
+class TokenOut(BaseModel): access_token: str; token_type: str="bearer"
+class PushSubscriptionIn(BaseModel): endpoint: str=Field(min_length=10,max_length=2048); p256dh: str=Field(min_length=10,max_length=255); auth: str=Field(min_length=10,max_length=255)
+class OrganizationIn(BaseModel): name: str = Field(min_length=1,max_length=160)
+class WorkshopIn(BaseModel): organization_id: str; name: str = Field(min_length=1,max_length=160)
+class AgentIn(BaseModel): workshop_id: str; name: str = Field(min_length=1,max_length=160)
+class AgentOut(ORM): id: str; workshop_id: str; name: str; is_online: bool; last_heartbeat_at: datetime|None
+class AgentEnrollmentOut(AgentOut): enrollment_token: str
+class AgentRegisterIn(BaseModel): enrollment_token: str; machine_fingerprint: str=Field(min_length=8,max_length=255)
+class AgentTokenOut(BaseModel): agent_id: str; agent_key: str
+class HeartbeatIn(BaseModel): status: str="ONLINE"
+class PrinterIn(BaseModel): system_name: str; name: str; manufacturer: str|None=None; model: str|None=None; status: str="UNKNOWN"; color_supported: bool=True; duplex_supported: bool=False; capabilities: dict={}
+class PrinterOut(ORM): id:str; computer_agent_id:str; system_name:str; name:str; status:str; enabled:bool; color_supported:bool; duplex_supported:bool; capabilities:dict
+class DocumentOut(ORM): id:str; organization_id:str; original_name:str; mime_type:str; size_bytes:int; metadata_json:dict; preview_key:str|None; created_at:datetime
+class JobOptions(BaseModel):
+    printer_id:str
+    copies:int=Field(default=1,ge=1,le=999)
+    paper_size:Literal["A3","A4","A5"]|None=None
+    orientation:Literal["PORTRAIT","LANDSCAPE"]|None=None
+    color_mode:Literal["COLOR","MONOCHROME"]|None=None
+    duplex:bool=False
+    pages:str|None=Field(default=None,max_length=120,pattern=r"^\d+(?:-\d+)?(?:,\d+(?:-\d+)?)*$")
+    instructions:str|None=Field(default=None,max_length=2000)
+class PrintJobOut(ORM): id:str; organization_id:str; workshop_id:str; computer_agent_id:str|None; printer_id:str|None; document_id:str; status:JobStatus; copies:int; paper_size:str|None; orientation:str|None; color_mode:str|None; duplex:bool; pages:str|None; instructions:str|None; error_message:str|None; created_at:datetime
+class CommandResultIn(BaseModel): status: str; result: dict={}; error_message: str|None=None
+class AuditOut(ORM): id:str; actor:str; action:str; resource_type:str; resource_id:str; result:str; timestamp:datetime
+class WorkshopSettingsIn(BaseModel):
+    workshop_name: str|None = Field(default=None,min_length=1,max_length=160)
+    default_copies: int = Field(default=1,ge=1,le=999)
+    default_paper_size: Literal["A3","A4","A5"] = "A4"
+    default_orientation: Literal["PORTRAIT","LANDSCAPE"] = "PORTRAIT"
+    default_color_mode: Literal["COLOR","MONOCHROME"] = "COLOR"
+    default_duplex: bool = False
+    popup_enabled: bool = True
+    smart_suggestions: bool = True
+class WorkshopSettingsOut(WorkshopSettingsIn):
+    workshop_id: str
+    workshop_name: str
