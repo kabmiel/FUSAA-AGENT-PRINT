@@ -134,8 +134,10 @@ async function showJob(){
   const job=jobs.find(item=>item.id===$("job").value),document=job&&docs[job.document_id];
   const prepareButton=globalThis.document.querySelector('button[onclick="prepare()"]');
   const confirmButton=globalThis.document.querySelector('button[onclick="confirmJob()"]');
+  const deleteButton=$("deleteJobBtn");
   if(prepareButton){prepareButton.disabled=!job||job.status!=="WAITING_APPROVAL";prepareButton.title=prepareButton.disabled?"Ce travail est déjà préparé ou envoyé":"Choisissez les réglages puis préparez le travail"}
   if(confirmButton){confirmButton.id="confirmPrintBtn";confirmButton.disabled=!job||job.status!=="READY";confirmButton.title=confirmButton.disabled?"Préparez d’abord le travail":"Confirmer l’impression"}
+  if(deleteButton)deleteButton.classList.toggle("hidden",!job||!["FAILED","CANCELLED","COMPLETED","IGNORED"].includes(job.status));
   if(!document){$("inspection").textContent="Aucun travail sélectionné.";$("preview").classList.add("hidden");return}
   const meta=document.metadata_json||{};
   const details=[document.original_name,meta.pages?`${meta.pages} page(s)`:null,meta.orientation?`Orientation : ${meta.orientation.toLowerCase()}`:null,meta.width_points&&meta.height_points?`Format detecte : ${Math.round(meta.width_points)} x ${Math.round(meta.height_points)} pt`:null].filter(Boolean);
@@ -149,6 +151,7 @@ function printOptions(){return {printer_id:$("printer").value,copies:Number($("c
 async function prepare(){const job=jobs.find(item=>item.id===$("job").value);if(!job||job.status!=="WAITING_APPROVAL"){tell(job?.status==="QUEUED"?"Ce travail est déjà envoyé à l’agent Windows.":"Ce travail n’est plus en attente de préparation.");return}try{await api("/api/v1/jobs/"+encodeURIComponent($("job").value)+"/prepare",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(printOptions())});tell("Travail préparé. Vérifiez-le puis confirmez l’impression.");await refresh()}catch(error){tell(error.message)}}
 async function confirmJob(){const job=jobs.find(item=>item.id===$("job").value);if(!job||job.status!=="READY"){tell(job?.status==="QUEUED"?"Commande déjà envoyée : le PC Windows va traiter ce travail.":"Préparez d’abord le travail avant de confirmer l’impression.");return}if(!confirm("Envoyer cette impression au PC Windows ?"))return;try{await api("/api/v1/jobs/"+encodeURIComponent($("job").value)+"/confirm",{method:"POST"});tell("Commande envoyée à l’agent Windows.");await refresh()}catch(error){tell(error.message)}}
 async function cancelJob(){if(!confirm("Annuler ce travail ?"))return;try{await api("/api/v1/jobs/"+encodeURIComponent($("job").value)+"/cancel",{method:"POST"});tell("Annulation demandée.");await refresh()}catch(error){tell(error.message)}}
+async function deleteJob(){const id=$("job").value;if(!id||!confirm("Supprimer définitivement ce travail de la liste ? Le document source sera conservé."))return;try{await api("/api/v1/jobs/"+encodeURIComponent(id),{method:"DELETE"});tell("Travail supprimé.");await refresh()}catch(error){tell(error.message)}}
 function renderAssistant(data){
   const steps=(data.steps||[]).map(item=>"<li>"+esc(item)+"</li>").join("");
   const next=data.next_view?'<button class="secondary" onclick="selectView(\''+esc(data.next_view)+"')\">"+esc(data.next_label||"Continuer")+"</button>":"";

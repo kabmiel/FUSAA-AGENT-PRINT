@@ -549,6 +549,18 @@ async def cancel_job(job_id:str,user:User=Depends(current_user),db:Session=Depen
         db.add(command);audit(db,user.id,"PRINT_CANCEL_REQUESTED","PrintJob",job.id,parameters={"command_id":command.id})
     db.commit();await agent_hub.notify(job.computer_agent_id,"COMMAND_AVAILABLE");return {"job_id":job.id,"status":job.status,"cancel_command_id":command.id}
 
+@app.delete("/api/v1/jobs/{job_id}",response_model=dict)
+def delete_job(job_id:str,user:User=Depends(current_user),db:Session=Depends(get_db)):
+    """Remove a terminal print job while preserving the uploaded document and audit trail."""
+    job=one(db,PrintJob,job_id);require_member(db,user,job.organization_id);require_workshop_write(db,user,job.workshop_id)
+    if job.status not in {JobStatus.FAILED,JobStatus.CANCELLED,JobStatus.COMPLETED,JobStatus.IGNORED}:
+        raise HTTPException(409,"Seuls les travaux terminés, échoués ou annulés peuvent être supprimés")
+    for command in db.query(AgentCommand).filter_by(print_job_id=job.id).all():
+        db.delete(command)
+    audit(db,user.id,"PRINT_JOB_DELETED","PrintJob",job.id,result="SUCCESS")
+    db.delete(job);db.commit()
+    return {"job_id":job_id,"deleted":True}
+
 @app.get("/api/v1/agent/{agent_id}/commands")
 def poll_commands(agent_id:str,request:Request,db:Session=Depends(get_db)):
     authenticated_agent(agent_id,request.headers.get("X-Agent-Key",""),db)
