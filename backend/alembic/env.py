@@ -1,5 +1,9 @@
 from alembic import context
 from sqlalchemy import engine_from_config, pool
+import sys
+from pathlib import Path
+BACKEND_DIR=Path(__file__).resolve().parents[1]
+if str(BACKEND_DIR) not in sys.path:sys.path.insert(0,str(BACKEND_DIR))
 from app.database import Base
 from app.config import settings
 from app import models  # noqa: F401
