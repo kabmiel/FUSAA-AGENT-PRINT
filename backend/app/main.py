@@ -358,8 +358,9 @@ def assign_workshop_member(workshop_id:str,data:WorkshopMemberIn,user:User=Depen
 
 @app.post("/api/v1/agents",response_model=AgentEnrollmentOut,status_code=201)
 def create_agent(data:AgentIn,user:User=Depends(current_user),db:Session=Depends(get_db)):
-    if settings.single_workshop_id and data.workshop_id!=settings.single_workshop_id:raise HTTPException(403,"Only the configured FUSAA workshop may receive an agent")
-    workshop=one(db,Workshop,data.workshop_id);require_org_admin(db,user,workshop.organization_id);agent=ComputerAgent(**data.model_dump(),enrollment_token=secrets.token_urlsafe(32));db.add(agent);db.flush();audit(db,user.id,"AGENT_ENROLLMENT_CREATED","ComputerAgent",agent.id);db.commit();db.refresh(agent);return agent
+    workshop_id=settings.single_workshop_id or data.workshop_id
+    workshop=one(db,Workshop,workshop_id);require_org_admin(db,user,workshop.organization_id)
+    agent=ComputerAgent(workshop_id=workshop.id,name=data.name,enrollment_token=secrets.token_urlsafe(32));db.add(agent);db.flush();audit(db,user.id,"AGENT_ENROLLMENT_CREATED","ComputerAgent",agent.id);db.commit();db.refresh(agent);return agent
 
 @app.get("/api/v1/agents",response_model=list[AgentOut])
 def list_agents(user:User=Depends(current_user),db:Session=Depends(get_db)): return db.query(ComputerAgent).filter(ComputerAgent.workshop_id.in_(accessible_workshop_ids(db,user))).all()
