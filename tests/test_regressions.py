@@ -45,6 +45,27 @@ def test_assistant_and_http_share_workshop_scope(setup_db):
     assert len(execute_safe_tool(db,user,"list_print_jobs",{})["jobs"])==1
     assert len(execute_safe_tool(db,user,"list_printers",{})["printers"])==1
 
+def test_finish_persists_and_preserves_job_and_document(setup_db):
+    from app.main import finish_job
+    from app.models import AuditLog
+    db,viewer,admin=setup_db
+    job=db.query(PrintJob).filter_by(workshop_id="a").one()
+    with pytest.raises(HTTPException) as error:
+        finish_job(job.id,admin,db)
+    assert error.value.status_code==409
+    job.status=JobStatus.COMPLETED;db.commit()
+    assert job.id in [item.id for item in list_jobs(admin,db)]
+    with pytest.raises(HTTPException) as error:
+        finish_job(job.id,viewer,db)
+    assert error.value.status_code==403
+    assert finish_job(job.id,admin,db)["archived"]
+    assert finish_job(job.id,admin,db)["archived"]
+    db.expire_all()
+    assert job.id not in [item.id for item in list_jobs(admin,db)]
+    assert db.get(PrintJob,job.id).status==JobStatus.COMPLETED
+    assert db.get(Document,job.document_id)
+    assert db.query(AuditLog).filter_by(resource_id=job.id,action="PRINT_JOB_FINISH_CONFIRMED").count()==1
+
 @pytest.mark.parametrize("prefix",["aaaaaaaa","bbbbbbbb"])
 @pytest.mark.parametrize("action",["cancel","confirm","prepare"])
 def test_viewer_cannot_mutate_own_or_other_workshop(setup_db,prefix,action):
@@ -286,4 +307,3 @@ def test_config_anchors_relative_database_and_storage_paths():
     assert BACKEND_DIR.as_posix() in custom.database_url
     assert custom.storage_dir.is_absolute()
     assert custom.storage_dir == (BACKEND_DIR / "my_storage").resolve()
-

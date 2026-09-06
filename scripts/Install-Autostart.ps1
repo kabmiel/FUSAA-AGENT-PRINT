@@ -1,6 +1,8 @@
+param([switch]$AgentOnly)
 $ErrorActionPreference = 'Stop'
 $fusaaRoot = Split-Path $PSScriptRoot -Parent
-$fusaaPython = (Get-Command python.exe).Source
+$fusaaPython = (& py -3.11 -c "import sys; print(sys.executable)").Trim()
+if ($LASTEXITCODE -ne 0) { throw 'Python 3.11 introuvable' }
 $fusaaPythonWindowless = Join-Path (Split-Path $fusaaPython -Parent) 'pythonw.exe'
 if (-not (Test-Path -LiteralPath $fusaaPythonWindowless)) { throw 'pythonw.exe introuvable' }
 $fusaaStartup = [Environment]::GetFolderPath('Startup')
@@ -10,6 +12,10 @@ $fusaaShortcut = $fusaaShell.CreateShortcut($fusaaShortcutPath)
 $fusaaShortcut.TargetPath = $fusaaPythonWindowless
 $fusaaShortcut.Arguments = '"' + (Join-Path $PSScriptRoot 'windows_runtime.py') + '" supervise'
 $fusaaShortcut.WorkingDirectory = $fusaaRoot
+if ($AgentOnly) {
+    $fusaaShortcut.Arguments = '-m fusaa_agent.main'
+    $fusaaShortcut.WorkingDirectory = Join-Path $fusaaRoot 'local-agent'
+}
 $fusaaShortcut.WindowStyle = 7
 $fusaaShortcut.Description = 'FUSAA : API, agent Windows, Ollama et sauvegarde quotidienne'
 $fusaaShortcut.Save()

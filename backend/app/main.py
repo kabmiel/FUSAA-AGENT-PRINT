@@ -489,7 +489,20 @@ def audit_history(limit:int=50,user:User=Depends(current_user),db:Session=Depend
     return db.query(AuditLog).filter(((AuditLog.resource_type=="PrintJob") & (AuditLog.resource_id.in_(visible_jobs))) | (AuditLog.actor==user.id)).order_by(AuditLog.timestamp.desc()).limit(min(limit,200)).all()
 
 @app.get("/api/v1/jobs",response_model=list[PrintJobOut])
-def list_jobs(user:User=Depends(current_user),db:Session=Depends(get_db)):return db.query(PrintJob).filter(PrintJob.workshop_id.in_(accessible_workshop_ids(db,user))).order_by(PrintJob.created_at.desc()).all()
+def list_jobs(user:User=Depends(current_user),db:Session=Depends(get_db)):
+    acknowledged=db.query(AuditLog.resource_id).filter_by(resource_type="PrintJob",action="PRINT_JOB_FINISH_CONFIRMED")
+    return db.query(PrintJob).filter(PrintJob.workshop_id.in_(accessible_workshop_ids(db,user)),~PrintJob.id.in_(acknowledged)).order_by(PrintJob.created_at.desc()).all()
+
+@app.post("/api/v1/jobs/{job_id}/finish")
+def finish_job(job_id:str,user:User=Depends(current_user),db:Session=Depends(get_db)):
+    job=one(db,PrintJob,job_id)
+    require_workshop_write(db,user,job.workshop_id)
+    if job.status!=JobStatus.COMPLETED:
+        raise HTTPException(409,"Le travail doit être terminé avant de confirmer sa fin")
+    if not db.query(AuditLog).filter_by(resource_type="PrintJob",resource_id=job.id,action="PRINT_JOB_FINISH_CONFIRMED").first():
+        audit(db,user.id,"PRINT_JOB_FINISH_CONFIRMED","PrintJob",job.id,result="SUCCESS")
+        db.commit()
+    return {"job_id":job.id,"archived":True}
 
 @app.get("/api/v1/jobs/{job_id}",response_model=PrintJobOut)
 def get_job(job_id:str,user:User=Depends(current_user),db:Session=Depends(get_db)):

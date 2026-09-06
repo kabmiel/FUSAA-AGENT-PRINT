@@ -117,7 +117,40 @@ async function upload(){
 function uploadWithProgress(file){return new Promise((resolve,reject)=>{const xhr=new XMLHttpRequest(),id=newId();xhr.open("POST","/api/v1/documents/upload?organization_id="+encodeURIComponent(org)+"&workshop_id="+encodeURIComponent(workshop));xhr.setRequestHeader("Authorization","Bearer "+token);xhr.setRequestHeader("X-Upload-ID",id);xhr.upload.onprogress=event=>{if(event.lengthComputable){const p=Math.max(3,Math.round(event.loaded/event.total*92));setUploadProgress(p,"Chargement du fichier",`${Math.round(event.loaded/1024/1024*100)/100} / ${Math.round(event.total/1024/1024*100)/100} Mo`);setPrintProgress("busy",12+p*.18,"Chargement","Transmission en cours…")}};xhr.onerror=()=>reject(Error("Le réseau a interrompu l’envoi du fichier."));xhr.onload=()=>{let data={};try{data=JSON.parse(xhr.responseText||"{}")}catch{}if(xhr.status>=200&&xhr.status<300)resolve(data);else reject(Error(readableApiError(data.detail)||`Erreur serveur HTTP ${xhr.status}`))};const body=new FormData();body.append("file",file);xhr.send(body)})}
 const card=(label,value)=>'<div class="card"><b>'+esc(value)+'</b><span class="muted">'+esc(label)+"</span></div>";
 function jobMeta(status){return ({WAITING_APPROVAL:[35,"À préparer","En attente"],READY:[58,"Prêt","Réglages validés"],QUEUED:[76,"En file","Commande envoyée"],PRINTING:[90,"Impression","En cours"],COMPLETED:[100,"Terminé","Succès"],FAILED:[100,"Échec","À relancer"],CANCELLED:[100,"Annulé","Arrêté"],IGNORED:[100,"Ignoré","Non lancé"]}[status]||[10,status,"État inconnu"])}
-function renderJobCards(items,documents){const target=$("jobs");if(!target)return;target.innerHTML=items.map(item=>{const meta=jobMeta(item.status),name=documents[item.document_id]?.original_name||item.document_id,terminal=["FAILED","CANCELLED","IGNORED"].includes(item.status);return '<article class="job-card '+item.status.toLowerCase()+'"><div class="job-card-head"><div><span class="job-badge">'+esc(meta[1])+'</span><h3>'+esc(name)+'</h3></div><strong>'+meta[0]+'%</strong></div><div class="job-mini-track"><i style="width:'+meta[0]+'%"></i></div><div class="job-card-meta"><span>'+esc(meta[2])+'</span><span>'+esc(item.status)+'</span></div>'+(item.error_message?'<p class="job-error">'+esc(friendlyPrintError(item.error_message))+'</p>':'')+'<div class="job-actions"><button class="secondary" onclick="selectJob(\''+esc(item.id)+'\')">Voir</button>'+(item.status==="WAITING_APPROVAL"?'<button onclick="selectJob(\''+esc(item.id)+'\')">Préparer</button>':'')+(terminal?'<button class="secondary" onclick="retryJob(\''+esc(item.id)+'\')">Relancer</button>':'')+(terminal||item.status==="WAITING_APPROVAL"||item.status==="READY"?'<button class="danger" onclick="deleteSpecificJob(\''+esc(item.id)+'\')">Supprimer</button>':'')+'</div></article>'}).join("")||'<p class="muted">Aucun travail pour le moment.</p>'}
+function renderJobCards(items,documents){
+  const target=$("jobs");if(!target)return;
+  const existing=new Map(Array.from(target.children).map(node=>[node.dataset.jobId,node]));
+  for(const item of items){
+    const meta=jobMeta(item.status),name=documents[item.document_id]?.original_name||item.document_id;
+    const done=item.status==="COMPLETED",stopped=["FAILED","CANCELLED","IGNORED"].includes(item.status);
+    const count=done?5:({WAITING_APPROVAL:2,READY:3,QUEUED:3,PRINTING:4}[item.status]||0);
+    const id=esc(item.id);
+    const steps=["Fichier","Inspection","Préparation","Impression","Terminé"].map((label,index)=>'<span class="'+(index<count?'done':'')+'">'+(index<count?'✓':index+1)+' · '+label+'</span>').join("");
+    const content='<div class="job-card-head"><div><span class="job-badge">'+esc(meta[1])+'</span><h3>'+esc(name)+'</h3></div><strong>'+(stopped?'Arrêté':meta[0]+'%')+'</strong></div>'+
+      '<div class="job-mini-track"><i style="width:'+(stopped?0:meta[0])+'%"></i></div><div class="job-card-meta"><span>'+esc(meta[2])+'</span><span>Progression par étapes</span></div>'+
+      '<div class="print-steps">'+steps+'</div>'+
+      (item.error_message?'<p class="job-error">'+esc(friendlyPrintError(item.error_message))+'</p>':'')+
+      (done?'<p class="job-finish-note">Terminé · reste visible jusqu’à votre confirmation.</p>':'')+
+      '<div class="job-actions"><button class="secondary" onclick="selectJob(\''+id+'\')">Voir</button>'+
+      (item.status==="WAITING_APPROVAL"?'<button onclick="selectJob(\''+id+'\')">Préparer</button>':'')+
+      (stopped?'<button class="secondary" onclick="retryJob(\''+id+'\')">Relancer</button>':'')+
+      (done?'<button class="finish-action" onclick="confirmFinish(\''+id+'\',this)">✓ Confirmer la fin du travail</button>':'')+
+      (stopped||["WAITING_APPROVAL","READY"].includes(item.status)?'<button class="danger" onclick="deleteSpecificJob(\''+id+'\')">Supprimer</button>':'')+'</div>';
+    let node=existing.get(item.id);
+    if(!node){node=document.createElement("article");node.dataset.jobId=item.id;target.append(node)}
+    existing.delete(item.id);
+    node.className="job-card "+item.status.toLowerCase();
+    if(node._content!==content){node.innerHTML=content;node._content=content}
+  }
+  for(const node of existing.values())node.remove();
+  if(!items.length){target.innerHTML='<p class="muted">Aucun travail actif. Les travaux dont la fin a été confirmée restent dans l’historique.</p>'}
+}
+async function confirmFinish(id,button){
+  if(button)button.disabled=true;
+  try{await api("/api/v1/jobs/"+encodeURIComponent(id)+"/finish",{method:"POST"});tell("Fin confirmée. Le travail est retiré de la liste et conservé dans l’historique.");await refresh()}
+  catch(error){tell("Confirmation de fin : "+error.message)}
+  finally{if(button?.isConnected)button.disabled=false}
+}
 function selectJob(id){$("job").value=id;showJob();selectView("print")}
 async function refresh(){
   if(!token)return;
@@ -130,7 +163,6 @@ async function refresh(){
     $("stats").innerHTML=card("Agents",dashboard.agents_online)+card("Imprimantes",dashboard.printers_available)+card("À valider",dashboard.jobs_waiting)+card("En cours",dashboard.jobs_printing)+card("Terminés",dashboard.jobs_completed)+card("Erreurs",dashboard.jobs_failed);
     $("job").innerHTML=jobs.map(item=>'<option value="'+esc(item.id)+'">'+esc(item.status)+" · "+esc(docs[item.document_id]?.original_name||item.id)+"</option>").join("");
     $("printer").innerHTML=printers.map(item=>'<option value="'+esc(item.id)+'" '+(["ONLINE","PRINTING","READY","IDLE"].includes(item.status)?"":"disabled")+">"+esc(item.name)+" — "+esc(item.status)+"</option>").join("");
-    $("jobs").innerHTML=jobs.map(item=>'<div class="job"><b>'+esc(item.status)+" · "+esc(docs[item.document_id]?.original_name||item.document_id)+'<br><span class="muted">'+esc(friendlyPrintError(item.error_message||""))+"</span></div>").join("");
     $("historyText").textContent=results[4].map(item=>item.timestamp+" — "+item.action+" — "+item.result).join("\n");
     if($("processDocument"))$("processDocument").innerHTML=documents.map(item=>'<option value="'+esc(item.id)+'">'+esc(item.original_name)+"</option>").join("");
     if(jobs.some(item=>item.id===savedJob))$("job").value=savedJob;
@@ -140,6 +172,7 @@ async function refresh(){
 }
 async function showJob(){
   const job=jobs.find(item=>item.id===$("job").value),document=job&&docs[job.document_id];
+  if(!job)setPrintProgress("",0,"Aucun travail sélectionné","Choisissez un travail ou envoyez un nouveau document.");
   const progress={WAITING_APPROVAL:[35,"En attente de préparation","Choisissez l’imprimante et les réglages."],READY:[58,"Prêt à confirmer","Les réglages sont validés. Confirmez pour envoyer au PC."],QUEUED:[76,"Commande en file d’attente","Le PC Windows va récupérer la commande."],PRINTING:[90,"Impression en cours","L’agent Windows a lancé l’impression."],COMPLETED:[100,"Impression terminée","Le document a été traité avec succès."],FAILED:[100,"Échec de l’impression",friendlyPrintError(job?.error_message||"Le serveur ou l’agent a signalé une erreur.")],CANCELLED:[100,"Travail annulé","Aucune impression ne sera lancée."]};
   if(job){const current=progress[job.status]||[10,job.status,"État reçu du serveur."];setPrintProgress(job.status==="FAILED"?"error":job.status==="COMPLETED"?"done":"busy",current[0],current[1],current[2])}
   const prepareButton=globalThis.document.querySelector('button[onclick="prepare()"]');
@@ -254,6 +287,27 @@ function mountThemeStyle(){document.head.insertAdjacentHTML("beforeend",'<style>
 function mountProgressStyle(){document.head.insertAdjacentHTML("beforeend",'<style>.operation-progress,.print-progress{margin:16px 0;padding:16px;border:1px solid #25d2bb44;border-radius:16px;background:linear-gradient(135deg,#0a2132,#0b1828);box-shadow:0 0 30px #18c9b01c}.operation-head{display:flex;justify-content:space-between;align-items:center;gap:12px}.operation-head b{display:block;font-size:.95rem}.operation-head strong,.operation-head span{color:#35dfc2;font-variant-numeric:tabular-nums}.progress-track{height:9px;margin:13px 0 8px;border-radius:999px;background:#ffffff12;overflow:hidden}.progress-track i{display:block;width:0;height:100%;border-radius:999px;background:linear-gradient(90deg,#18c9b0,#347bf5);box-shadow:0 0 18px #22d9c088;transition:width .45s ease;position:relative}.progress-track i:after{content:"";position:absolute;inset:0;background:linear-gradient(110deg,transparent 20%,#ffffffaa 50%,transparent 80%);animation:progressShine 1.2s linear infinite}.progress-track i.error{background:linear-gradient(90deg,#e25762,#ff9c55);box-shadow:0 0 18px #e2576266}.progress-track i.done{background:linear-gradient(90deg,#25cfa4,#53df88)}@keyframes progressShine{from{transform:translateX(-100%)}to{transform:translateX(100%)}}.operation-progress small{color:#91b3c7}.print-steps{display:grid;grid-template-columns:repeat(5,1fr);gap:5px;margin-top:13px}.print-steps span{padding:7px 4px;text-align:center;border-radius:8px;color:#7893a7;background:#ffffff08;font-size:.68rem;transition:all .3s ease}.print-steps span.done{color:#dffff8;background:#18c9b033;box-shadow:inset 0 -2px #25d2bb}.print-progress{animation:progressPulse 3s ease-in-out infinite}.print-progress .eyebrow{margin-bottom:3px}@keyframes progressPulse{50%{box-shadow:0 0 35px #18c9b02b}}:root[data-theme="light"] .operation-progress,:root[data-theme="light"] .print-progress{background:linear-gradient(135deg,#f4fbfc,#eef5fa);border-color:#8adfd1}:root[data-theme="light"] .print-steps span{color:#668093;background:#dceaf0}:root[data-theme="light"] .print-steps span.done{color:#17675d;background:#c9f0e8}@media(max-width:680px){.print-steps span{font-size:.58rem;padding:6px 2px}.operation-head{align-items:flex-start;flex-direction:column;gap:3px}}</style>')}
 function mountJobStyle(){document.head.insertAdjacentHTML("beforeend",'<style>#jobs{display:grid;gap:12px;margin-top:18px}.job-card{position:relative;padding:16px;border:1px solid #ffffff14;border-radius:17px;background:linear-gradient(135deg,#0d2539,#0a1728);overflow:hidden;animation:panelIn .35s ease both}.job-card:before{content:"";position:absolute;inset:0 auto 0 0;width:3px;background:#22d5bd}.job-card.failed:before{background:#ef6570}.job-card.completed:before{background:#55dc8d}.job-card-head{display:flex;justify-content:space-between;align-items:start;gap:10px}.job-card-head h3{margin:7px 0 0;font-size:.96rem;word-break:break-word}.job-card-head strong{color:#41dfc4;font-size:1.1rem}.job-badge{display:inline-block;padding:4px 8px;border-radius:999px;background:#20cdb52b;color:#64ead1;font-size:.66rem;font-weight:800;letter-spacing:.08em;text-transform:uppercase}.failed .job-badge{background:#ef65702b;color:#ff9ca3}.completed .job-badge{background:#55dc8d2b;color:#8bf0ac}.job-mini-track{height:6px;margin:13px 0 7px;background:#ffffff12;border-radius:99px;overflow:hidden}.job-mini-track i{display:block;height:100%;border-radius:99px;background:linear-gradient(90deg,#20cdb5,#347bf5);transition:width .6s ease}.failed .job-mini-track i{background:#ef6570}.completed .job-mini-track i{background:#55dc8d}.job-card-meta{display:flex;justify-content:space-between;color:#8da8ba;font-size:.73rem}.job-error{margin:10px 0;color:#ff9ca3;font-size:.78rem;line-height:1.4}.job-actions{display:flex;gap:7px;flex-wrap:wrap;margin-top:12px}.job-actions button{width:auto;margin:0;padding:7px 10px;font-size:.74rem}.job-card.selected{box-shadow:0 0 0 2px #22d5bd66}@media(max-width:680px){.job-card-head h3{font-size:.86rem}}</style>')}
 mountAssistant();mountSettings();mountArrivals();mountArrivalPopup();mountChatStyle();mountStyle();compactNavigation();addExtensionDownload();mountRegistrationField();applyTheme(localStorage.getItem("fusaa-theme")||"dark");mountThemeStyle();mountThemeControls();mountProgressStyle();mountJobStyle();
+document.querySelector("#print .view-head").insertAdjacentElement("afterend", $("jobs"));
+document.head.insertAdjacentHTML("beforeend", `<style>
+#jobs{margin:0 0 24px;grid-template-columns:repeat(auto-fit,minmax(min(100%,360px),1fr))}
+.job-card{padding:22px;border-radius:22px;border-color:#36ddc34d;box-shadow:0 14px 36px #00132125}
+.job-card .print-steps{grid-template-columns:repeat(5,minmax(0,1fr));margin:16px 0}
+.job-card .print-steps span{white-space:normal;overflow-wrap:anywhere}
+.job-card .job-actions{gap:10px}
+.job-card .job-finish-note{font-size:.82rem;color:#86e4c3}
+.job-card .finish-action{background:linear-gradient(115deg,#08795c,#126baf);color:white}
+.job-card.queued .job-mini-track i,.job-card.printing .job-mini-track i{background-size:200% 100%;animation:jobFlow 2s linear infinite}
+@keyframes jobFlow{to{background-position:200% 0}}
+:root[data-theme="light"] .job-card{background:linear-gradient(135deg,#fff,#eaf6fa);border-color:#96d5d0;box-shadow:0 14px 34px #36596f15}
+:root[data-theme="light"] .job-card h3{color:#173c50}
+:root[data-theme="light"] .job-card-head strong,:root[data-theme="light"] .job-badge{color:#006858}
+:root[data-theme="light"] .job-card-meta{color:#46667a}
+:root[data-theme="light"] .job-error,:root[data-theme="light"] .failed .job-badge{color:#a12c3b}
+:root[data-theme="light"] .job-card .job-finish-note{color:#17654e}
+:root[data-theme="light"] .job-mini-track{background:#cadde5}
+button:disabled{opacity:.5;cursor:not-allowed;transform:none;box-shadow:none}
+@media(prefers-reduced-motion:reduce){.job-card,.print-progress,.progress-track i:after,.job-mini-track i{animation:none!important;transition:none!important}}
+</style>`);
 document.querySelector("main").insertAdjacentHTML("afterbegin",'<p id="globalMessage" role="status" hidden></p>');
 document.querySelectorAll("#nav a").forEach(link=>link.addEventListener("click",event=>{event.preventDefault();selectView(link.dataset.view)}));
 window.addEventListener("online",()=>{network();flushUploads();refresh()});window.addEventListener("offline",network);
