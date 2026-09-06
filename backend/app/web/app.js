@@ -5,6 +5,7 @@ function newId(){if(globalThis.crypto?.randomUUID)return globalThis.crypto.rando
 const esc=value=>String(value??"").replace(/[&<>"']/g,char=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[char]));
 const userId=()=>{try{return JSON.parse(atob(token.split(".")[1])).sub}catch{return null}};
 function tell(value){
+  if($("jobGlass")?.open)$("glassFeedback").textContent=value||"";
   if($("message"))$("message").textContent=value||"";
   if($("globalMessage")){$("globalMessage").textContent=value||"";$("globalMessage").hidden=!value}
 }
@@ -111,7 +112,7 @@ async function upload(){
     button.disabled=true;setUploadProgress(2,"Préparation du fichier",file.name);setPrintProgress("busy",12,"Fichier sélectionné","Envoi sécurisé vers FUSAA");
     const item=await uploadWithProgress(file);
     setUploadProgress(100,"Fichier reçu","Inspection du document terminée");setPrintProgress("busy",35,"Inspection terminée","Le travail est prêt à être configuré");
-    tell("Travail "+item.id.slice(0,8)+" créé.");await refresh();$("job").value=item.id;showJob();selectView("print");
+    tell("Travail "+item.id.slice(0,8)+" créé.");await refresh();$("job").value=item.id;showJob();selectView("print");openJobGlass(item.id,"prepare");
   }catch(error){operationError(error,"Chargement du fichier")}finally{if(button)button.disabled=false}
 }
 function uploadWithProgress(file){return new Promise((resolve,reject)=>{const xhr=new XMLHttpRequest(),id=newId();xhr.open("POST","/api/v1/documents/upload?organization_id="+encodeURIComponent(org)+"&workshop_id="+encodeURIComponent(workshop));xhr.setRequestHeader("Authorization","Bearer "+token);xhr.setRequestHeader("X-Upload-ID",id);xhr.upload.onprogress=event=>{if(event.lengthComputable){const p=Math.max(3,Math.round(event.loaded/event.total*92));setUploadProgress(p,"Chargement du fichier",`${Math.round(event.loaded/1024/1024*100)/100} / ${Math.round(event.total/1024/1024*100)/100} Mo`);setPrintProgress("busy",12+p*.18,"Chargement","Transmission en cours…")}};xhr.onerror=()=>reject(Error("Le réseau a interrompu l’envoi du fichier."));xhr.onload=()=>{let data={};try{data=JSON.parse(xhr.responseText||"{}")}catch{}if(xhr.status>=200&&xhr.status<300)resolve(data);else reject(Error(readableApiError(data.detail)||`Erreur serveur HTTP ${xhr.status}`))};const body=new FormData();body.append("file",file);xhr.send(body)})}
@@ -131,11 +132,11 @@ function renderJobCards(items,documents){
       '<div class="print-steps">'+steps+'</div>'+
       (item.error_message?'<p class="job-error">'+esc(friendlyPrintError(item.error_message))+'</p>':'')+
       (done?'<p class="job-finish-note">Terminé · reste visible jusqu’à votre confirmation.</p>':'')+
-      '<div class="job-actions"><button class="secondary" onclick="selectJob(\''+id+'\')">Voir</button>'+
-      (item.status==="WAITING_APPROVAL"?'<button onclick="selectJob(\''+id+'\')">Préparer</button>':'')+
-      (stopped?'<button class="secondary" onclick="retryJob(\''+id+'\')">Relancer</button>':'')+
-      (done?'<button class="finish-action" onclick="confirmFinish(\''+id+'\',this)">✓ Confirmer la fin du travail</button>':'')+
-      (stopped||["WAITING_APPROVAL","READY"].includes(item.status)?'<button class="danger" onclick="deleteSpecificJob(\''+id+'\')">Supprimer</button>':'')+'</div>';
+      '<div class="job-actions"><button class="secondary" onclick="openJobGlass(\''+id+'\',\'view\')">Voir</button>'+
+      (item.status==="WAITING_APPROVAL"?'<button onclick="openJobGlass(\''+id+'\',\'prepare\')">Préparer</button>':'')+
+      (stopped?'<button class="secondary" onclick="openJobGlass(\''+id+'\',\'retry\')">Relancer</button>':'')+
+      (done?'<button class="finish-action" onclick="openJobGlass(\''+id+'\',\'finish\')">✓ Confirmer la fin du travail</button>':'')+
+      (stopped||["WAITING_APPROVAL","READY"].includes(item.status)?'<button class="danger" onclick="openJobGlass(\''+id+'\',\'delete\')">Supprimer</button>':'')+'</div>';
     let node=existing.get(item.id);
     if(!node){node=document.createElement("article");node.dataset.jobId=item.id;target.append(node)}
     existing.delete(item.id);
@@ -151,7 +152,7 @@ async function confirmFinish(id,button){
   catch(error){tell("Confirmation de fin : "+error.message)}
   finally{if(button?.isConnected)button.disabled=false}
 }
-function selectJob(id){$("job").value=id;showJob();selectView("print")}
+function selectJob(id){openJobGlass(id,"view")}
 async function refresh(){
   if(!token)return;
   try{
@@ -167,7 +168,10 @@ async function refresh(){
     if($("processDocument"))$("processDocument").innerHTML=documents.map(item=>'<option value="'+esc(item.id)+'">'+esc(item.original_name)+"</option>").join("");
     if(jobs.some(item=>item.id===savedJob))$("job").value=savedJob;
     if(printers.some(item=>item.id===savedPrinter))$("printer").value=savedPrinter;
-    workshopSettings=results[7]||{};applyWorkshopSettings();showJob();renderJobCards(jobs,docs);renderActivities(results[5]);renderMonitor(results[6]);checkPushAvailability();
+    const formValues=$("jobGlass")?.open?Object.fromEntries(["printer","copies","paper","orientation","color","pages","instructions","duplex"].map(id=>[id,$(id).type==="checkbox"?$(id).checked:$(id).value])):null;
+    workshopSettings=results[7]||{};applyWorkshopSettings();
+    if(formValues)for(const [id,value] of Object.entries(formValues)){if($(id).type==="checkbox")$(id).checked=value;else $(id).value=value}
+    showJob();renderJobCards(jobs,docs);renderActivities(results[5]);renderMonitor(results[6]);checkPushAvailability();
   }catch(error){tell(error.message)}
 }
 async function showJob(){
@@ -307,6 +311,79 @@ document.head.insertAdjacentHTML("beforeend", `<style>
 :root[data-theme="light"] .job-mini-track{background:#cadde5}
 button:disabled{opacity:.5;cursor:not-allowed;transform:none;box-shadow:none}
 @media(prefers-reduced-motion:reduce){.job-card,.print-progress,.progress-track i:after,.job-mini-track i{animation:none!important;transition:none!important}}
+</style>`);
+let glassAction=null,glassBusy=false;
+function mountJobGlass(){
+  const editor=document.querySelector("#print > .panel");
+  document.body.insertAdjacentHTML("beforeend",'<dialog id="jobGlass" aria-labelledby="glassTitle"><header class="glass-header"><div><span class="eyebrow">FUSAA · ATELIER</span><h2 id="glassTitle"></h2></div><button type="button" class="secondary glass-close" aria-label="Fermer">×</button></header><p id="glassFile"></p><p id="glassFeedback" role="status"></p><div id="glassEditor"></div><section id="glassDecision" hidden><p id="glassExplanation"></p><div class="inline-actions"><button id="glassExecute" type="button"></button><button id="glassBack" type="button" class="secondary">Retour</button></div></section></dialog>');
+  $("glassEditor").append(editor);
+  $("jobGlass").querySelector(".glass-close").onclick=closeJobGlass;
+  $("glassBack").onclick=closeJobGlass;
+  $("glassExecute").onclick=executeGlassAction;
+  $("jobGlass").addEventListener("cancel",event=>{if(glassBusy)event.preventDefault()});
+  $("jobGlass").addEventListener("close",()=>{document.body.classList.remove("glass-open");glassAction=null});
+}
+function closeJobGlass(){if(!glassBusy)$("jobGlass").close()}
+function openJobGlass(id,mode="view"){
+  if(glassBusy)return;
+  const job=jobs.find(item=>item.id===id);if(!job)return;
+  glassAction={id,mode};
+  $("job").value=id;
+  $("glassFeedback").textContent="";
+  $("glassFile").textContent=docs[job.document_id]?.original_name||id;
+  const decision=["finish","retry","delete"].includes(mode);
+  $("glassEditor").hidden=decision;
+  $("glassDecision").hidden=!decision;
+  const titles={view:"Aperçu et suivi",prepare:"Paramétrer l’impression",finish:"Confirmer la fin du travail",retry:"Relancer le travail",delete:"Supprimer le travail"};
+  $("glassTitle").textContent=titles[mode]||titles.view;
+  $("glassExecute").textContent=titles[mode]||"Confirmer";
+  $("glassExplanation").textContent=mode==="finish"?"Confirmez que le travail est terminé. Il sera retiré de la liste active et conservé dans l’historique.":mode==="delete"?"Ce travail sera supprimé de la liste. Le document source sera conservé.":mode==="retry"?"Le travail sera remis en préparation. Vérifiez la sortie papier avant de relancer une impression échouée.":"";
+  // Reuse the existing form and its IDs; no duplicate print controls.
+  for(const [field,key] of [["printer","printer_id"],["copies","copies"],["paper","paper_size"],["orientation","orientation"],["color","color_mode"],["pages","pages"],["instructions","instructions"]]){
+    if(job[key]!=null)$(field).value=job[key];
+  }
+  if(job.duplex!=null)$("duplex").checked=job.duplex;
+  showJob();
+  if(!$("jobGlass").open)$("jobGlass").showModal();
+  document.body.classList.add("glass-open");
+}
+async function executeGlassAction(){
+  if(glassBusy||!glassAction)return;
+  const {id,mode}=glassAction;
+  if(!["finish","retry","delete"].includes(mode))return;
+  glassBusy=true;$("glassExecute").disabled=true;
+  $("glassFeedback").textContent="Traitement en cours…";
+  try{
+    await api("/api/v1/jobs/"+encodeURIComponent(id)+(mode==="delete"?"":mode==="retry"?"/retry":"/finish"),{method:mode==="delete"?"DELETE":"POST"});
+    await refresh();
+    glassBusy=false;
+    if(mode==="retry")openJobGlass(id,"prepare");
+    else{$("jobGlass").close();tell(mode==="finish"?"Fin confirmée : travail retiré de la liste active.":"Travail supprimé.")}
+  }catch(error){$("glassFeedback").textContent=error.message}
+  finally{glassBusy=false;$("glassExecute").disabled=false}
+}
+mountJobGlass();
+document.head.insertAdjacentHTML("beforeend",`<style>
+body.glass-open{overflow:hidden}
+#jobGlass{color:#e9f4ff;width:min(920px,calc(100vw - 28px));max-height:88dvh;overflow:auto;padding:26px;border:1px solid #b2ffed55;border-radius:26px;background:linear-gradient(135deg,#133045ed,#081827eb);backdrop-filter:blur(26px) saturate(150%);box-shadow:inset 0 1px 0 #ffffff50,0 32px 100px #0008}
+#jobGlass::backdrop{background:#04111b70;backdrop-filter:blur(8px)}
+#jobGlass[open]{animation:glassEntrance .24s ease-out}
+.glass-header{display:flex;align-items:center;justify-content:space-between;gap:16px}
+.glass-header h2{margin:0;font-size:1.35rem}.glass-close{width:40px;height:40px;padding:4px;font-size:1.5rem}
+#glassFile{overflow-wrap:anywhere;color:#7de4d0}
+#glassFeedback{white-space:pre-wrap;color:#ffbe90}
+#glassFeedback:empty{display:none}
+#glassEditor>.panel{background:transparent;border:0;padding:0;box-shadow:none;animation:none}
+#glassEditor .preview{max-height:240px}
+#glassEditor #job{display:none}
+#glassEditor label:has(+ #job){display:none}
+#glassDecision{padding:18px 0}
+:root[data-theme="light"] #jobGlass{color:#16374c;background:linear-gradient(135deg,#ffffffed,#e6f3f6ed);border-color:#ffffffd0}
+:root[data-theme="light"] #glassFile{color:#176b60}
+:root[data-theme="light"] #glassFeedback{color:#9c3b17}
+@keyframes glassEntrance{from{opacity:0;transform:translateY(14px) scale(.98)}to{opacity:1;transform:none}}
+@media(prefers-reduced-motion:reduce){#jobGlass[open]{animation:none}}
+@media(max-width:600px){#jobGlass{padding:16px;border-radius:20px;max-height:92dvh}}
 </style>`);
 document.querySelector("main").insertAdjacentHTML("afterbegin",'<p id="globalMessage" role="status" hidden></p>');
 document.querySelectorAll("#nav a").forEach(link=>link.addEventListener("click",event=>{event.preventDefault();selectView(link.dataset.view)}));
