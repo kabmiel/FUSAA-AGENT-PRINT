@@ -137,7 +137,7 @@ async function showJob(){
   const deleteButton=$("deleteJobBtn");
   if(prepareButton){prepareButton.disabled=!job||job.status!=="WAITING_APPROVAL";prepareButton.title=prepareButton.disabled?"Ce travail est déjà préparé ou envoyé":"Choisissez les réglages puis préparez le travail"}
   if(confirmButton){confirmButton.id="confirmPrintBtn";confirmButton.disabled=!job||job.status!=="READY";confirmButton.title=confirmButton.disabled?"Préparez d’abord le travail":"Confirmer l’impression"}
-  if(deleteButton)deleteButton.classList.toggle("hidden",!job||!["FAILED","CANCELLED","COMPLETED","IGNORED"].includes(job.status));
+  if(deleteButton)deleteButton.classList.toggle("hidden",!job||!["WAITING_APPROVAL","READY","FAILED","CANCELLED","COMPLETED","IGNORED"].includes(job.status));
   if(!document){$("inspection").textContent="Aucun travail sélectionné.";$("preview").classList.add("hidden");return}
   const meta=document.metadata_json||{};
   const details=[document.original_name,meta.pages?`${meta.pages} page(s)`:null,meta.orientation?`Orientation : ${meta.orientation.toLowerCase()}`:null,meta.width_points&&meta.height_points?`Format detecte : ${Math.round(meta.width_points)} x ${Math.round(meta.height_points)} pt`:null].filter(Boolean);

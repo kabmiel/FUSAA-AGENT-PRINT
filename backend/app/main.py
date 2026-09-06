@@ -553,7 +553,7 @@ async def cancel_job(job_id:str,user:User=Depends(current_user),db:Session=Depen
 def delete_job(job_id:str,user:User=Depends(current_user),db:Session=Depends(get_db)):
     """Remove a terminal print job while preserving the uploaded document and audit trail."""
     job=one(db,PrintJob,job_id);require_member(db,user,job.organization_id);require_workshop_write(db,user,job.workshop_id)
-    if job.status not in {JobStatus.FAILED,JobStatus.CANCELLED,JobStatus.COMPLETED,JobStatus.IGNORED}:
+    if job.status not in {JobStatus.WAITING_APPROVAL,JobStatus.READY,JobStatus.FAILED,JobStatus.CANCELLED,JobStatus.COMPLETED,JobStatus.IGNORED}:
         raise HTTPException(409,"Seuls les travaux terminés, échoués ou annulés peuvent être supprimés")
     for command in db.query(AgentCommand).filter_by(print_job_id=job.id).all():
         db.delete(command)
