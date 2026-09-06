@@ -561,6 +561,16 @@ def delete_job(job_id:str,user:User=Depends(current_user),db:Session=Depends(get
     db.delete(job);db.commit()
     return {"job_id":job_id,"deleted":True}
 
+@app.post("/api/v1/jobs/{job_id}/retry",response_model=PrintJobOut)
+def retry_job(job_id:str,user:User=Depends(current_user),db:Session=Depends(get_db)):
+    """Return a failed/cancelled job to the preparation stage without duplicating its document."""
+    job=one(db,PrintJob,job_id);require_member(db,user,job.organization_id);require_workshop_write(db,user,job.workshop_id)
+    if job.status not in {JobStatus.FAILED,JobStatus.CANCELLED,JobStatus.IGNORED}:
+        raise HTTPException(409,"Seuls les travaux échoués ou annulés peuvent être relancés")
+    for command in db.query(AgentCommand).filter_by(print_job_id=job.id).all():db.delete(command)
+    job.status=JobStatus.WAITING_APPROVAL;job.error_message=None;job.completed_at=None;job.approved_at=None;job.printer_id=None;job.computer_agent_id=None
+    audit(db,user.id,"PRINT_JOB_RETRIED","PrintJob",job.id,result="SUCCESS");db.commit();db.refresh(job);return job
+
 @app.get("/api/v1/agent/{agent_id}/commands")
 def poll_commands(agent_id:str,request:Request,db:Session=Depends(get_db)):
     authenticated_agent(agent_id,request.headers.get("X-Agent-Key",""),db)
