@@ -30,6 +30,7 @@ class Settings(BaseSettings):
     environment: str = "development"
     log_level: str = "INFO"
     trusted_hosts: str = "localhost,127.0.0.1"
+    render_external_hostname: str = ""
     max_upload_bytes: int = 100 * 1024 * 1024
     # AI is local by default: no cloud provider and no API key are required.
     ai_provider: str = "ollama"

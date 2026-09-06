@@ -47,7 +47,9 @@ assistant_provider=OllamaProvider(settings.ollama_base_url,settings.ollama_model
 document_processor=DocumentProcessor()
 layout_engine=LayoutEngine()
 app.add_middleware(CORSMiddleware,allow_origins=settings.cors_origins.split(","),allow_credentials=True,allow_methods=["*"],allow_headers=["*"])
-app.add_middleware(TrustedHostMiddleware,allowed_hosts=settings.trusted_hosts.split(",") if settings.environment.lower()=="production" else ["*"])
+trusted_hosts=[item.strip().replace("https://","").replace("http://","").split("/",1)[0] for item in settings.trusted_hosts.split(",") if item.strip()]
+if settings.render_external_hostname:trusted_hosts.append(settings.render_external_hostname.strip())
+app.add_middleware(TrustedHostMiddleware,allowed_hosts=trusted_hosts if settings.environment.lower()=="production" else ["*"])
 app.add_middleware(RequestAuditMiddleware)
 
 @app.middleware("http")
