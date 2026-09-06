@@ -255,7 +255,20 @@ async def execute_assistant(data:AssistantExecuteRequest,user:User=Depends(curre
 @app.post("/api/v1/auth/register",response_model=TokenOut,status_code=201)
 def register(data:RegisterIn,db:Session=Depends(get_db)):
     if db.query(User).filter_by(email=data.email.lower()).first(): raise HTTPException(409,"Email already registered")
-    user=User(email=data.email.lower(),password_hash=hash_password(data.password),display_name=data.display_name); db.add(user); db.commit(); db.refresh(user)
+    user=User(email=data.email.lower(),password_hash=hash_password(data.password),display_name=data.display_name); db.add(user); db.flush()
+    # First registration bootstraps the configured single FUSAA workshop.
+    if settings.single_workshop_id:
+        workshop=db.get(Workshop,settings.single_workshop_id)
+        if not workshop:
+            organization=Organization(name=f"{settings.single_workshop_name} Organisation")
+            db.add(organization); db.flush()
+            workshop=Workshop(id=settings.single_workshop_id,organization_id=organization.id,name=settings.single_workshop_name)
+            db.add(workshop); db.flush()
+        if not db.query(OrganizationMember).filter_by(organization_id=workshop.organization_id,user_id=user.id).first():
+            db.add(OrganizationMember(organization_id=workshop.organization_id,user_id=user.id,role="OWNER"))
+        if not db.query(WorkshopMember).filter_by(workshop_id=workshop.id,user_id=user.id).first():
+            db.add(WorkshopMember(workshop_id=workshop.id,user_id=user.id,role="OWNER"))
+    db.commit(); db.refresh(user)
     audit(db,user.id,"USER_REGISTERED","User",user.id); db.commit(); return TokenOut(access_token=create_access_token(user.id))
 
 @app.post("/api/v1/auth/login",response_model=TokenOut)
