@@ -554,7 +554,14 @@ def poll_commands(agent_id:str,request:Request,db:Session=Depends(get_db)):
     authenticated_agent(agent_id,request.headers.get("X-Agent-Key",""),db)
     # A crashed agent must not strand a command forever. The idempotency key prevents a second command.
     lease_cutoff=datetime.now(timezone.utc)-timedelta(minutes=5)
-    db.query(AgentCommand).filter(AgentCommand.computer_agent_id==agent_id,AgentCommand.status==CommandStatus.CLAIMED,AgentCommand.claimed_at < lease_cutoff,or_(AgentCommand.result.is_(None),AgentCommand.result==JSON.NULL)).update({AgentCommand.status:CommandStatus.PENDING,AgentCommand.claimed_at:None},synchronize_session=False)
+    # Keep the lease recovery query portable across SQLite and Supabase/PostgreSQL.
+    # Comparing a JSON column with JSON.NULL in a bulk UPDATE can fail on PostgreSQL
+    # and would otherwise make the agent polling endpoint return HTTP 500.
+    stale_claims=db.query(AgentCommand).filter(AgentCommand.computer_agent_id==agent_id,AgentCommand.status==CommandStatus.CLAIMED,AgentCommand.claimed_at < lease_cutoff).all()
+    for stale in stale_claims:
+        if stale.result is None:
+            stale.status=CommandStatus.PENDING
+            stale.claimed_at=None
     candidates=db.query(AgentCommand).filter_by(computer_agent_id=agent_id,status=CommandStatus.PENDING).with_for_update(skip_locked=True).all()
     commands=[]
     for c in candidates:
