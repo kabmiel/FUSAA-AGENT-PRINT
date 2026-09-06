@@ -306,7 +306,28 @@ def available_workspaces(user:User=Depends(current_user),db:Session=Depends(get_
     allowed=accessible_workshop_ids(db,user)
     return [{"organization_id":org.id,"organization_name":org.name,"workshop_id":workshop.id,"workshop_name":workshop.name} for workshop,org in db.query(Workshop,Organization).join(Organization,Workshop.organization_id==Organization.id).filter(Workshop.id.in_(allowed)).all()]
 
+def ensure_single_workshop(db:Session,user:User|None=None):
+    """Ensure the configured one-workshop installation exists and is accessible."""
+    if not settings.single_workshop_id:
+        return None
+    workshop=db.get(Workshop,settings.single_workshop_id)
+    if not workshop:
+        organization_name=f"{settings.single_workshop_name} Organisation"
+        organization=db.query(Organization).filter_by(name=organization_name).one_or_none()
+        if not organization:
+            organization=Organization(name=organization_name);db.add(organization);db.flush()
+        workshop=Workshop(id=settings.single_workshop_id,organization_id=organization.id,name=settings.single_workshop_name)
+        db.add(workshop);db.flush()
+    if user:
+        if not db.query(OrganizationMember).filter_by(organization_id=workshop.organization_id,user_id=user.id).first():
+            db.add(OrganizationMember(organization_id=workshop.organization_id,user_id=user.id,role="OWNER"))
+        if not db.query(WorkshopMember).filter_by(workshop_id=workshop.id,user_id=user.id).first():
+            db.add(WorkshopMember(workshop_id=workshop.id,user_id=user.id,role="OWNER"))
+        db.flush()
+    return workshop
+
 def configured_workshop(user:User,db:Session,write=False):
+    ensure_single_workshop(db,user)
     allowed=accessible_workshop_ids(db,user,write=write)
     if not allowed:raise HTTPException(404,"Aucun atelier FUSAA configuré pour ce compte")
     workshop_id=settings.single_workshop_id or allowed[0]
@@ -359,7 +380,8 @@ def assign_workshop_member(workshop_id:str,data:WorkshopMemberIn,user:User=Depen
 @app.post("/api/v1/agents",response_model=AgentEnrollmentOut,status_code=201)
 def create_agent(data:AgentIn,user:User=Depends(current_user),db:Session=Depends(get_db)):
     workshop_id=settings.single_workshop_id or data.workshop_id
-    workshop=one(db,Workshop,workshop_id);require_org_admin(db,user,workshop.organization_id)
+    workshop=ensure_single_workshop(db,user) if settings.single_workshop_id else one(db,Workshop,workshop_id)
+    require_org_admin(db,user,workshop.organization_id)
     agent=ComputerAgent(workshop_id=workshop.id,name=data.name,enrollment_token=secrets.token_urlsafe(32));db.add(agent);db.flush();audit(db,user.id,"AGENT_ENROLLMENT_CREATED","ComputerAgent",agent.id);db.commit();db.refresh(agent);return agent
 
 @app.get("/api/v1/agents",response_model=list[AgentOut])
