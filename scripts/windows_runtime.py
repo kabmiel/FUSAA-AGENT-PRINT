@@ -104,7 +104,7 @@ def supervise():
     handler=RotatingFileHandler(RUNTIME/"supervisor.log",maxBytes=2_000_000,backupCount=3,encoding="utf-8")
     logger.addHandler(handler)
     python=Path(sys.executable).with_name("python.exe")
-    processes={};streams={};last_backup=None;next_backup_try=0
+    processes={};streams={};last_backup=None;last_backup_at=None;next_backup_try=0
     try:
         while True:
             checks=health()
@@ -129,10 +129,11 @@ def supervise():
             today=datetime.now(timezone.utc).date()
             if today!=last_backup and time.monotonic()>=next_backup_try:
                 try:
-                    folder=backup();last_backup=today;logger.info("Verified backup %s",folder.name)
+                    folder=backup();last_backup=today;last_backup_at=datetime.now(timezone.utc).isoformat();logger.info("Verified backup %s",folder.name)
                 except Exception:
                     logger.exception("Backup failed");next_backup_try=time.monotonic()+3600
             checks["backup_today"]=last_backup==today
+            checks["backup_last_at"]=last_backup_at
             checks["pids"]={name:p.pid for name,p in processes.items() if p.poll() is None}
             temp=RUNTIME/"health.tmp";temp.write_text(json.dumps(checks,indent=2),encoding="utf-8");temp.replace(RUNTIME/"health.json")
             time.sleep(20)

@@ -65,12 +65,12 @@ def healthz():return {"status":"ok"}
 @app.get("/api/v1/system/health")
 def local_system_health(user:User=Depends(current_user)):
     path=Path(__file__).resolve().parents[2]/"runtime"/"health.json"
-    if not path.exists():return {"supervisor":"not_started","api":True,"ollama":False,"agent":False,"backup_today":False}
+    if not path.exists():return {"supervisor":"not_started","api":True,"ollama":False,"agent":False,"backup_today":False,"backup_last_at":None,"mode":"remote" if settings.environment.lower()=="production" else "local"}
     try:
         report=json.loads(path.read_text(encoding="utf-8"))
         recent=(datetime.now(timezone.utc)-datetime.fromisoformat(report["last_check"])).total_seconds()<90
-        return {**{key:report.get(key) for key in ("api","ollama","agent","backup_today","last_check")},"supervisor":"running" if recent else "stale"}
-    except (OSError,ValueError,KeyError):return {"supervisor":"unavailable"}
+        return {**{key:report.get(key) for key in ("api","ollama","agent","backup_today","backup_last_at","last_check")},"supervisor":"running" if recent else "stale","mode":"local"}
+    except (OSError,ValueError,KeyError):return {"supervisor":"unavailable","mode":"local"}
 @app.get("/readyz",include_in_schema=False)
 def readyz():
     try:

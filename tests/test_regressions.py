@@ -64,6 +64,16 @@ def test_workshop_roles_are_admin_managed_and_enforced(setup_db):
     assert remove_workshop_member("a",viewer.id,admin,db)["removed"]
     with pytest.raises(HTTPException):require_workshop_write(db,viewer,"a")
 
+def test_system_health_exposes_verified_backup_timestamp(setup_db,tmp_path,monkeypatch):
+    from app import main
+    _,_,admin=setup_db
+    fake=tmp_path/"backend"/"app"/"main.py";fake.parent.mkdir(parents=True)
+    runtime=tmp_path/"runtime";runtime.mkdir()
+    (runtime/"health.json").write_text(json.dumps({"last_check":datetime.now(timezone.utc).isoformat(),"api":True,"agent":True,"ollama":False,"backup_today":True,"backup_last_at":"2026-09-07T12:00:00+00:00"}))
+    monkeypatch.setattr(main,"Path",lambda _:fake)
+    report=main.local_system_health(admin)
+    assert report["supervisor"]=="running" and report["backup_last_at"]=="2026-09-07T12:00:00+00:00"
+
 def test_finish_persists_and_preserves_job_and_document(setup_db):
     from app.main import finish_job
     from app.models import AuditLog
