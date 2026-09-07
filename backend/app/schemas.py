@@ -64,6 +64,7 @@ class GuestOrderAdminOut(BaseModel):
     created_at: datetime
     payment_verified_at: datetime|None
     invoice_number: str|None=None
+    archived_at: datetime|None=None
     currency: str="XOF"
 class PublicPricingIn(BaseModel):
     base: float=Field(default=0,ge=0)

@@ -231,6 +231,8 @@ class GuestOrder(Timestamped, Base):
     payment_verified_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     payment_verified_by: Mapped[str | None] = mapped_column(ForeignKey("users.id"), nullable=True)
     invoice_id: Mapped[str | None] = mapped_column(ForeignKey("invoices.id"), nullable=True, unique=True)
+    archived_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    archived_by: Mapped[str | None] = mapped_column(ForeignKey("users.id"), nullable=True)
 
 class AgentCommand(Timestamped, Base):
     __tablename__="agent_commands"

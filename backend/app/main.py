@@ -114,7 +114,7 @@ def guest_order_status(number:str,token:str,db:Session=Depends(get_db)):
 def guest_order_admin_out(db:Session,order:GuestOrder)->GuestOrderAdminOut:
     job=one(db,PrintJob,order.print_job_id);document=one(db,Document,job.document_id)
     invoice=db.get(Invoice,order.invoice_id) if order.invoice_id else None
-    return GuestOrderAdminOut(id=order.id,order_number=order.order_number,print_job_id=job.id,document_name=document.original_name,phone=order.phone,display_name=order.display_name,status=job.status,payment_status=order.payment_status,payment_reference=order.payment_reference,estimated_cost=float(job.final_cost or job.estimated_cost or 0),created_at=order.created_at,payment_verified_at=order.payment_verified_at,invoice_number=invoice.number if invoice else None)
+    return GuestOrderAdminOut(id=order.id,order_number=order.order_number,print_job_id=job.id,document_name=document.original_name,phone=order.phone,display_name=order.display_name,status=job.status,payment_status=order.payment_status,payment_reference=order.payment_reference,estimated_cost=float(job.final_cost or job.estimated_cost or 0),created_at=order.created_at,payment_verified_at=order.payment_verified_at,invoice_number=invoice.number if invoice else None,archived_at=order.archived_at)
 
 def guest_receipt_out(db:Session,order:GuestOrder)->GuestReceiptOut:
     if not order.invoice_id:raise HTTPException(404,"Reçu non généré")
@@ -122,10 +122,31 @@ def guest_receipt_out(db:Session,order:GuestOrder)->GuestReceiptOut:
     return GuestReceiptOut(invoice_id=invoice.id,invoice_number=invoice.number,order_number=order.order_number,document_name=document.original_name,amount=float(invoice.total_amount),payment_reference=order.payment_reference,paid_at=order.payment_verified_at or invoice.created_at)
 
 @app.get("/api/v1/guest-orders",response_model=list[GuestOrderAdminOut])
-def list_guest_orders(user:User=Depends(current_user),db:Session=Depends(get_db)):
+def list_guest_orders(user:User=Depends(current_user),db:Session=Depends(get_db),q:str|None=None,payment_status:str|None=None,job_status:JobStatus|None=None,include_archived:bool=False):
     ids=accessible_workshop_ids(db,user)
-    orders=db.query(GuestOrder).filter(GuestOrder.workshop_id.in_(ids)).order_by(GuestOrder.created_at.desc()).all()
+    query=db.query(GuestOrder).join(PrintJob,GuestOrder.print_job_id==PrintJob.id).join(Document,PrintJob.document_id==Document.id).filter(GuestOrder.workshop_id.in_(ids))
+    if not include_archived:query=query.filter(GuestOrder.archived_at.is_(None))
+    if payment_status:query=query.filter(GuestOrder.payment_status==payment_status)
+    if job_status:query=query.filter(PrintJob.status==job_status)
+    if q and q.strip():
+        needle=f"%{q.strip()}%";query=query.filter(or_(GuestOrder.order_number.ilike(needle),GuestOrder.phone.ilike(needle),GuestOrder.display_name.ilike(needle),Document.original_name.ilike(needle)))
+    orders=query.order_by(GuestOrder.created_at.desc()).all()
     return [guest_order_admin_out(db,order) for order in orders]
+
+@app.post("/api/v1/guest-orders/{order_id}/archive",response_model=GuestOrderAdminOut)
+def archive_guest_order(order_id:str,user:User=Depends(current_user),db:Session=Depends(get_db)):
+    order=one(db,GuestOrder,order_id);require_workshop_write(db,user,order.workshop_id);job=one(db,PrintJob,order.print_job_id)
+    if job.status not in {JobStatus.COMPLETED,JobStatus.FAILED,JobStatus.CANCELLED,JobStatus.IGNORED}:raise HTTPException(409,"Terminez, annulez ou clôturez ce travail avant de l’archiver.")
+    if not order.archived_at:
+        order.archived_at=datetime.now(timezone.utc);order.archived_by=user.id;audit(db,user.id,"GUEST_ORDER_ARCHIVED","GuestOrder",order.id,parameters={"order_number":order.order_number},result="SUCCESS");db.commit();db.refresh(order)
+    return guest_order_admin_out(db,order)
+
+@app.post("/api/v1/guest-orders/{order_id}/restore",response_model=GuestOrderAdminOut)
+def restore_guest_order(order_id:str,user:User=Depends(current_user),db:Session=Depends(get_db)):
+    order=one(db,GuestOrder,order_id);require_workshop_write(db,user,order.workshop_id)
+    if order.archived_at:
+        order.archived_at=None;order.archived_by=None;audit(db,user.id,"GUEST_ORDER_RESTORED","GuestOrder",order.id,parameters={"order_number":order.order_number},result="SUCCESS");db.commit();db.refresh(order)
+    return guest_order_admin_out(db,order)
 
 @app.put("/api/v1/guest-orders/{order_id}/payment",response_model=GuestOrderAdminOut)
 async def verify_guest_payment(order_id:str,data:GuestPaymentIn,user:User=Depends(current_user),db:Session=Depends(get_db)):
@@ -181,7 +202,7 @@ def create_guest_receipt(order_id:str,user:User=Depends(current_user),db:Session
 @app.get("/api/v1/production/dashboard")
 def production_dashboard(user:User=Depends(current_user),db:Session=Depends(get_db)):
     ids=accessible_workshop_ids(db,user);now=datetime.now(timezone.utc);start=now-timedelta(days=6)
-    orders=db.query(GuestOrder).filter(GuestOrder.workshop_id.in_(ids)).order_by(GuestOrder.created_at.desc()).all()
+    orders=db.query(GuestOrder).filter(GuestOrder.workshop_id.in_(ids),GuestOrder.archived_at.is_(None)).order_by(GuestOrder.created_at.desc()).all()
     jobs=db.query(PrintJob).filter(PrintJob.workshop_id.in_(ids)).all()
     paid=[order for order in orders if order.payment_status=="PAID"]
     amounts={job.id:float(job.final_cost or job.estimated_cost or 0) for job in jobs}
