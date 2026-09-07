@@ -170,6 +170,7 @@ def test_guest_order_has_phone_and_secure_follow_link(setup_db,tmp_path,monkeypa
     archived=archive_public_job(job.id,admin,db)
     assert archived.archived_at is not None
     assert not list_guest_orders(admin,db)
+    assert job.id not in {item.id for item in list_jobs(admin,db)}
     assert list_guest_orders(admin,db,q=created.order_number,include_archived=True)[0].id==order.id
     assert restore_guest_order(order.id,admin,db).archived_at is None
     export=export_guest_orders(admin,db,q=created.order_number)

@@ -704,7 +704,8 @@ def audit_history(limit:int=50,q:str|None=None,action:str|None=None,resource_typ
 @app.get("/api/v1/jobs",response_model=list[PrintJobOut])
 def list_jobs(user:User=Depends(current_user),db:Session=Depends(get_db)):
     acknowledged=db.query(AuditLog.resource_id).filter_by(resource_type="PrintJob",action="PRINT_JOB_FINISH_CONFIRMED")
-    jobs=db.query(PrintJob).filter(PrintJob.workshop_id.in_(accessible_workshop_ids(db,user)),~PrintJob.id.in_(acknowledged)).order_by(PrintJob.created_at.desc()).all()
+    archived_public=db.query(GuestOrder.print_job_id).filter(GuestOrder.archived_at.is_not(None))
+    jobs=db.query(PrintJob).filter(PrintJob.workshop_id.in_(accessible_workshop_ids(db,user)),~PrintJob.id.in_(acknowledged),~PrintJob.id.in_(archived_public)).order_by(PrintJob.created_at.desc()).all()
     public_ids={item[0] for item in db.query(GuestOrder.print_job_id).filter(GuestOrder.print_job_id.in_([job.id for job in jobs])).all()}
     return [PrintJobOut.model_validate(job).model_copy(update={"public_order":job.id in public_ids}) for job in jobs]
 
