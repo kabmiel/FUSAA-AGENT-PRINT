@@ -128,7 +128,7 @@ def list_guest_orders(user:User=Depends(current_user),db:Session=Depends(get_db)
     return [guest_order_admin_out(db,order) for order in orders]
 
 def filtered_guest_orders(db:Session,user:User,q:str|None=None,payment_status:str|None=None,job_status:JobStatus|None=None,include_archived:bool=False)->list[GuestOrder]:
-    ids=accessible_workshop_ids(db,user)
+    ids=accessible_workshop_ids(db,user,write=True)
     query=db.query(GuestOrder).join(PrintJob,GuestOrder.print_job_id==PrintJob.id).join(Document,PrintJob.document_id==Document.id).filter(GuestOrder.workshop_id.in_(ids))
     if not include_archived:query=query.filter(GuestOrder.archived_at.is_(None))
     if payment_status:query=query.filter(GuestOrder.payment_status==payment_status)
@@ -174,7 +174,7 @@ async def verify_guest_payment(order_id:str,data:GuestPaymentIn,user:User=Depend
 
 @app.get("/api/v1/public-pricing",response_model=PublicPricingOut)
 def get_public_pricing(user:User=Depends(current_user),db:Session=Depends(get_db)):
-    workshop=public_workshop(db);require_workshop_access(db,user,workshop)
+    workshop=public_workshop(db);require_workshop_write(db,user,workshop.id)
     rule=db.query(PriceRule).filter_by(organization_id=workshop.organization_id,name="Tarif public par défaut").one_or_none()
     pricing=(rule.pricing if rule else {}) or {}
     return PublicPricingOut(rule_id=rule.id if rule else None,base=float(pricing.get("base",0)),per_copy=float(pricing.get("per_copy",0)),per_page=float(pricing.get("per_page",0)))
@@ -214,7 +214,7 @@ def create_guest_receipt(order_id:str,user:User=Depends(current_user),db:Session
 
 @app.get("/api/v1/production/dashboard")
 def production_dashboard(user:User=Depends(current_user),db:Session=Depends(get_db)):
-    ids=accessible_workshop_ids(db,user);now=datetime.now(timezone.utc);start=now-timedelta(days=6)
+    ids=accessible_workshop_ids(db,user,write=True);now=datetime.now(timezone.utc);start=now-timedelta(days=6)
     orders=db.query(GuestOrder).filter(GuestOrder.workshop_id.in_(ids),GuestOrder.archived_at.is_(None)).order_by(GuestOrder.created_at.desc()).all()
     jobs=db.query(PrintJob).filter(PrintJob.workshop_id.in_(ids)).all()
     paid=[order for order in orders if order.payment_status=="PAID"]
@@ -683,10 +683,23 @@ async def create_job_from_document(document_id:str,workshop_id:str,user:User=Dep
     job=PrintJob(organization_id=document.organization_id,workshop_id=workshop.id,document_id=document.id,status=JobStatus.RECEIVED);db.add(job);db.flush();transition(job,JobStatus.ANALYZING);transition(job,JobStatus.WAITING_APPROVAL);audit(db,user.id,"PRINT_JOB_CREATED_FROM_DERIVED_DOCUMENT","PrintJob",job.id,parameters={"document_id":document.id},result="SUCCESS");db.commit();db.refresh(job);await hub.publish("NEW_PRINT_JOB",{"job_id":job.id,"status":job.status},job.organization_id);return job
 
 @app.get("/api/v1/audit",response_model=list[AuditOut])
-def audit_history(limit:int=50,user:User=Depends(current_user),db:Session=Depends(get_db)):
-    # Only return records for resources visible to the caller.
-    visible_jobs={item[0] for item in db.query(PrintJob.id).filter(PrintJob.workshop_id.in_(accessible_workshop_ids(db,user))).all()}
-    return db.query(AuditLog).filter(((AuditLog.resource_type=="PrintJob") & (AuditLog.resource_id.in_(visible_jobs))) | (AuditLog.actor==user.id)).order_by(AuditLog.timestamp.desc()).limit(min(limit,200)).all()
+def audit_history(limit:int=50,q:str|None=None,action:str|None=None,resource_type:str|None=None,user:User=Depends(current_user),db:Session=Depends(get_db)):
+    # Only return records that belong to a workshop visible to the caller.
+    workshop_ids=accessible_workshop_ids(db,user)
+    write_workshop_ids=accessible_workshop_ids(db,user,write=True)
+    admin_org_ids={item[0] for item in db.query(OrganizationMember.organization_id).filter(OrganizationMember.user_id==user.id,OrganizationMember.role.in_(["OWNER","ADMIN"])).all()}
+    admin_workshop_ids={item[0] for item in db.query(Workshop.id).filter(Workshop.organization_id.in_(admin_org_ids)).all()}
+    if settings.single_workshop_id:admin_workshop_ids&={settings.single_workshop_id}
+    visible_jobs={item[0] for item in db.query(PrintJob.id).filter(PrintJob.workshop_id.in_(workshop_ids)).all()}
+    visible_orders={item[0] for item in db.query(GuestOrder.id).filter(GuestOrder.workshop_id.in_(write_workshop_ids)).all()}
+    visible_invoices={item[0] for item in db.query(GuestOrder.invoice_id).filter(GuestOrder.workshop_id.in_(write_workshop_ids),GuestOrder.invoice_id.is_not(None)).all()}
+    visible=((AuditLog.resource_type=="PrintJob") & (AuditLog.resource_id.in_(visible_jobs))) | ((AuditLog.resource_type=="GuestOrder") & (AuditLog.resource_id.in_(visible_orders))) | ((AuditLog.resource_type=="Invoice") & (AuditLog.resource_id.in_(visible_invoices))) | ((AuditLog.resource_type=="Workshop") & (AuditLog.resource_id.in_(admin_workshop_ids))) | (AuditLog.actor==user.id)
+    query=db.query(AuditLog).filter(visible)
+    if action:query=query.filter(AuditLog.action==action)
+    if resource_type:query=query.filter(AuditLog.resource_type==resource_type)
+    if q and q.strip():
+        needle=f"%{q.strip()}%";query=query.filter(or_(AuditLog.action.ilike(needle),AuditLog.actor.ilike(needle),AuditLog.resource_type.ilike(needle),AuditLog.resource_id.ilike(needle)))
+    return query.order_by(AuditLog.timestamp.desc()).limit(min(max(limit,1),200)).all()
 
 @app.get("/api/v1/jobs",response_model=list[PrintJobOut])
 def list_jobs(user:User=Depends(current_user),db:Session=Depends(get_db)):

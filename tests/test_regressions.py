@@ -15,7 +15,7 @@ ROOT=Path(__file__).parents[1]
 sys.path[:0]=[str(ROOT/"backend"),str(ROOT/"local-agent")]
 from app.database import Base
 from app.models import User,Organization,OrganizationMember,Workshop,WorkshopMember,Document,PrintJob,ComputerAgent,Printer,JobStatus,LocalActivity,BrowserLink,GuestOrder
-from app.main import cancel_job,confirm_job,prepare_job,central_supervision,list_jobs,list_documents,list_workshop_members,update_workshop_member,remove_workshop_member,create_guest_order,guest_order_status,verify_guest_payment,list_guest_orders,export_guest_orders,archive_guest_order,restore_guest_order,set_public_pricing,get_public_pricing,refresh_guest_quote,create_guest_receipt,production_dashboard,index,admin_index,public_tracking_page
+from app.main import cancel_job,confirm_job,prepare_job,central_supervision,list_jobs,list_documents,audit_history,list_workshop_members,update_workshop_member,remove_workshop_member,create_guest_order,guest_order_status,verify_guest_payment,list_guest_orders,export_guest_orders,archive_guest_order,restore_guest_order,set_public_pricing,get_public_pricing,refresh_guest_quote,create_guest_receipt,production_dashboard,index,admin_index,public_tracking_page
 from app.connectors import IncomingDocument, ingest_incoming_document
 from app.config import settings
 from app.schemas import JobOptions,GuestPaymentIn,PublicPricingIn
@@ -59,6 +59,8 @@ def test_workshop_roles_are_admin_managed_and_enforced(setup_db):
     assert any(member["user_id"]==viewer.id and member["role"]=="VIEWER" for member in members)
     update_workshop_member("a",viewer.id,WorkshopMemberRoleIn(role="OPERATOR"),admin,db)
     require_workshop_write(db,viewer,"a")
+    assert audit_history(action="WORKSHOP_MEMBER_ROLE_UPDATED",user=admin,db=db)[0].actor==admin.id
+    assert not audit_history(action="WORKSHOP_MEMBER_ROLE_UPDATED",user=viewer,db=db)
     assert remove_workshop_member("a",viewer.id,admin,db)["removed"]
     with pytest.raises(HTTPException):require_workshop_write(db,viewer,"a")
 
