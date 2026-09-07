@@ -31,6 +31,7 @@ function network(){
 }
 function state(){
   const on=Boolean(token);
+  document.documentElement.classList.remove("session-pending");
   $("auth").classList.toggle("hidden",on);$("app").classList.toggle("hidden",!on);$("sessionLoading")?.classList.add("hidden");
   $("org").textContent=org||"—";$("workshop").textContent=workshop||"—";network();
 }
