@@ -178,6 +178,21 @@ def create_guest_receipt(order_id:str,user:User=Depends(current_user),db:Session
     audit(db,user.id,"GUEST_RECEIPT_CREATED","Invoice",invoice.id,parameters={"order_number":order.order_number,"amount":amount},result="SUCCESS");db.commit();db.refresh(order)
     return guest_receipt_out(db,order)
 
+@app.get("/api/v1/production/dashboard")
+def production_dashboard(user:User=Depends(current_user),db:Session=Depends(get_db)):
+    ids=accessible_workshop_ids(db,user);now=datetime.now(timezone.utc);start=now-timedelta(days=6)
+    orders=db.query(GuestOrder).filter(GuestOrder.workshop_id.in_(ids)).order_by(GuestOrder.created_at.desc()).all()
+    jobs=db.query(PrintJob).filter(PrintJob.workshop_id.in_(ids)).all()
+    paid=[order for order in orders if order.payment_status=="PAID"]
+    amounts={job.id:float(job.final_cost or job.estimated_cost or 0) for job in jobs}
+    days=[]
+    for offset in range(6,-1,-1):
+        day=(now-timedelta(days=offset)).date();day_orders=[order for order in orders if utc_datetime(order.created_at).date()==day]
+        day_jobs=[job for job in jobs if job.completed_at and utc_datetime(job.completed_at).date()==day]
+        days.append({"date":day.isoformat(),"orders":len(day_orders),"completed":len(day_jobs),"revenue":sum(amounts.get(order.print_job_id,0) for order in day_orders if order.payment_status=="PAID")})
+    status_counts={status.value:sum(job.status==status for job in jobs) for status in JobStatus}
+    return {"summary":{"public_orders":len(orders),"pending_payment":sum(order.payment_status=="PENDING" for order in orders),"paid_orders":len(paid),"paid_revenue":sum(amounts.get(order.print_job_id,0) for order in paid),"in_production":sum(job.status in {JobStatus.READY,JobStatus.QUEUED,JobStatus.PRINTING} for job in jobs),"failed":status_counts[JobStatus.FAILED.value],"completed":status_counts[JobStatus.COMPLETED.value]},"status_counts":status_counts,"days":days,"recent_orders":[guest_order_admin_out(db,order).model_dump(mode="json") for order in orders[:8]]}
+
 def one(db,model,id):
     obj=db.get(model,id)
     if not obj: raise HTTPException(404,f"{model.__name__} not found")

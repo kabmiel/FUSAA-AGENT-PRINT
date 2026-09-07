@@ -15,7 +15,7 @@ ROOT=Path(__file__).parents[1]
 sys.path[:0]=[str(ROOT/"backend"),str(ROOT/"local-agent")]
 from app.database import Base
 from app.models import User,Organization,OrganizationMember,Workshop,WorkshopMember,Document,PrintJob,ComputerAgent,Printer,JobStatus,LocalActivity,BrowserLink,GuestOrder
-from app.main import cancel_job,confirm_job,prepare_job,central_supervision,list_jobs,list_documents,create_guest_order,guest_order_status,verify_guest_payment,list_guest_orders,set_public_pricing,get_public_pricing,refresh_guest_quote,create_guest_receipt,index,admin_index,public_tracking_page
+from app.main import cancel_job,confirm_job,prepare_job,central_supervision,list_jobs,list_documents,create_guest_order,guest_order_status,verify_guest_payment,list_guest_orders,set_public_pricing,get_public_pricing,refresh_guest_quote,create_guest_receipt,production_dashboard,index,admin_index,public_tracking_page
 from app.connectors import IncomingDocument, ingest_incoming_document
 from app.config import settings
 from app.schemas import JobOptions,GuestPaymentIn,PublicPricingIn
@@ -126,6 +126,9 @@ def test_guest_order_has_phone_and_secure_follow_link(setup_db,tmp_path,monkeypa
     assert receipt.order_number==created.order_number and receipt.amount==325
     assert create_guest_receipt(order.id,admin,db).invoice_number==receipt.invoice_number
     assert list_guest_orders(admin,db)[0].order_number==created.order_number
+    production=production_dashboard(admin,db)
+    assert production["summary"]["paid_orders"]==1 and production["summary"]["paid_revenue"]==325
+    assert production["recent_orders"][0]["order_number"]==created.order_number and len(production["days"])==7
     job=db.get(PrintJob,order.print_job_id);job.status=JobStatus.FAILED;job.error_message="internal printer secret";db.commit()
     failed=guest_order_status(number,token,db)
     assert failed.stage=="Intervention atelier requise" and "secret" not in failed.detail
