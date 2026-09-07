@@ -15,10 +15,10 @@ ROOT=Path(__file__).parents[1]
 sys.path[:0]=[str(ROOT/"backend"),str(ROOT/"local-agent")]
 from app.database import Base
 from app.models import User,Organization,OrganizationMember,Workshop,WorkshopMember,Document,PrintJob,ComputerAgent,Printer,JobStatus,LocalActivity,BrowserLink,GuestOrder
-from app.main import cancel_job,confirm_job,prepare_job,central_supervision,list_jobs,list_documents,create_guest_order,guest_order_status,verify_guest_payment,list_guest_orders,index,admin_index,public_tracking_page
+from app.main import cancel_job,confirm_job,prepare_job,central_supervision,list_jobs,list_documents,create_guest_order,guest_order_status,verify_guest_payment,list_guest_orders,set_public_pricing,get_public_pricing,refresh_guest_quote,create_guest_receipt,index,admin_index,public_tracking_page
 from app.connectors import IncomingDocument, ingest_incoming_document
 from app.config import settings
-from app.schemas import JobOptions,GuestPaymentIn
+from app.schemas import JobOptions,GuestPaymentIn,PublicPricingIn
 from app.ai import execute_safe_tool,OllamaProvider
 from fusaa_agent.main import Agent,Settings
 from fusaa_agent.printing import page_indices
@@ -114,8 +114,15 @@ def test_guest_order_has_phone_and_secure_follow_link(setup_db,tmp_path,monkeypa
     order=db.query(GuestOrder).filter_by(order_number=created.order_number).one()
     with pytest.raises(HTTPException) as error:prepare_job(order.print_job_id,JobOptions(printer_id="printer-a"),admin,db)
     assert error.value.status_code==409 and "Paiement" in error.value.detail
+    pricing=set_public_pricing(PublicPricingIn(base=25,per_copy=50,per_page=100),admin,db)
+    assert pricing.per_page==100 and get_public_pricing(admin,db).base==25
+    quoted=refresh_guest_quote(order.id,admin,db)
+    assert quoted.estimated_cost==325
     updated=asyncio.run(verify_guest_payment(order.id,GuestPaymentIn(status="PAID",reference="espèces"),admin,db))
     assert updated.payment_status=="PAID" and updated.payment_reference=="espèces"
+    receipt=create_guest_receipt(order.id,admin,db)
+    assert receipt.order_number==created.order_number and receipt.amount==325
+    assert create_guest_receipt(order.id,admin,db).invoice_number==receipt.invoice_number
     assert list_guest_orders(admin,db)[0].order_number==created.order_number
 
 def test_public_home_and_admin_have_separate_shells():

@@ -112,7 +112,13 @@ def guest_order_status(number:str,token:str,db:Session=Depends(get_db)):
 
 def guest_order_admin_out(db:Session,order:GuestOrder)->GuestOrderAdminOut:
     job=one(db,PrintJob,order.print_job_id);document=one(db,Document,job.document_id)
-    return GuestOrderAdminOut(id=order.id,order_number=order.order_number,print_job_id=job.id,document_name=document.original_name,phone=order.phone,display_name=order.display_name,status=job.status,payment_status=order.payment_status,payment_reference=order.payment_reference,estimated_cost=float(job.final_cost or job.estimated_cost or 0),created_at=order.created_at,payment_verified_at=order.payment_verified_at)
+    invoice=db.get(Invoice,order.invoice_id) if order.invoice_id else None
+    return GuestOrderAdminOut(id=order.id,order_number=order.order_number,print_job_id=job.id,document_name=document.original_name,phone=order.phone,display_name=order.display_name,status=job.status,payment_status=order.payment_status,payment_reference=order.payment_reference,estimated_cost=float(job.final_cost or job.estimated_cost or 0),created_at=order.created_at,payment_verified_at=order.payment_verified_at,invoice_number=invoice.number if invoice else None)
+
+def guest_receipt_out(db:Session,order:GuestOrder)->GuestReceiptOut:
+    if not order.invoice_id:raise HTTPException(404,"Reçu non généré")
+    invoice=one(db,Invoice,order.invoice_id);job=one(db,PrintJob,order.print_job_id);document=one(db,Document,job.document_id)
+    return GuestReceiptOut(invoice_id=invoice.id,invoice_number=invoice.number,order_number=order.order_number,document_name=document.original_name,amount=float(invoice.total_amount),payment_reference=order.payment_reference,paid_at=order.payment_verified_at or invoice.created_at)
 
 @app.get("/api/v1/guest-orders",response_model=list[GuestOrderAdminOut])
 def list_guest_orders(user:User=Depends(current_user),db:Session=Depends(get_db)):
@@ -130,6 +136,46 @@ async def verify_guest_payment(order_id:str,data:GuestPaymentIn,user:User=Depend
     db.commit();db.refresh(order)
     await hub.publish("GUEST_PAYMENT_UPDATED",{"order_number":order.order_number,"payment_status":order.payment_status,"job_id":order.print_job_id},order.organization_id)
     return guest_order_admin_out(db,order)
+
+@app.get("/api/v1/public-pricing",response_model=PublicPricingOut)
+def get_public_pricing(user:User=Depends(current_user),db:Session=Depends(get_db)):
+    workshop=public_workshop(db);require_workshop_access(db,user,workshop)
+    rule=db.query(PriceRule).filter_by(organization_id=workshop.organization_id,name="Tarif public par défaut").one_or_none()
+    pricing=(rule.pricing if rule else {}) or {}
+    return PublicPricingOut(rule_id=rule.id if rule else None,base=float(pricing.get("base",0)),per_copy=float(pricing.get("per_copy",0)),per_page=float(pricing.get("per_page",0)))
+
+@app.put("/api/v1/public-pricing",response_model=PublicPricingOut)
+def set_public_pricing(data:PublicPricingIn,user:User=Depends(current_user),db:Session=Depends(get_db)):
+    workshop=public_workshop(db);require_workshop_write(db,user,workshop.id)
+    rule=db.query(PriceRule).filter_by(organization_id=workshop.organization_id,name="Tarif public par défaut").one_or_none()
+    pricing=data.model_dump()
+    if not rule:
+        rule=PriceRule(organization_id=workshop.organization_id,name="Tarif public par défaut",priority=0,conditions={},pricing=pricing);db.add(rule)
+    else:rule.enabled=True;rule.priority=0;rule.conditions={};rule.pricing=pricing
+    db.flush();audit(db,user.id,"PUBLIC_PRICING_UPDATED","PriceRule",rule.id,parameters=pricing,result="SUCCESS");db.commit()
+    return PublicPricingOut(rule_id=rule.id,**pricing)
+
+@app.post("/api/v1/guest-orders/{order_id}/quote",response_model=GuestOrderAdminOut)
+def refresh_guest_quote(order_id:str,user:User=Depends(current_user),db:Session=Depends(get_db)):
+    order=one(db,GuestOrder,order_id);require_workshop_write(db,user,order.workshop_id)
+    if order.payment_status=="PAID":raise HTTPException(409,"Le paiement est déjà validé : le devis ne peut plus être modifié.")
+    job=one(db,PrintJob,order.print_job_id);amount,breakdown=estimate_print_cost(db,job);job.estimated_cost=float(amount)
+    cost=db.query(PrintCost).filter_by(print_job_id=job.id).one_or_none()
+    if not cost:db.add(PrintCost(print_job_id=job.id,estimated_amount=float(amount),currency="XOF",breakdown=breakdown))
+    else:cost.estimated_amount=float(amount);cost.breakdown=breakdown
+    audit(db,user.id,"GUEST_QUOTE_REFRESHED","GuestOrder",order.id,parameters={"amount":float(amount),"pricing":breakdown},result="SUCCESS");db.commit();db.refresh(order)
+    return guest_order_admin_out(db,order)
+
+@app.post("/api/v1/guest-orders/{order_id}/receipt",response_model=GuestReceiptOut,status_code=201)
+def create_guest_receipt(order_id:str,user:User=Depends(current_user),db:Session=Depends(get_db)):
+    order=one(db,GuestOrder,order_id);require_workshop_write(db,user,order.workshop_id)
+    if order.payment_status!="PAID":raise HTTPException(409,"Validez le paiement manuel avant de générer le reçu.")
+    if order.invoice_id:return guest_receipt_out(db,order)
+    job=one(db,PrintJob,order.print_job_id);document=one(db,Document,job.document_id);amount=float(job.final_cost or job.estimated_cost or 0)
+    invoice=Invoice(organization_id=order.organization_id,number=f"REC-{datetime.now(timezone.utc):%Y%m%d}-{secrets.token_hex(3).upper()}",status="PAID",currency="XOF",total_amount=amount)
+    db.add(invoice);db.flush();db.add(InvoiceLine(invoice_id=invoice.id,print_job_id=job.id,description=f"Commande {order.order_number} · {document.original_name}",quantity=1,unit_amount=amount,total_amount=amount));db.add(Payment(invoice_id=invoice.id,amount=amount,method="MANUAL",reference=order.payment_reference,status="CONFIRMED"));order.invoice_id=invoice.id
+    audit(db,user.id,"GUEST_RECEIPT_CREATED","Invoice",invoice.id,parameters={"order_number":order.order_number,"amount":amount},result="SUCCESS");db.commit();db.refresh(order)
+    return guest_receipt_out(db,order)
 
 def one(db,model,id):
     obj=db.get(model,id)

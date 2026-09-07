@@ -59,7 +59,23 @@ class GuestOrderAdminOut(BaseModel):
     estimated_cost: float
     created_at: datetime
     payment_verified_at: datetime|None
+    invoice_number: str|None=None
     currency: str="XOF"
+class PublicPricingIn(BaseModel):
+    base: float=Field(default=0,ge=0)
+    per_copy: float=Field(default=0,ge=0)
+    per_page: float=Field(default=0,ge=0)
+class PublicPricingOut(PublicPricingIn):
+    rule_id: str|None=None
+class GuestReceiptOut(BaseModel):
+    invoice_id: str
+    invoice_number: str
+    order_number: str
+    document_name: str
+    amount: float
+    currency: str="XOF"
+    payment_reference: str|None=None
+    paid_at: datetime
 class CommandResultIn(BaseModel): status: str; result: dict={}; error_message: str|None=None
 class AuditOut(ORM): id:str; actor:str; action:str; resource_type:str; resource_id:str; result:str; timestamp:datetime
 class WorkshopSettingsIn(BaseModel):
