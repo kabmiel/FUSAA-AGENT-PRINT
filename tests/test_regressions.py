@@ -74,6 +74,13 @@ def test_system_health_exposes_verified_backup_timestamp(setup_db,tmp_path,monke
     report=main.local_system_health(admin)
     assert report["supervisor"]=="running" and report["backup_last_at"]=="2026-09-07T12:00:00+00:00"
 
+def test_production_deployment_requires_postgres_and_safe_start_command():
+    from app.config import Settings
+    safe=Settings(_env_file=None,environment="production",database_url="postgresql+psycopg://user:pass@db.example/postgres",jwt_secret="x"*48,cors_origins="https://fusaa.example",trusted_hosts="fusaa.example")
+    safe.validate_runtime()
+    with pytest.raises(RuntimeError):Settings(_env_file=None,environment="production",database_url="sqlite:///./fusaa.db",jwt_secret="x"*48,cors_origins="https://fusaa.example").validate_runtime()
+    assert "alembic upgrade head && uvicorn" in (ROOT/"render.yaml").read_text(encoding="utf-8")
+
 def test_finish_persists_and_preserves_job_and_document(setup_db):
     from app.main import finish_job
     from app.models import AuditLog

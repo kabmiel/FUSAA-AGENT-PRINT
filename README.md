@@ -12,7 +12,7 @@ Upload a PDF/image → inspect and create a `WAITING_APPROVAL` job → select a 
 ## Quick start (development)
 
 ```powershell
-Copy-Item .env.example .env
+# Renseignez le fichier .env unique à la racine du projet.
 docker compose up --build
 ```
 
