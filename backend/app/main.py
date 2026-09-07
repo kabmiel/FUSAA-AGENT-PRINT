@@ -3,6 +3,7 @@ import jwt
 import hashlib
 import json
 import io
+import csv
 import zipfile
 from contextlib import asynccontextmanager
 from datetime import datetime, timedelta, timezone
@@ -123,6 +124,10 @@ def guest_receipt_out(db:Session,order:GuestOrder)->GuestReceiptOut:
 
 @app.get("/api/v1/guest-orders",response_model=list[GuestOrderAdminOut])
 def list_guest_orders(user:User=Depends(current_user),db:Session=Depends(get_db),q:str|None=None,payment_status:str|None=None,job_status:JobStatus|None=None,include_archived:bool=False):
+    orders=filtered_guest_orders(db,user,q,payment_status,job_status,include_archived)
+    return [guest_order_admin_out(db,order) for order in orders]
+
+def filtered_guest_orders(db:Session,user:User,q:str|None=None,payment_status:str|None=None,job_status:JobStatus|None=None,include_archived:bool=False)->list[GuestOrder]:
     ids=accessible_workshop_ids(db,user)
     query=db.query(GuestOrder).join(PrintJob,GuestOrder.print_job_id==PrintJob.id).join(Document,PrintJob.document_id==Document.id).filter(GuestOrder.workshop_id.in_(ids))
     if not include_archived:query=query.filter(GuestOrder.archived_at.is_(None))
@@ -130,8 +135,16 @@ def list_guest_orders(user:User=Depends(current_user),db:Session=Depends(get_db)
     if job_status:query=query.filter(PrintJob.status==job_status)
     if q and q.strip():
         needle=f"%{q.strip()}%";query=query.filter(or_(GuestOrder.order_number.ilike(needle),GuestOrder.phone.ilike(needle),GuestOrder.display_name.ilike(needle),Document.original_name.ilike(needle)))
-    orders=query.order_by(GuestOrder.created_at.desc()).all()
-    return [guest_order_admin_out(db,order) for order in orders]
+    return query.order_by(GuestOrder.created_at.desc()).all()
+
+@app.get("/api/v1/guest-orders/export.csv")
+def export_guest_orders(user:User=Depends(current_user),db:Session=Depends(get_db),q:str|None=None,payment_status:str|None=None,job_status:JobStatus|None=None,include_archived:bool=False):
+    output=io.StringIO();writer=csv.writer(output)
+    writer.writerow(["Numéro","Document","Client","Téléphone","État impression","Paiement","Montant XOF","Référence","Reçu","Créée le","Archivée le"])
+    for order in filtered_guest_orders(db,user,q,payment_status,job_status,include_archived):
+        item=guest_order_admin_out(db,order)
+        writer.writerow([item.order_number,item.document_name,item.display_name or "",item.phone,item.status.value,item.payment_status,item.estimated_cost,item.payment_reference or "",item.invoice_number or "",item.created_at.isoformat(),item.archived_at.isoformat() if item.archived_at else ""])
+    return PlainTextResponse("\ufeff"+output.getvalue(),media_type="text/csv; charset=utf-8",headers={"Content-Disposition":"attachment; filename=fusaa-commandes.csv"})
 
 @app.post("/api/v1/guest-orders/{order_id}/archive",response_model=GuestOrderAdminOut)
 def archive_guest_order(order_id:str,user:User=Depends(current_user),db:Session=Depends(get_db)):

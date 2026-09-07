@@ -15,7 +15,7 @@ ROOT=Path(__file__).parents[1]
 sys.path[:0]=[str(ROOT/"backend"),str(ROOT/"local-agent")]
 from app.database import Base
 from app.models import User,Organization,OrganizationMember,Workshop,WorkshopMember,Document,PrintJob,ComputerAgent,Printer,JobStatus,LocalActivity,BrowserLink,GuestOrder
-from app.main import cancel_job,confirm_job,prepare_job,central_supervision,list_jobs,list_documents,create_guest_order,guest_order_status,verify_guest_payment,list_guest_orders,archive_guest_order,restore_guest_order,set_public_pricing,get_public_pricing,refresh_guest_quote,create_guest_receipt,production_dashboard,index,admin_index,public_tracking_page
+from app.main import cancel_job,confirm_job,prepare_job,central_supervision,list_jobs,list_documents,create_guest_order,guest_order_status,verify_guest_payment,list_guest_orders,export_guest_orders,archive_guest_order,restore_guest_order,set_public_pricing,get_public_pricing,refresh_guest_quote,create_guest_receipt,production_dashboard,index,admin_index,public_tracking_page
 from app.connectors import IncomingDocument, ingest_incoming_document
 from app.config import settings
 from app.schemas import JobOptions,GuestPaymentIn,PublicPricingIn
@@ -137,6 +137,8 @@ def test_guest_order_has_phone_and_secure_follow_link(setup_db,tmp_path,monkeypa
     assert not list_guest_orders(admin,db)
     assert list_guest_orders(admin,db,q=created.order_number,include_archived=True)[0].id==order.id
     assert restore_guest_order(order.id,admin,db).archived_at is None
+    export=export_guest_orders(admin,db,q=created.order_number)
+    assert export.media_type.startswith("text/csv") and created.order_number in export.body.decode("utf-8")
 
 def test_public_home_and_admin_have_separate_shells():
     public=index().body.decode("utf-8")
