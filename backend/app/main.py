@@ -19,7 +19,7 @@ from .events import agent_hub, hub
 from .models import AgentCommand, AuditLog, CommandStatus, ComputerAgent, Connector, ConnectorEvent, Customer, Document, Invoice, InvoiceLine, JobStatus, Organization, OrganizationMember, Payment, PriceRule, PrintCost, PrintJob, Printer, Product, PushSubscription, Service, User, Workshop, WorkshopMember, WorkshopSettings as WorkshopSettingsModel
 from .schemas import *
 from .security import create_access_token, current_user, hash_password, verify_password
-from .services import ALLOWED_MIMES, audit, build_command, create_preview, inspect_file, issue_agent_key, storage_path, transition
+from .services import DIRECT_PRINT_MIMES, audit, build_command, create_preview, inspect_file, issue_agent_key, storage_path, transition
 from .ai import DeterministicProvider, OllamaProvider, SafetyLevel, TOOL_SAFETY, execute_safe_tool, resolve_job
 from .assistant_schemas import AssistantExecuteRequest, AssistantRequest, AssistantResponse, ToolCall
 from .assistant_flow import workflow_response, safe_result_response
@@ -435,7 +435,7 @@ async def upload_document(organization_id:str,workshop_id:str,request:Request,fi
     content=await file.read();mime=file.content_type or "application/octet-stream"
     try:document,job=ingest_incoming_document(db,IncomingDocument(filename=file.filename or "document",mime_type=mime,content=content,source="UPLOAD",external_id=secrets.token_urlsafe(12),metadata={"uploaded_by":user.id}),organization_id,workshop_id)
     except ValueError as error:
-        code=415 if mime not in ALLOWED_MIMES else 413;raise HTTPException(code,str(error))
+        raise HTTPException(413,str(error))
     except Exception as error:raise HTTPException(422,f"Cannot inspect file: {error}")
     job.idempotency_key=upload_key
     audit(db,user.id,"DOCUMENT_UPLOADED","Document",document.id,parameters={"job_id":job.id});audit(db,user.id,"PRINT_JOB_CREATED","PrintJob",job.id);db.commit();db.refresh(job);await hub.publish("NEW_PRINT_JOB",{"job_id":job.id,"status":job.status},job.organization_id);return job
@@ -512,6 +512,9 @@ def get_job(job_id:str,user:User=Depends(current_user),db:Session=Depends(get_db
 def prepare_job(job_id:str,data:JobOptions,user:User=Depends(current_user),db:Session=Depends(get_db)):
     job=one(db,PrintJob,job_id);require_member(db,user,job.organization_id);printer=one(db,Printer,data.printer_id)
     require_workshop_write(db,user,job.workshop_id)
+    document=one(db,Document,job.document_id)
+    if not document.metadata_json.get("direct_printable",document.mime_type in DIRECT_PRINT_MIMES):
+        raise HTTPException(409,"Ce format est bien reçu, mais doit être converti en PDF ou préparé par l’atelier avant impression.")
     if one(db,ComputerAgent,printer.computer_agent_id).workshop_id!=job.workshop_id:raise HTTPException(422,"Route the job before selecting a printer in another workshop")
     if one(db,Workshop,one(db,ComputerAgent,printer.computer_agent_id).workshop_id).organization_id!=job.organization_id: raise HTTPException(422,"Printer belongs to another organization")
     if job.status!=JobStatus.WAITING_APPROVAL:raise HTTPException(409,"Job is not waiting for approval")

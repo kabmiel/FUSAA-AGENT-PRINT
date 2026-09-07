@@ -14,6 +14,8 @@ sys.path[:0]=[str(ROOT/"backend"),str(ROOT/"local-agent")]
 from app.database import Base
 from app.models import User,Organization,OrganizationMember,Workshop,WorkshopMember,Document,PrintJob,ComputerAgent,Printer,JobStatus,LocalActivity,BrowserLink
 from app.main import cancel_job,confirm_job,prepare_job,central_supervision,list_jobs,list_documents
+from app.connectors import IncomingDocument, ingest_incoming_document
+from app.config import settings
 from app.schemas import JobOptions
 from app.ai import execute_safe_tool,OllamaProvider
 from fusaa_agent.main import Agent,Settings
@@ -80,6 +82,18 @@ def test_sqlite_supervision_and_printer_queries(setup_db):
     db,_,admin=setup_db
     assert len(central_supervision("o",admin,db)["workshops"])==2
     assert len(execute_safe_tool(db,admin,"list_printers",{})["printers"])==2
+
+def test_any_file_is_received_and_non_direct_formats_require_preparation(setup_db,tmp_path,monkeypatch):
+    db,_,admin=setup_db
+    monkeypatch.setattr(settings,"storage_dir",tmp_path)
+    document,job=ingest_incoming_document(db,IncomingDocument(filename="devis.docx",mime_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document",content=b"office-content",source="UPLOAD",external_id="external",metadata={}),"o","a")
+    assert document.preview_key is None
+    assert document.metadata_json["direct_printable"] is False
+    assert document.metadata_json["format_extension"]=="docx"
+    with pytest.raises(HTTPException) as error:
+        prepare_job(job.id,JobOptions(printer_id="printer-a"),admin,db)
+    assert error.value.status_code==409
+    assert "converti en PDF" in error.value.detail
 
 def test_printer_must_match_job_workshop(setup_db):
     db,_,admin=setup_db

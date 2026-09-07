@@ -9,7 +9,10 @@ from sqlalchemy.orm import Session
 from .config import settings
 from .models import AgentCommand, AuditLog, ComputerAgent, Document, JobStatus, PrintJob, Printer
 
-ALLOWED_MIMES={"application/pdf","image/jpeg","image/png"}
+DIRECT_PRINT_MIMES={"application/pdf","image/jpeg","image/png"}
+# Uploads accept all file types. This alias remains for integrations that
+# imported the former name and now describes formats printable without conversion.
+ALLOWED_MIMES=DIRECT_PRINT_MIMES
 TERMINAL={JobStatus.COMPLETED,JobStatus.FAILED,JobStatus.CANCELLED,JobStatus.IGNORED}
 TRANSITIONS={JobStatus.RECEIVED:{JobStatus.ANALYZING},JobStatus.ANALYZING:{JobStatus.WAITING_APPROVAL,JobStatus.FAILED},JobStatus.WAITING_APPROVAL:{JobStatus.READY,JobStatus.IGNORED,JobStatus.CANCELLED},JobStatus.READY:{JobStatus.QUEUED,JobStatus.CANCELLED},JobStatus.QUEUED:{JobStatus.PRINTING,JobStatus.FAILED,JobStatus.CANCELLED},JobStatus.PRINTING:{JobStatus.COMPLETED,JobStatus.FAILED,JobStatus.CANCELLED}}
 

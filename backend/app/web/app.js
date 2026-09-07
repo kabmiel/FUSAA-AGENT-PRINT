@@ -193,7 +193,7 @@ async function showJob(){
   if(deleteButton)deleteButton.classList.toggle("hidden",!job||!["WAITING_APPROVAL","READY","FAILED","CANCELLED","COMPLETED","IGNORED"].includes(job.status));
   if(!document){$("inspection").textContent="Aucun travail sélectionné.";$("preview").classList.add("hidden");return}
   const meta=document.metadata_json||{};
-  const details=[document.original_name,meta.pages?`${meta.pages} page(s)`:null,meta.orientation?`Orientation : ${meta.orientation.toLowerCase()}`:null,meta.width_points&&meta.height_points?`Format detecte : ${Math.round(meta.width_points)} x ${Math.round(meta.height_points)} pt`:null].filter(Boolean);
+  const details=[document.original_name,meta.pages?`${meta.pages} page(s)`:null,meta.orientation?`Orientation : ${meta.orientation.toLowerCase()}`:null,meta.width_points&&meta.height_points?`Format detecte : ${Math.round(meta.width_points)} x ${Math.round(meta.height_points)} pt`:null,meta.direct_printable===false?`Format ${meta.format_extension||document.mime_type} : conversion atelier requise avant impression.`:null,...(meta.warnings||[])].filter(Boolean);
   $("inspection").textContent=details.join("\n")||"Document pret a etre configure.";
   try{
     const response=await fetch("/api/v1/documents/"+encodeURIComponent(document.id)+"/preview",{headers:{Authorization:"Bearer "+token}});
