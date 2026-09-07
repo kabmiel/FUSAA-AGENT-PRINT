@@ -6,6 +6,8 @@ from datetime import datetime,timezone
 from pathlib import Path
 from types import SimpleNamespace
 import pytest
+from io import BytesIO
+from starlette.datastructures import Headers, UploadFile
 from fastapi import HTTPException
 from sqlalchemy import create_engine
 from sqlalchemy.orm import Session
@@ -13,7 +15,7 @@ ROOT=Path(__file__).parents[1]
 sys.path[:0]=[str(ROOT/"backend"),str(ROOT/"local-agent")]
 from app.database import Base
 from app.models import User,Organization,OrganizationMember,Workshop,WorkshopMember,Document,PrintJob,ComputerAgent,Printer,JobStatus,LocalActivity,BrowserLink
-from app.main import cancel_job,confirm_job,prepare_job,central_supervision,list_jobs,list_documents
+from app.main import cancel_job,confirm_job,prepare_job,central_supervision,list_jobs,list_documents,create_guest_order,guest_order_status,index,admin_index,public_tracking_page
 from app.connectors import IncomingDocument, ingest_incoming_document
 from app.config import settings
 from app.schemas import JobOptions
@@ -94,6 +96,29 @@ def test_any_file_is_received_and_non_direct_formats_require_preparation(setup_d
         prepare_job(job.id,JobOptions(printer_id="printer-a"),admin,db)
     assert error.value.status_code==409
     assert "converti en PDF" in error.value.detail
+
+def test_guest_order_has_phone_and_secure_follow_link(setup_db,tmp_path,monkeypatch):
+    db,_,_=setup_db
+    monkeypatch.setattr(settings,"storage_dir",tmp_path)
+    monkeypatch.setattr(settings,"single_workshop_id","a")
+    upload=UploadFile(filename="notice.txt",file=BytesIO(b"guest document"),headers=Headers({"content-type":"text/plain"}))
+    created=asyncio.run(create_guest_order(None,upload,"+22790000000","Client test",2,"A4","MONOCHROME",False,db))
+    assert created.order_number.startswith("FUS-")
+    assert "/suivi/" in created.tracking_url
+    number,token=created.tracking_url.rsplit("/",2)[-2:]
+    followed=guest_order_status(number,token,db)
+    assert followed.order_number==created.order_number
+    assert followed.document_name=="notice.txt"
+    with pytest.raises(HTTPException) as error:guest_order_status(number,"wrong-token",db)
+    assert error.value.status_code==404
+
+def test_public_home_and_admin_have_separate_shells():
+    public=index().body.decode("utf-8")
+    tracked=public_tracking_page("FUS-20260101-ABCDEF","secret").body.decode("utf-8")
+    admin=admin_index().body.decode("utf-8")
+    assert "guestPhone" in public and "public.js" in public
+    assert tracked==public
+    assert "app.js" in admin and "guestPhone" not in admin
 
 def test_printer_must_match_job_workshop(setup_db):
     db,_,admin=setup_db

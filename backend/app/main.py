@@ -7,7 +7,7 @@ import zipfile
 from contextlib import asynccontextmanager
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from fastapi import Depends, FastAPI, File, HTTPException, Request, UploadFile, WebSocket
+from fastapi import Depends, FastAPI, File, Form, HTTPException, Request, UploadFile, WebSocket
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.trustedhost import TrustedHostMiddleware
 from fastapi.responses import FileResponse, HTMLResponse, PlainTextResponse, StreamingResponse
@@ -16,7 +16,7 @@ from sqlalchemy import text, or_, JSON
 from .config import settings
 from .database import Base, SessionLocal, engine, get_db
 from .events import agent_hub, hub
-from .models import AgentCommand, AuditLog, CommandStatus, ComputerAgent, Connector, ConnectorEvent, Customer, Document, Invoice, InvoiceLine, JobStatus, Organization, OrganizationMember, Payment, PriceRule, PrintCost, PrintJob, Printer, Product, PushSubscription, Service, User, Workshop, WorkshopMember, WorkshopSettings as WorkshopSettingsModel
+from .models import AgentCommand, AuditLog, CommandStatus, ComputerAgent, Connector, ConnectorEvent, Customer, Document, GuestOrder, Invoice, InvoiceLine, JobStatus, Organization, OrganizationMember, Payment, PriceRule, PrintCost, PrintJob, Printer, Product, PushSubscription, Service, User, Workshop, WorkshopMember, WorkshopSettings as WorkshopSettingsModel
 from .schemas import *
 from .security import create_access_token, current_user, hash_password, verify_password
 from .services import DIRECT_PRINT_MIMES, audit, build_command, create_preview, inspect_file, issue_agent_key, storage_path, transition
@@ -78,6 +78,38 @@ def readyz():
     except Exception as error:raise HTTPException(503,"Service not ready") from error
     return {"status":"ready"}
 
+@app.get("/api/v1/public/workshop")
+def public_workshop_details(db:Session=Depends(get_db)):
+    workshop=public_workshop(db)
+    return {"name":workshop.name,"workshop_id":workshop.id,"formats":["PDF","JPG","PNG","Autres fichiers"],"currency":"XOF"}
+
+@app.post("/api/v1/public/orders",response_model=GuestOrderOut,status_code=201)
+async def create_guest_order(
+    request:Request,file:UploadFile=File(...),phone:str=Form(...,min_length=5,max_length=50),
+    display_name:str|None=Form(default=None,max_length=160),copies:int=Form(default=1),
+    paper_size:str|None=Form(default="A4"),color_mode:str|None=Form(default="MONOCHROME"),
+    duplex:bool=Form(default=False),db:Session=Depends(get_db),
+):
+    if not 1<=copies<=999:raise HTTPException(422,"Le nombre d’exemplaires doit être compris entre 1 et 999")
+    if paper_size not in {"A3","A4","A5"}:raise HTTPException(422,"Format papier invalide")
+    if color_mode not in {"COLOR","MONOCHROME"}:raise HTTPException(422,"Mode couleur invalide")
+    workshop=public_workshop(db);content=await file.read();mime=file.content_type or "application/octet-stream"
+    try:
+        document,job=ingest_incoming_document(db,IncomingDocument(filename=file.filename or "document",mime_type=mime,content=content,source="PUBLIC_GUEST",external_id=secrets.token_urlsafe(12),metadata={"guest":True}),workshop.organization_id,workshop.id)
+    except ValueError as error:raise HTTPException(413,str(error))
+    except Exception as error:raise HTTPException(422,f"Impossible d’analyser le fichier : {error}")
+    job.copies=copies;job.paper_size=paper_size;job.color_mode=color_mode;job.duplex=duplex
+    amount,breakdown=estimate_print_cost(db,job);job.estimated_cost=float(amount)
+    token=secrets.token_urlsafe(32);order=GuestOrder(organization_id=workshop.organization_id,workshop_id=workshop.id,print_job_id=job.id,order_number=public_order_number(db),phone=phone.strip(),display_name=(display_name or "").strip() or None,access_token_hash=hashlib.sha256(token.encode()).hexdigest())
+    db.add(order);db.flush();audit(db,f"guest:{order.order_number}","GUEST_ORDER_CREATED","GuestOrder",order.id,parameters={"job_id":job.id,"phone":order.phone,"cost":float(amount),"pricing":breakdown},result="SUCCESS");db.commit();db.refresh(job)
+    await hub.publish("GUEST_ORDER_CREATED",{"order_number":order.order_number,"job_id":job.id},workshop.organization_id)
+    return GuestOrderOut(order_number=order.order_number,tracking_url=f"/suivi/{order.order_number}/{token}",status=job.status,payment_status=order.payment_status,estimated_cost=float(amount))
+
+@app.get("/api/v1/public/orders/{number}/{token}",response_model=GuestOrderStatusOut)
+def guest_order_status(number:str,token:str,db:Session=Depends(get_db)):
+    order=public_order_by_token(db,number,token);job=one(db,PrintJob,order.print_job_id);document=one(db,Document,job.document_id)
+    return GuestOrderStatusOut(order_number=order.order_number,document_name=document.original_name,status=job.status,payment_status=order.payment_status,estimated_cost=float(job.final_cost or job.estimated_cost or 0))
+
 def one(db,model,id):
     obj=db.get(model,id)
     if not obj: raise HTTPException(404,f"{model.__name__} not found")
@@ -92,6 +124,26 @@ def can_access_workshop(db,user,workshop):
     return bool(org_member and (org_member.role in {"OWNER","ADMIN"} or db.query(WorkshopMember).filter_by(workshop_id=workshop.id,user_id=user.id).first()))
 def require_workshop_access(db,user,workshop):
     if not can_access_workshop(db,user,workshop):raise HTTPException(403,"No access to this workshop")
+
+def public_workshop(db:Session)->Workshop:
+    if settings.single_workshop_id:
+        workshop=db.get(Workshop,settings.single_workshop_id)
+    else:
+        workshops=db.query(Workshop).limit(2).all()
+        workshop=workshops[0] if len(workshops)==1 else None
+    if not workshop:raise HTTPException(503,"L’atelier public n’est pas encore configuré")
+    return workshop
+
+def public_order_number(db:Session)->str:
+    while True:
+        number=f"FUS-{datetime.now(timezone.utc):%Y%m%d}-{secrets.token_hex(3).upper()}"
+        if not db.query(GuestOrder).filter_by(order_number=number).first():return number
+
+def public_order_by_token(db:Session,number:str,token:str)->GuestOrder:
+    digest=hashlib.sha256(token.encode()).hexdigest()
+    order=db.query(GuestOrder).filter_by(order_number=number).one_or_none()
+    if not order or not secrets.compare_digest(order.access_token_hash,digest):raise HTTPException(404,"Commande introuvable")
+    return order
 @app.post("/api/v1/customers",response_model=CustomerOut,status_code=201)
 def create_customer(data:CustomerIn,user:User=Depends(current_user),db:Session=Depends(get_db)):
     require_member(db,user,data.organization_id);customer=Customer(**data.model_dump());db.add(customer);db.flush();audit(db,user.id,"CUSTOMER_CREATED","Customer",customer.id,result="SUCCESS");db.commit();db.refresh(customer);return customer
@@ -685,7 +737,13 @@ async def agent_socket(ws:WebSocket,agent_id:str):
     except Exception: agent_hub.disconnect(agent_id,ws)
 
 @app.get("/",response_class=HTMLResponse)
-def index():return HTMLResponse((Path(__file__).parent/"web"/"index.html").read_text(encoding="utf-8"))
+def index():return HTMLResponse((Path(__file__).parent/"web"/"public.html").read_text(encoding="utf-8"))
+
+@app.get("/admin",response_class=HTMLResponse)
+def admin_index():return HTMLResponse((Path(__file__).parent/"web"/"index.html").read_text(encoding="utf-8"))
+
+@app.get("/suivi/{number}/{token}",response_class=HTMLResponse)
+def public_tracking_page(number:str,token:str):return HTMLResponse((Path(__file__).parent/"web"/"public.html").read_text(encoding="utf-8"))
 
 @app.get("/browser-extension.zip",include_in_schema=False)
 def browser_extension_download():
@@ -705,5 +763,8 @@ def manifest(): return {"name":"FUSAA Service","short_name":"FUSAA","start_url":
 @app.get("/app.js",response_class=HTMLResponse)
 def app_js():return HTMLResponse((Path(__file__).parent/"web"/"app.js").read_text(encoding="utf-8"),media_type="application/javascript")
 
+@app.get("/public.js",response_class=HTMLResponse)
+def public_js():return HTMLResponse((Path(__file__).parent/"web"/"public.js").read_text(encoding="utf-8"),media_type="application/javascript")
+
 @app.get("/sw.js",response_class=HTMLResponse)
-def service_worker(): return HTMLResponse("""const CACHE='fusaa-pwa-v3';const SHELL=['/','/app.js','/manifest.webmanifest'];self.addEventListener('install',e=>e.waitUntil(caches.open(CACHE).then(c=>c.addAll(SHELL)).then(()=>self.skipWaiting())));self.addEventListener('activate',e=>e.waitUntil(self.clients.claim()));self.addEventListener('fetch',e=>{if(e.request.method!=='GET')return;let u=new URL(e.request.url);if(u.origin!==location.origin||u.pathname.startsWith('/api/'))return;e.respondWith(fetch(e.request).then(r=>{caches.open(CACHE).then(c=>c.put(e.request,r.clone()));return r}).catch(()=>caches.match(e.request).then(r=>r||(e.request.mode==='navigate'?caches.match('/'):undefined))))});self.addEventListener('push',e=>{let d={};try{d=e.data.json()}catch{};e.waitUntil(self.registration.showNotification('FUSAA Service',{body:d.event||'Nouvel événement d’impression',data:d.payload||{}}))});self.addEventListener('notificationclick',e=>{e.notification.close();e.waitUntil(clients.openWindow('/'))});""",media_type="application/javascript")
+def service_worker(): return HTMLResponse("""const CACHE='fusaa-pwa-v4';const SHELL=['/','/public.js','/manifest.webmanifest'];self.addEventListener('install',e=>e.waitUntil(caches.open(CACHE).then(c=>c.addAll(SHELL)).then(()=>self.skipWaiting())));self.addEventListener('activate',e=>e.waitUntil(caches.keys().then(keys=>Promise.all(keys.filter(key=>key!==CACHE).map(key=>caches.delete(key)))).then(()=>self.clients.claim())));self.addEventListener('fetch',e=>{if(e.request.method!=='GET')return;let u=new URL(e.request.url);if(u.origin!==location.origin||u.pathname.startsWith('/api/'))return;e.respondWith(fetch(e.request).then(r=>{caches.open(CACHE).then(c=>c.put(e.request,r.clone()));return r}).catch(()=>caches.match(e.request).then(r=>r||(e.request.mode==='navigate'?caches.match('/'):undefined))))});self.addEventListener('push',e=>{let d={};try{d=e.data.json()}catch{};e.waitUntil(self.registration.showNotification('FUSAA Service',{body:d.event||'Nouvel événement d’impression',data:d.payload||{}}))});self.addEventListener('notificationclick',e=>{e.notification.close();e.waitUntil(clients.openWindow('/'))});""",media_type="application/javascript")

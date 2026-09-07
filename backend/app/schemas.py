@@ -29,6 +29,20 @@ class JobOptions(BaseModel):
     pages:str|None=Field(default=None,max_length=120,pattern=r"^\d+(?:-\d+)?(?:,\d+(?:-\d+)?)*$")
     instructions:str|None=Field(default=None,max_length=2000)
 class PrintJobOut(ORM): id:str; organization_id:str; workshop_id:str; computer_agent_id:str|None; printer_id:str|None; document_id:str; status:JobStatus; copies:int; paper_size:str|None; orientation:str|None; color_mode:str|None; duplex:bool; pages:str|None; instructions:str|None; error_message:str|None; created_at:datetime
+class GuestOrderOut(BaseModel):
+    order_number: str
+    tracking_url: str
+    status: JobStatus
+    payment_status: str
+    estimated_cost: float
+    currency: str="XOF"
+class GuestOrderStatusOut(BaseModel):
+    order_number: str
+    document_name: str
+    status: JobStatus
+    payment_status: str
+    estimated_cost: float
+    currency: str="XOF"
 class CommandResultIn(BaseModel): status: str; result: dict={}; error_message: str|None=None
 class AuditOut(ORM): id:str; actor:str; action:str; resource_type:str; resource_id:str; result:str; timestamp:datetime
 class WorkshopSettingsIn(BaseModel):

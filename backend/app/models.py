@@ -216,6 +216,18 @@ class PrintJob(Timestamped, Base):
     approved_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
+class GuestOrder(Timestamped, Base):
+    __tablename__="guest_orders"
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=uid)
+    organization_id: Mapped[str] = mapped_column(ForeignKey("organizations.id"), index=True)
+    workshop_id: Mapped[str] = mapped_column(ForeignKey("workshops.id"), index=True)
+    print_job_id: Mapped[str] = mapped_column(ForeignKey("print_jobs.id"), unique=True, index=True)
+    order_number: Mapped[str] = mapped_column(String(60), unique=True, index=True)
+    phone: Mapped[str] = mapped_column(String(50), index=True)
+    display_name: Mapped[str | None] = mapped_column(String(160), nullable=True)
+    access_token_hash: Mapped[str] = mapped_column(String(64), unique=True)
+    payment_status: Mapped[str] = mapped_column(String(30), default="PENDING")
+
 class AgentCommand(Timestamped, Base):
     __tablename__="agent_commands"
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=uid)
