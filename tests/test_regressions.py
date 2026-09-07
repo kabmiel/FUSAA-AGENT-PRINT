@@ -15,10 +15,11 @@ ROOT=Path(__file__).parents[1]
 sys.path[:0]=[str(ROOT/"backend"),str(ROOT/"local-agent")]
 from app.database import Base
 from app.models import User,Organization,OrganizationMember,Workshop,WorkshopMember,Document,PrintJob,ComputerAgent,Printer,JobStatus,LocalActivity,BrowserLink,GuestOrder
-from app.main import cancel_job,confirm_job,prepare_job,central_supervision,list_jobs,list_documents,create_guest_order,guest_order_status,verify_guest_payment,list_guest_orders,export_guest_orders,archive_guest_order,restore_guest_order,set_public_pricing,get_public_pricing,refresh_guest_quote,create_guest_receipt,production_dashboard,index,admin_index,public_tracking_page
+from app.main import cancel_job,confirm_job,prepare_job,central_supervision,list_jobs,list_documents,list_workshop_members,update_workshop_member,remove_workshop_member,create_guest_order,guest_order_status,verify_guest_payment,list_guest_orders,export_guest_orders,archive_guest_order,restore_guest_order,set_public_pricing,get_public_pricing,refresh_guest_quote,create_guest_receipt,production_dashboard,index,admin_index,public_tracking_page
 from app.connectors import IncomingDocument, ingest_incoming_document
 from app.config import settings
 from app.schemas import JobOptions,GuestPaymentIn,PublicPricingIn
+from app.multisite_schemas import WorkshopMemberRoleIn
 from app.ai import execute_safe_tool,OllamaProvider
 from fusaa_agent.main import Agent,Settings
 from fusaa_agent.printing import page_indices
@@ -48,6 +49,18 @@ def test_assistant_and_http_share_workshop_scope(setup_db):
     assert len(list_documents(user,db))==1
     assert len(execute_safe_tool(db,user,"list_print_jobs",{})["jobs"])==1
     assert len(execute_safe_tool(db,user,"list_printers",{})["printers"])==1
+
+def test_workshop_roles_are_admin_managed_and_enforced(setup_db):
+    from app.access import require_workshop_write
+    db,viewer,admin=setup_db
+    with pytest.raises(HTTPException) as error:list_workshop_members("a",viewer,db)
+    assert error.value.status_code==403
+    members=list_workshop_members("a",admin,db)
+    assert any(member["user_id"]==viewer.id and member["role"]=="VIEWER" for member in members)
+    update_workshop_member("a",viewer.id,WorkshopMemberRoleIn(role="OPERATOR"),admin,db)
+    require_workshop_write(db,viewer,"a")
+    assert remove_workshop_member("a",viewer.id,admin,db)["removed"]
+    with pytest.raises(HTTPException):require_workshop_write(db,viewer,"a")
 
 def test_finish_persists_and_preserves_job_and_document(setup_db):
     from app.main import finish_job

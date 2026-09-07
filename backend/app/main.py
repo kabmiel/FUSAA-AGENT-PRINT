@@ -30,7 +30,7 @@ from .connector_schemas import ConnectorCreate, ConnectorOut, ConnectorSecretOut
 from .connectors import IncomingDocument, ingest_incoming_document, verify_meta_signature, whatsapp_media_message_ids
 from .business_schemas import CatalogIn, CustomerIn, CustomerOut, FinalCostIn, InvoiceCreate, InvoiceOut, PaymentIn, PriceRuleIn, PriceRuleOut, PrintCostOut, ServiceIn
 from .business import estimate_print_cost
-from .multisite_schemas import RouteJobIn, WorkshopMemberIn
+from .multisite_schemas import RouteJobIn, WorkshopMemberIn, WorkshopMemberRoleIn
 from .observability import RequestAuditMiddleware, configure_logging
 from .local_monitor import router as local_monitor_router
 from .access import accessible_workshop_ids, require_workshop_write, accessible_documents, require_document_access, require_document_write, utc_datetime
@@ -553,6 +553,29 @@ def assign_workshop_member(workshop_id:str,data:WorkshopMemberIn,user:User=Depen
     if member:member.role=data.role
     else:member=WorkshopMember(workshop_id=workshop.id,user_id=target.id,role=data.role);db.add(member)
     audit(db,user.id,"WORKSHOP_MEMBER_ASSIGNED","Workshop",workshop.id,parameters={"user_id":target.id,"role":data.role},result="SUCCESS");db.commit();return {"workshop_id":workshop.id,"user_id":target.id,"role":data.role}
+
+@app.get("/api/v1/workshops/{workshop_id}/members")
+def list_workshop_members(workshop_id:str,user:User=Depends(current_user),db:Session=Depends(get_db)):
+    workshop=one(db,Workshop,workshop_id);require_org_admin(db,user,workshop.organization_id)
+    members=db.query(WorkshopMember).filter_by(workshop_id=workshop.id).all()
+    return [{"user_id":member.user_id,"email":one(db,User,member.user_id).email,"display_name":one(db,User,member.user_id).display_name,"role":member.role,"organization_role":db.query(OrganizationMember).filter_by(organization_id=workshop.organization_id,user_id=member.user_id).one().role} for member in members]
+
+@app.put("/api/v1/workshops/{workshop_id}/members/{member_user_id}")
+def update_workshop_member(workshop_id:str,member_user_id:str,data:WorkshopMemberRoleIn,user:User=Depends(current_user),db:Session=Depends(get_db)):
+    workshop=one(db,Workshop,workshop_id);require_org_admin(db,user,workshop.organization_id)
+    member=db.query(WorkshopMember).filter_by(workshop_id=workshop.id,user_id=member_user_id).one_or_none()
+    if not member:raise HTTPException(404,"Workshop member not found")
+    member.role=data.role;audit(db,user.id,"WORKSHOP_MEMBER_ROLE_UPDATED","Workshop",workshop.id,parameters={"user_id":member_user_id,"role":data.role},result="SUCCESS");db.commit()
+    return {"workshop_id":workshop.id,"user_id":member_user_id,"role":member.role}
+
+@app.delete("/api/v1/workshops/{workshop_id}/members/{member_user_id}")
+def remove_workshop_member(workshop_id:str,member_user_id:str,user:User=Depends(current_user),db:Session=Depends(get_db)):
+    workshop=one(db,Workshop,workshop_id);require_org_admin(db,user,workshop.organization_id)
+    member=db.query(WorkshopMember).filter_by(workshop_id=workshop.id,user_id=member_user_id).one_or_none()
+    if not member:return {"removed":False}
+    if member.user_id==user.id:raise HTTPException(409,"Vous ne pouvez pas retirer votre propre accès administrateur.")
+    db.delete(member);audit(db,user.id,"WORKSHOP_MEMBER_REMOVED","Workshop",workshop.id,parameters={"user_id":member_user_id},result="SUCCESS");db.commit()
+    return {"removed":True}
 
 @app.post("/api/v1/agents",response_model=AgentEnrollmentOut,status_code=201)
 def create_agent(data:AgentIn,user:User=Depends(current_user),db:Session=Depends(get_db)):
