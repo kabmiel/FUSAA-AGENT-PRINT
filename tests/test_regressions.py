@@ -14,11 +14,11 @@ from sqlalchemy.orm import Session
 ROOT=Path(__file__).parents[1]
 sys.path[:0]=[str(ROOT/"backend"),str(ROOT/"local-agent")]
 from app.database import Base
-from app.models import User,Organization,OrganizationMember,Workshop,WorkshopMember,Document,PrintJob,ComputerAgent,Printer,JobStatus,LocalActivity,BrowserLink
-from app.main import cancel_job,confirm_job,prepare_job,central_supervision,list_jobs,list_documents,create_guest_order,guest_order_status,index,admin_index,public_tracking_page
+from app.models import User,Organization,OrganizationMember,Workshop,WorkshopMember,Document,PrintJob,ComputerAgent,Printer,JobStatus,LocalActivity,BrowserLink,GuestOrder
+from app.main import cancel_job,confirm_job,prepare_job,central_supervision,list_jobs,list_documents,create_guest_order,guest_order_status,verify_guest_payment,list_guest_orders,index,admin_index,public_tracking_page
 from app.connectors import IncomingDocument, ingest_incoming_document
 from app.config import settings
-from app.schemas import JobOptions
+from app.schemas import JobOptions,GuestPaymentIn
 from app.ai import execute_safe_tool,OllamaProvider
 from fusaa_agent.main import Agent,Settings
 from fusaa_agent.printing import page_indices
@@ -98,7 +98,7 @@ def test_any_file_is_received_and_non_direct_formats_require_preparation(setup_d
     assert "converti en PDF" in error.value.detail
 
 def test_guest_order_has_phone_and_secure_follow_link(setup_db,tmp_path,monkeypatch):
-    db,_,_=setup_db
+    db,_,admin=setup_db
     monkeypatch.setattr(settings,"storage_dir",tmp_path)
     monkeypatch.setattr(settings,"single_workshop_id","a")
     upload=UploadFile(filename="notice.txt",file=BytesIO(b"guest document"),headers=Headers({"content-type":"text/plain"}))
@@ -111,6 +111,12 @@ def test_guest_order_has_phone_and_secure_follow_link(setup_db,tmp_path,monkeypa
     assert followed.document_name=="notice.txt"
     with pytest.raises(HTTPException) as error:guest_order_status(number,"wrong-token",db)
     assert error.value.status_code==404
+    order=db.query(GuestOrder).filter_by(order_number=created.order_number).one()
+    with pytest.raises(HTTPException) as error:prepare_job(order.print_job_id,JobOptions(printer_id="printer-a"),admin,db)
+    assert error.value.status_code==409 and "Paiement" in error.value.detail
+    updated=asyncio.run(verify_guest_payment(order.id,GuestPaymentIn(status="PAID",reference="espèces"),admin,db))
+    assert updated.payment_status=="PAID" and updated.payment_reference=="espèces"
+    assert list_guest_orders(admin,db)[0].order_number==created.order_number
 
 def test_public_home_and_admin_have_separate_shells():
     public=index().body.decode("utf-8")

@@ -227,6 +227,9 @@ class GuestOrder(Timestamped, Base):
     display_name: Mapped[str | None] = mapped_column(String(160), nullable=True)
     access_token_hash: Mapped[str] = mapped_column(String(64), unique=True)
     payment_status: Mapped[str] = mapped_column(String(30), default="PENDING")
+    payment_reference: Mapped[str | None] = mapped_column(String(120), nullable=True)
+    payment_verified_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    payment_verified_by: Mapped[str | None] = mapped_column(ForeignKey("users.id"), nullable=True)
 
 class AgentCommand(Timestamped, Base):
     __tablename__="agent_commands"

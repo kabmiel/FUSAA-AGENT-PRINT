@@ -110,6 +110,27 @@ def guest_order_status(number:str,token:str,db:Session=Depends(get_db)):
     order=public_order_by_token(db,number,token);job=one(db,PrintJob,order.print_job_id);document=one(db,Document,job.document_id)
     return GuestOrderStatusOut(order_number=order.order_number,document_name=document.original_name,status=job.status,payment_status=order.payment_status,estimated_cost=float(job.final_cost or job.estimated_cost or 0))
 
+def guest_order_admin_out(db:Session,order:GuestOrder)->GuestOrderAdminOut:
+    job=one(db,PrintJob,order.print_job_id);document=one(db,Document,job.document_id)
+    return GuestOrderAdminOut(id=order.id,order_number=order.order_number,print_job_id=job.id,document_name=document.original_name,phone=order.phone,display_name=order.display_name,status=job.status,payment_status=order.payment_status,payment_reference=order.payment_reference,estimated_cost=float(job.final_cost or job.estimated_cost or 0),created_at=order.created_at,payment_verified_at=order.payment_verified_at)
+
+@app.get("/api/v1/guest-orders",response_model=list[GuestOrderAdminOut])
+def list_guest_orders(user:User=Depends(current_user),db:Session=Depends(get_db)):
+    ids=accessible_workshop_ids(db,user)
+    orders=db.query(GuestOrder).filter(GuestOrder.workshop_id.in_(ids)).order_by(GuestOrder.created_at.desc()).all()
+    return [guest_order_admin_out(db,order) for order in orders]
+
+@app.put("/api/v1/guest-orders/{order_id}/payment",response_model=GuestOrderAdminOut)
+async def verify_guest_payment(order_id:str,data:GuestPaymentIn,user:User=Depends(current_user),db:Session=Depends(get_db)):
+    order=one(db,GuestOrder,order_id);require_workshop_write(db,user,order.workshop_id)
+    order.payment_status=data.status;order.payment_reference=(data.reference or "").strip() or None
+    if data.status=="PAID":order.payment_verified_at=datetime.now(timezone.utc);order.payment_verified_by=user.id
+    else:order.payment_verified_at=None;order.payment_verified_by=None
+    audit(db,user.id,"GUEST_PAYMENT_UPDATED","GuestOrder",order.id,parameters={"order_number":order.order_number,"status":data.status,"reference":order.payment_reference},result="SUCCESS")
+    db.commit();db.refresh(order)
+    await hub.publish("GUEST_PAYMENT_UPDATED",{"order_number":order.order_number,"payment_status":order.payment_status,"job_id":order.print_job_id},order.organization_id)
+    return guest_order_admin_out(db,order)
+
 def one(db,model,id):
     obj=db.get(model,id)
     if not obj: raise HTTPException(404,f"{model.__name__} not found")
@@ -564,6 +585,9 @@ def get_job(job_id:str,user:User=Depends(current_user),db:Session=Depends(get_db
 def prepare_job(job_id:str,data:JobOptions,user:User=Depends(current_user),db:Session=Depends(get_db)):
     job=one(db,PrintJob,job_id);require_member(db,user,job.organization_id);printer=one(db,Printer,data.printer_id)
     require_workshop_write(db,user,job.workshop_id)
+    guest_order=db.query(GuestOrder).filter_by(print_job_id=job.id).one_or_none()
+    if guest_order and guest_order.payment_status!="PAID":
+        raise HTTPException(409,"Paiement de la commande publique à valider avant la préparation de l’impression.")
     document=one(db,Document,job.document_id)
     if not document.metadata_json.get("direct_printable",document.mime_type in DIRECT_PRINT_MIMES):
         raise HTTPException(409,"Ce format est bien reçu, mais doit être converti en PDF ou préparé par l’atelier avant impression.")

@@ -43,6 +43,23 @@ class GuestOrderStatusOut(BaseModel):
     payment_status: str
     estimated_cost: float
     currency: str="XOF"
+class GuestPaymentIn(BaseModel):
+    status: Literal["PENDING","PAID","REJECTED"]
+    reference: str|None=Field(default=None,max_length=120)
+class GuestOrderAdminOut(BaseModel):
+    id: str
+    order_number: str
+    print_job_id: str
+    document_name: str
+    phone: str
+    display_name: str|None
+    status: JobStatus
+    payment_status: str
+    payment_reference: str|None
+    estimated_cost: float
+    created_at: datetime
+    payment_verified_at: datetime|None
+    currency: str="XOF"
 class CommandResultIn(BaseModel): status: str; result: dict={}; error_message: str|None=None
 class AuditOut(ORM): id:str; actor:str; action:str; resource_type:str; resource_id:str; result:str; timestamp:datetime
 class WorkshopSettingsIn(BaseModel):
