@@ -15,7 +15,7 @@ ROOT=Path(__file__).parents[1]
 sys.path[:0]=[str(ROOT/"backend"),str(ROOT/"local-agent")]
 from app.database import Base
 from app.models import User,Organization,OrganizationMember,Workshop,WorkshopMember,Document,PrintJob,ComputerAgent,Printer,JobStatus,LocalActivity,BrowserLink,GuestOrder
-from app.main import cancel_job,confirm_job,prepare_job,central_supervision,list_jobs,list_documents,audit_history,list_workshop_members,update_workshop_member,remove_workshop_member,create_guest_order,guest_order_status,verify_guest_payment,list_guest_orders,export_guest_orders,archive_guest_order,restore_guest_order,set_public_pricing,get_public_pricing,refresh_guest_quote,create_guest_receipt,production_dashboard,index,admin_index,public_tracking_page,delete_job
+from app.main import cancel_job,confirm_job,prepare_job,central_supervision,list_jobs,list_documents,audit_history,list_workshop_members,update_workshop_member,remove_workshop_member,create_guest_order,guest_order_status,verify_guest_payment,list_guest_orders,export_guest_orders,archive_guest_order,restore_guest_order,set_public_pricing,get_public_pricing,refresh_guest_quote,create_guest_receipt,production_dashboard,index,admin_index,public_tracking_page,delete_job,archive_public_job
 from app.connectors import IncomingDocument, ingest_incoming_document
 from app.config import settings
 from app.schemas import JobOptions,GuestPaymentIn,PublicPricingIn
@@ -164,9 +164,10 @@ def test_guest_order_has_phone_and_secure_follow_link(setup_db,tmp_path,monkeypa
     assert production["summary"]["paid_orders"]==1 and production["summary"]["paid_revenue"]==325
     assert production["recent_orders"][0]["order_number"]==created.order_number and len(production["days"])==7
     job=db.get(PrintJob,order.print_job_id);job.status=JobStatus.FAILED;job.error_message="internal printer secret";db.commit()
+    assert next(item.public_order for item in list_jobs(admin,db) if item.id==job.id)
     failed=guest_order_status(number,token,db)
     assert failed.stage=="Intervention atelier requise" and "secret" not in failed.detail
-    archived=archive_guest_order(order.id,admin,db)
+    archived=archive_public_job(job.id,admin,db)
     assert archived.archived_at is not None
     assert not list_guest_orders(admin,db)
     assert list_guest_orders(admin,db,q=created.order_number,include_archived=True)[0].id==order.id

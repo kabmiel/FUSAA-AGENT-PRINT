@@ -704,7 +704,9 @@ def audit_history(limit:int=50,q:str|None=None,action:str|None=None,resource_typ
 @app.get("/api/v1/jobs",response_model=list[PrintJobOut])
 def list_jobs(user:User=Depends(current_user),db:Session=Depends(get_db)):
     acknowledged=db.query(AuditLog.resource_id).filter_by(resource_type="PrintJob",action="PRINT_JOB_FINISH_CONFIRMED")
-    return db.query(PrintJob).filter(PrintJob.workshop_id.in_(accessible_workshop_ids(db,user)),~PrintJob.id.in_(acknowledged)).order_by(PrintJob.created_at.desc()).all()
+    jobs=db.query(PrintJob).filter(PrintJob.workshop_id.in_(accessible_workshop_ids(db,user)),~PrintJob.id.in_(acknowledged)).order_by(PrintJob.created_at.desc()).all()
+    public_ids={item[0] for item in db.query(GuestOrder.print_job_id).filter(GuestOrder.print_job_id.in_([job.id for job in jobs])).all()}
+    return [PrintJobOut.model_validate(job).model_copy(update={"public_order":job.id in public_ids}) for job in jobs]
 
 @app.post("/api/v1/jobs/{job_id}/finish")
 def finish_job(job_id:str,user:User=Depends(current_user),db:Session=Depends(get_db)):
@@ -719,7 +721,7 @@ def finish_job(job_id:str,user:User=Depends(current_user),db:Session=Depends(get
 
 @app.get("/api/v1/jobs/{job_id}",response_model=PrintJobOut)
 def get_job(job_id:str,user:User=Depends(current_user),db:Session=Depends(get_db)):
-    job=one(db,PrintJob,job_id);require_member(db,user,job.organization_id);require_workshop_access(db,user,one(db,Workshop,job.workshop_id));return job
+    job=one(db,PrintJob,job_id);require_member(db,user,job.organization_id);require_workshop_access(db,user,one(db,Workshop,job.workshop_id));return PrintJobOut.model_validate(job).model_copy(update={"public_order":db.query(GuestOrder).filter_by(print_job_id=job.id).first() is not None})
 
 @app.post("/api/v1/jobs/{job_id}/prepare",response_model=PrintJobOut)
 def prepare_job(job_id:str,data:JobOptions,user:User=Depends(current_user),db:Session=Depends(get_db)):
@@ -794,6 +796,13 @@ def delete_job(job_id:str,user:User=Depends(current_user),db:Session=Depends(get
     audit(db,user.id,"PRINT_JOB_DELETED","PrintJob",job.id,result="SUCCESS")
     db.delete(job);db.commit()
     return {"job_id":job_id,"deleted":True}
+
+@app.post("/api/v1/jobs/{job_id}/archive-public",response_model=GuestOrderAdminOut)
+def archive_public_job(job_id:str,user:User=Depends(current_user),db:Session=Depends(get_db)):
+    job=one(db,PrintJob,job_id);require_workshop_write(db,user,job.workshop_id)
+    order=db.query(GuestOrder).filter_by(print_job_id=job.id).one_or_none()
+    if not order:raise HTTPException(404,"Ce travail n'est pas une commande publique")
+    return archive_guest_order(order.id,user,db)
 
 @app.post("/api/v1/jobs/{job_id}/retry",response_model=PrintJobOut)
 def retry_job(job_id:str,user:User=Depends(current_user),db:Session=Depends(get_db)):

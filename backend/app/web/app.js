@@ -137,7 +137,7 @@ function renderJobCards(items,documents){
       (item.status==="WAITING_APPROVAL"?'<button onclick="openJobGlass(\''+id+'\',\'prepare\')">Préparer</button>':'')+
       (stopped?'<button class="secondary" onclick="openJobGlass(\''+id+'\',\'retry\')">Relancer</button>':'')+
       (done?'<button class="finish-action" onclick="openJobGlass(\''+id+'\',\'finish\')">✓ Confirmer la fin du travail</button>':'')+
-      (stopped||["WAITING_APPROVAL","READY"].includes(item.status)?'<button class="danger" onclick="openJobGlass(\''+id+'\',\'delete\')">Supprimer</button>':'')+'</div>';
+      (item.public_order?(stopped?'<button class="secondary" onclick="openJobGlass(\''+id+'\',\'archive\')">Archiver</button>':''):((stopped||["WAITING_APPROVAL","READY"].includes(item.status))?'<button class="danger" onclick="openJobGlass(\''+id+'\',\'delete\')">Supprimer</button>':''))+'</div>';
     let node=existing.get(item.id);
     if(!node){node=document.createElement("article");node.dataset.jobId=item.id;target.append(node)}
     existing.delete(item.id);
@@ -368,13 +368,15 @@ function openJobGlass(id,mode="view"){
   $("job").value=id;
   $("glassFeedback").textContent="";
   $("glassFile").textContent=docs[job.document_id]?.original_name||id;
-  const decision=["finish","retry","delete"].includes(mode);
+  const decision=["finish","retry","delete","archive"].includes(mode);
   $("glassEditor").hidden=decision;
   $("glassDecision").hidden=!decision;
   const titles={view:"Aperçu et suivi",prepare:"Paramétrer l’impression",finish:"Confirmer la fin du travail",retry:"Relancer le travail",delete:"Supprimer le travail"};
+  titles.archive="Archiver le travail";
   $("glassTitle").textContent=titles[mode]||titles.view;
   $("glassExecute").textContent=titles[mode]||"Confirmer";
   $("glassExplanation").textContent=mode==="finish"?"Confirmez que le travail est terminé. Il sera retiré de la liste active et conservé dans l’historique.":mode==="delete"?"Ce travail sera supprimé de la liste. Le document source sera conservé.":mode==="retry"?"Le travail sera remis en préparation. Vérifiez la sortie papier avant de relancer une impression échouée.":"";
+  if(mode==="archive")$("glassExplanation").textContent="Cette commande publique restera dans l'historique et ne sera jamais supprimée.";
   // Reuse the existing form and its IDs; no duplicate print controls.
   for(const [field,key] of [["printer","printer_id"],["copies","copies"],["paper","paper_size"],["orientation","orientation"],["color","color_mode"],["pages","pages"],["instructions","instructions"]]){
     if(job[key]!=null)$(field).value=job[key];
@@ -387,14 +389,15 @@ function openJobGlass(id,mode="view"){
 async function executeGlassAction(){
   if(glassBusy||!glassAction)return;
   const {id,mode}=glassAction;
-  if(!["finish","retry","delete"].includes(mode))return;
+  if(!["finish","retry","delete","archive"].includes(mode))return;
   glassBusy=true;$("glassExecute").disabled=true;
   $("glassFeedback").textContent="Traitement en cours…";
   try{
-    await api("/api/v1/jobs/"+encodeURIComponent(id)+(mode==="delete"?"":mode==="retry"?"/retry":"/finish"),{method:mode==="delete"?"DELETE":"POST"});
+    await api("/api/v1/jobs/"+encodeURIComponent(id)+(mode==="delete"?"":mode==="retry"?"/retry":mode==="archive"?"/archive-public":"/finish"),{method:mode==="delete"?"DELETE":"POST"});
     await refresh();
     glassBusy=false;
     if(mode==="retry")openJobGlass(id,"prepare");
+    else if(mode==="archive"){$("jobGlass").close();tell("Commande publique archivée : elle reste dans l'historique.");return}
     else{$("jobGlass").close();tell(mode==="finish"?"Fin confirmée : travail retiré de la liste active.":"Travail supprimé.")}
   }catch(error){$("glassFeedback").textContent=error.message}
   finally{glassBusy=false;$("glassExecute").disabled=false}
