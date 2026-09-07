@@ -170,8 +170,10 @@ def test_public_home_and_admin_have_separate_shells():
     tracked=public_tracking_page("FUS-20260101-ABCDEF","secret").body.decode("utf-8")
     admin=admin_index().body.decode("utf-8")
     assert "guestPhone" in public and "public.js" in public
+    assert 'aria-live="polite"' in public and "prefers-reduced-motion" in public
     assert tracked==public
     assert "app.js" in admin and "guestPhone" not in admin
+    assert "fontScale" in (ROOT/"backend"/"app"/"web"/"app.js").read_text(encoding="utf-8")
 
 def test_printer_must_match_job_workshop(setup_db):
     db,_,admin=setup_db
