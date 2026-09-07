@@ -158,6 +158,9 @@ async function refresh(){
   try{
     await restoreWorkspace();state();
     const savedJob=$("job").value,savedPrinter=$("printer").value;
+    // The print form lives inside the glass dialog. Preserve its in-progress
+    // choices before refresh rebuilds the printer list.
+    const formValues=$("jobGlass")?.open?Object.fromEntries(["printer","copies","paper","orientation","color","pages","instructions","duplex"].map(id=>[id,$(id).type==="checkbox"?$(id).checked:$(id).value])):null;
     const results=await Promise.all([api("/api/v1/dashboard"),api("/api/v1/jobs"),api("/api/v1/printers"),api("/api/v1/documents"),api("/api/v1/audit"),api("/api/v1/activities"),api("/api/v1/local-monitor/status"),api("/api/v1/settings")]);
     const dashboard=results[0],printers=results[2],documents=results[3];
     jobs=results[1];docs=Object.fromEntries(documents.map(item=>[item.id,item]));
@@ -168,9 +171,11 @@ async function refresh(){
     if($("processDocument"))$("processDocument").innerHTML=documents.map(item=>'<option value="'+esc(item.id)+'">'+esc(item.original_name)+"</option>").join("");
     if(jobs.some(item=>item.id===savedJob))$("job").value=savedJob;
     if(printers.some(item=>item.id===savedPrinter))$("printer").value=savedPrinter;
-    const formValues=$("jobGlass")?.open?Object.fromEntries(["printer","copies","paper","orientation","color","pages","instructions","duplex"].map(id=>[id,$(id).type==="checkbox"?$(id).checked:$(id).value])):null;
     workshopSettings=results[7]||{};applyWorkshopSettings();
-    if(formValues)for(const [id,value] of Object.entries(formValues)){if($(id).type==="checkbox")$(id).checked=value;else $(id).value=value}
+    if(formValues)for(const [id,value] of Object.entries(formValues)){
+      if(id==="printer"&&!printers.some(item=>item.id===value))continue;
+      if($(id).type==="checkbox")$(id).checked=value;else $(id).value=value
+    }
     showJob();renderJobCards(jobs,docs);renderActivities(results[5]);renderMonitor(results[6]);checkPushAvailability();
   }catch(error){tell(error.message)}
 }
