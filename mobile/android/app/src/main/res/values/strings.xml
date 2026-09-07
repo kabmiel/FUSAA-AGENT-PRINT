@@ -1,0 +1,7 @@
+<?xml version='1.0' encoding='utf-8'?>
+<resources>
+    <string name="app_name">FUSAA Service</string>
+    <string name="title_activity_main">FUSAA Service</string>
+    <string name="package_name">com.fusaa.service</string>
+    <string name="custom_url_scheme">com.fusaa.service</string>
+</resources>
