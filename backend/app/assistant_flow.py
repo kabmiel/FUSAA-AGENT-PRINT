@@ -3,7 +3,7 @@ import re
 import unicodedata
 from .assistant_schemas import AssistantResponse,ToolCall
 from .ai import SafetyLevel,TOOL_SAFETY,resolve_job
-from .models import Document,Printer,JobStatus
+from .models import Document,Printer,JobStatus,PriceRule,Workshop
 from .access import accessible_workshop_ids
 
 def safe_result_response(calls:list[ToolCall]):
@@ -37,6 +37,27 @@ def safe_result_response(calls:list[ToolCall]):
 
 def workflow_response(data,db,user):
     text="".join(c for c in unicodedata.normalize("NFD",data.message.lower()) if not unicodedata.combining(c))
+    if re.search(r"\b(prix|tarifs?|cout|devis|combien)\b",text):
+        ids=accessible_workshop_ids(db,user,write=True)
+        if not ids:
+            return AssistantResponse(title="Tarifs FUSAA",answer="Votre rÃ´le permet de consulter les travaux, mais pas les tarifs de l'atelier.",tool_calls=[],requires_confirmation=False)
+        org_ids=[item.organization_id for item in db.query(Workshop).filter(Workshop.id.in_(ids)).all()]
+        rule=db.query(PriceRule).filter(PriceRule.organization_id.in_(org_ids),PriceRule.name=="Tarif public par dÃ©faut").order_by(PriceRule.priority).first()
+        pricing=(rule.pricing if rule else {}) or {}
+        def rate(prefix):
+            standard=float(pricing.get(f"{prefix}_page") or pricing.get("per_page",0) or 0);threshold=int(pricing.get(f"{prefix}_discount_from",0) or 0);reduced=float(pricing.get(f"{prefix}_discount_page",standard) or standard)
+            return standard,threshold,reduced
+        mono=rate("monochrome");color=rate("color")
+        def line(label,values):
+            standard,threshold,reduced=values
+            return f"{label} : {standard:,.0f} FCFA/page"+(f" ; {reduced:,.0f} FCFA/page Ã  partir de {threshold} pages" if threshold else "")
+        amount_match=re.search(r"\b(\d+)\s*(?:page|pages|feuille|feuilles|copie|copies|impression|impressions)\b",text)
+        wants_color="couleur" in text or "color" in text;wants_mono=any(word in text for word in ("noir","blanc","mono"))
+        steps=[line("Noir et blanc",mono),line("Couleur",color)]
+        if amount_match and (wants_color or wants_mono):
+            sheets=int(amount_match.group(1));chosen=color if wants_color else mono;unit=chosen[2] if chosen[1] and sheets>=chosen[1] else chosen[0];mode="couleur" if wants_color else "noir et blanc"
+            return AssistantResponse(title="Estimation FUSAA",answer=f"Pour {sheets} pages en {mode} : {unit*sheets:,.0f} FCFA.",steps=[f"Tarif appliquÃ© : {unit:,.0f} FCFA par page",f"QuantitÃ© : {sheets} pages",*steps],next_view="publicOrders",next_label="Configurer les tarifs",tool_calls=[],requires_confirmation=False)
+        return AssistantResponse(title="Tarifs FUSAA",answer="Voici la grille de prix actuellement configurÃ©e.",steps=steps+["Dites par exemple : Â« combien pour 20 pages noir et blanc ? Â»"],next_view="publicOrders",next_label="Configurer les tarifs",tool_calls=[],requires_confirmation=False)
     if any(word in text for word in ("whatsapp","bureau","surveill","nouveau message","nouveau fichier")):
         return AssistantResponse(title="Vos nouvelles arrivées",answer="FUSAA peut vous avertir des nouveaux fichiers du Bureau et des arrivées détectées dans WhatsApp Web.",steps=["Bureau : les fichiers nouveaux sont signalés après la fin de leur copie.","WhatsApp : chargez et associez l’extension locale dans Brave, puis gardez WhatsApp Web ouvert.","Retrouvez les alertes dans Arrivées. Vous choisissez ensuite le document à importer."],next_view="settings",next_label="Configurer les alertes",tool_calls=[],requires_confirmation=False)
     if not re.search(r"imprim|prepar|annul|ignorer",text):return None

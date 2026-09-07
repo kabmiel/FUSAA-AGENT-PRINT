@@ -15,5 +15,9 @@ def estimate_print_cost(db:Session,job:PrintJob)->tuple[Decimal,dict]:
         if cond.get("min_copies") and copies<int(cond["min_copies"]):continue
         if cond.get("max_copies") and copies>int(cond["max_copies"]):continue
         selected=rule;break
-    pricing=(selected.pricing if selected else {}) or {};base=money(pricing.get("base",0));per_copy=money(pricing.get("per_copy",0));per_page=money(pricing.get("per_page",0));total=base+per_copy*copies+per_page*pages*copies
+    pricing=(selected.pricing if selected else {}) or {}
+    base=money(pricing.get("base",0));per_copy=money(pricing.get("per_copy",0));sheets=pages*copies
+    prefix="color" if job.color_mode=="COLOR" else "monochrome";standard=money(pricing.get(f"{prefix}_page") or pricing.get("per_page",0))
+    threshold=int(pricing.get(f"{prefix}_discount_from",0) or 0);discount=money(pricing.get(f"{prefix}_discount_page",standard));reduced=threshold>0 and sheets>=threshold
+    per_page=discount if reduced else standard;total=base+per_copy*copies+per_page*sheets
     return total,{"rule_id":selected.id if selected else None,"rule_name":selected.name if selected else "Aucune règle","base":float(base),"per_copy":float(per_copy),"per_page":float(per_page),"pages":pages,"copies":copies,"total":float(total)}

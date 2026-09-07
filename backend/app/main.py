@@ -177,7 +177,7 @@ def get_public_pricing(user:User=Depends(current_user),db:Session=Depends(get_db
     workshop=public_workshop(db);require_workshop_write(db,user,workshop.id)
     rule=db.query(PriceRule).filter_by(organization_id=workshop.organization_id,name="Tarif public par défaut").one_or_none()
     pricing=(rule.pricing if rule else {}) or {}
-    return PublicPricingOut(rule_id=rule.id if rule else None,base=float(pricing.get("base",0)),per_copy=float(pricing.get("per_copy",0)),per_page=float(pricing.get("per_page",0)))
+    return PublicPricingOut(rule_id=rule.id if rule else None,**{field:pricing.get(field,0) for field in PublicPricingIn.model_fields})
 
 @app.put("/api/v1/public-pricing",response_model=PublicPricingOut)
 def set_public_pricing(data:PublicPricingIn,user:User=Depends(current_user),db:Session=Depends(get_db)):
@@ -785,6 +785,8 @@ async def cancel_job(job_id:str,user:User=Depends(current_user),db:Session=Depen
 def delete_job(job_id:str,user:User=Depends(current_user),db:Session=Depends(get_db)):
     """Remove a terminal print job while preserving the uploaded document and audit trail."""
     job=one(db,PrintJob,job_id);require_member(db,user,job.organization_id);require_workshop_write(db,user,job.workshop_id)
+    if db.query(GuestOrder).filter_by(print_job_id=job.id).first():
+        raise HTTPException(409,"Une commande envoyée par le public ne peut pas être supprimée. Archivez-la après traitement pour conserver sa traçabilité.")
     if job.status not in {JobStatus.WAITING_APPROVAL,JobStatus.READY,JobStatus.FAILED,JobStatus.CANCELLED,JobStatus.COMPLETED,JobStatus.IGNORED}:
         raise HTTPException(409,"Seuls les travaux terminés, échoués ou annulés peuvent être supprimés")
     for command in db.query(AgentCommand).filter_by(print_job_id=job.id).all():

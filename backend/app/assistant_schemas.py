@@ -14,7 +14,7 @@ class AssistantResponse(BaseModel):
     answer:str
     title:str="Assistant FUSAA"
     steps:list[str]=Field(default_factory=list)
-    next_view:Literal["upload","print","connectors","settings","dashboard"]|None=None
+    next_view:Literal["upload","print","connectors","settings","dashboard","publicOrders"]|None=None
     next_label:str|None=None
     tool_calls:list[ToolCall]
     requires_confirmation:bool

@@ -15,7 +15,7 @@ ROOT=Path(__file__).parents[1]
 sys.path[:0]=[str(ROOT/"backend"),str(ROOT/"local-agent")]
 from app.database import Base
 from app.models import User,Organization,OrganizationMember,Workshop,WorkshopMember,Document,PrintJob,ComputerAgent,Printer,JobStatus,LocalActivity,BrowserLink,GuestOrder
-from app.main import cancel_job,confirm_job,prepare_job,central_supervision,list_jobs,list_documents,audit_history,list_workshop_members,update_workshop_member,remove_workshop_member,create_guest_order,guest_order_status,verify_guest_payment,list_guest_orders,export_guest_orders,archive_guest_order,restore_guest_order,set_public_pricing,get_public_pricing,refresh_guest_quote,create_guest_receipt,production_dashboard,index,admin_index,public_tracking_page
+from app.main import cancel_job,confirm_job,prepare_job,central_supervision,list_jobs,list_documents,audit_history,list_workshop_members,update_workshop_member,remove_workshop_member,create_guest_order,guest_order_status,verify_guest_payment,list_guest_orders,export_guest_orders,archive_guest_order,restore_guest_order,set_public_pricing,get_public_pricing,refresh_guest_quote,create_guest_receipt,production_dashboard,index,admin_index,public_tracking_page,delete_job
 from app.connectors import IncomingDocument, ingest_incoming_document
 from app.config import settings
 from app.schemas import JobOptions,GuestPaymentIn,PublicPricingIn
@@ -145,6 +145,8 @@ def test_guest_order_has_phone_and_secure_follow_link(setup_db,tmp_path,monkeypa
     with pytest.raises(HTTPException) as error:guest_order_status(number,"wrong-token",db)
     assert error.value.status_code==404
     order=db.query(GuestOrder).filter_by(order_number=created.order_number).one()
+    with pytest.raises(HTTPException) as error:delete_job(order.print_job_id,admin,db)
+    assert error.value.status_code==409 and "public" in error.value.detail
     with pytest.raises(HTTPException) as error:prepare_job(order.print_job_id,JobOptions(printer_id="printer-a"),admin,db)
     assert error.value.status_code==409 and "Paiement" in error.value.detail
     pricing=set_public_pricing(PublicPricingIn(base=25,per_copy=50,per_page=100),admin,db)
@@ -171,6 +173,18 @@ def test_guest_order_has_phone_and_secure_follow_link(setup_db,tmp_path,monkeypa
     assert restore_guest_order(order.id,admin,db).archived_at is None
     export=export_guest_orders(admin,db,q=created.order_number)
     assert export.media_type.startswith("text/csv") and created.order_number in export.body.decode("utf-8")
+
+def test_explicit_monochrome_and_color_price_tiers(setup_db,monkeypatch):
+    db,_,admin=setup_db
+    monkeypatch.setattr(settings,"single_workshop_id","a")
+    job=db.query(PrintJob).first();document=db.get(Document,job.document_id)
+    document.metadata_json={"pages":5};job.copies=2;job.color_mode="MONOCHROME"
+    set_public_pricing(PublicPricingIn(monochrome_page=50,monochrome_discount_from=10,monochrome_discount_page=25,color_page=100,color_discount_from=10,color_discount_page=75),admin,db)
+    from app.business import estimate_print_cost
+    amount,breakdown=estimate_print_cost(db,job)
+    assert float(amount)==250 and breakdown["per_page"]==25
+    job.color_mode="COLOR";amount,breakdown=estimate_print_cost(db,job)
+    assert float(amount)==750 and breakdown["per_page"]==75
 
 def test_public_home_and_admin_have_separate_shells():
     public=index().body.decode("utf-8")

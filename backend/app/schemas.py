@@ -70,6 +70,12 @@ class PublicPricingIn(BaseModel):
     base: float=Field(default=0,ge=0)
     per_copy: float=Field(default=0,ge=0)
     per_page: float=Field(default=0,ge=0)
+    monochrome_page: float=Field(default=0,ge=0)
+    monochrome_discount_from: int=Field(default=0,ge=0,le=999999)
+    monochrome_discount_page: float=Field(default=0,ge=0)
+    color_page: float=Field(default=0,ge=0)
+    color_discount_from: int=Field(default=0,ge=0,le=999999)
+    color_discount_page: float=Field(default=0,ge=0)
 class PublicPricingOut(PublicPricingIn):
     rule_id: str|None=None
 class GuestReceiptOut(BaseModel):

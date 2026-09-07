@@ -19,3 +19,4 @@ local-agent/agent-state.lock
 mobile/node_modules/
 mobile/android/.gradle/
 mobile/android/app/build/
+mobile/gradle-build.*
