@@ -108,7 +108,8 @@ async def create_guest_order(
 @app.get("/api/v1/public/orders/{number}/{token}",response_model=GuestOrderStatusOut)
 def guest_order_status(number:str,token:str,db:Session=Depends(get_db)):
     order=public_order_by_token(db,number,token);job=one(db,PrintJob,order.print_job_id);document=one(db,Document,job.document_id)
-    return GuestOrderStatusOut(order_number=order.order_number,document_name=document.original_name,status=job.status,payment_status=order.payment_status,estimated_cost=float(job.final_cost or job.estimated_cost or 0))
+    progress,stage,detail=public_tracking_stage(job.status,order.payment_status)
+    return GuestOrderStatusOut(order_number=order.order_number,document_name=document.original_name,status=job.status,payment_status=order.payment_status,estimated_cost=float(job.final_cost or job.estimated_cost or 0),progress=progress,stage=stage,detail=detail,updated_at=max(job.updated_at,order.updated_at))
 
 def guest_order_admin_out(db:Session,order:GuestOrder)->GuestOrderAdminOut:
     job=one(db,PrintJob,order.print_job_id);document=one(db,Document,job.document_id)
@@ -211,6 +212,14 @@ def public_order_by_token(db:Session,number:str,token:str)->GuestOrder:
     order=db.query(GuestOrder).filter_by(order_number=number).one_or_none()
     if not order or not secrets.compare_digest(order.access_token_hash,digest):raise HTTPException(404,"Commande introuvable")
     return order
+
+def public_tracking_stage(status:JobStatus,payment_status:str)->tuple[int,str,str]:
+    if payment_status=="REJECTED":return 25,"Paiement à revoir","Contactez FUSAA INFORMATIQUE pour régulariser votre commande."
+    if status in {JobStatus.RECEIVED,JobStatus.ANALYZING}:return 15,"Fichier reçu","Votre fichier est enregistré et contrôlé par l’atelier."
+    if status==JobStatus.WAITING_APPROVAL and payment_status!="PAID":return 30,"Paiement à confirmer","L’atelier attend la validation du paiement avant préparation."
+    if status==JobStatus.WAITING_APPROVAL:return 40,"Paiement confirmé","L’atelier va préparer votre document."
+    stages={JobStatus.READY:(55,"Préparation terminée","Votre document est prêt pour l’impression."),JobStatus.QUEUED:(70,"En file d’impression","La commande attend le PC et l’imprimante."),JobStatus.PRINTING:(85,"Impression en cours","Votre document est en cours d’impression."),JobStatus.COMPLETED:(100,"Impression terminée","Votre commande est prête ou a été traitée par l’atelier."),JobStatus.FAILED:(100,"Intervention atelier requise","L’atelier a été informé et vérifiera votre commande."),JobStatus.CANCELLED:(100,"Commande annulée","Aucune impression ne sera lancée."),JobStatus.IGNORED:(100,"Commande clôturée","Cette commande a été clôturée par l’atelier.")}
+    return stages.get(status,(10,"Commande reçue","Votre commande est en cours de prise en charge."))
 @app.post("/api/v1/customers",response_model=CustomerOut,status_code=201)
 def create_customer(data:CustomerIn,user:User=Depends(current_user),db:Session=Depends(get_db)):
     require_member(db,user,data.organization_id);customer=Customer(**data.model_dump());db.add(customer);db.flush();audit(db,user.id,"CUSTOMER_CREATED","Customer",customer.id,result="SUCCESS");db.commit();db.refresh(customer);return customer

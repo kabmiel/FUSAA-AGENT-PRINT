@@ -109,6 +109,7 @@ def test_guest_order_has_phone_and_secure_follow_link(setup_db,tmp_path,monkeypa
     followed=guest_order_status(number,token,db)
     assert followed.order_number==created.order_number
     assert followed.document_name=="notice.txt"
+    assert followed.progress==30 and followed.stage=="Paiement à confirmer"
     with pytest.raises(HTTPException) as error:guest_order_status(number,"wrong-token",db)
     assert error.value.status_code==404
     order=db.query(GuestOrder).filter_by(order_number=created.order_number).one()
@@ -120,10 +121,14 @@ def test_guest_order_has_phone_and_secure_follow_link(setup_db,tmp_path,monkeypa
     assert quoted.estimated_cost==325
     updated=asyncio.run(verify_guest_payment(order.id,GuestPaymentIn(status="PAID",reference="espèces"),admin,db))
     assert updated.payment_status=="PAID" and updated.payment_reference=="espèces"
+    assert guest_order_status(number,token,db).stage=="Paiement confirmé"
     receipt=create_guest_receipt(order.id,admin,db)
     assert receipt.order_number==created.order_number and receipt.amount==325
     assert create_guest_receipt(order.id,admin,db).invoice_number==receipt.invoice_number
     assert list_guest_orders(admin,db)[0].order_number==created.order_number
+    job=db.get(PrintJob,order.print_job_id);job.status=JobStatus.FAILED;job.error_message="internal printer secret";db.commit()
+    failed=guest_order_status(number,token,db)
+    assert failed.stage=="Intervention atelier requise" and "secret" not in failed.detail
 
 def test_public_home_and_admin_have_separate_shells():
     public=index().body.decode("utf-8")

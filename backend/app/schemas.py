@@ -42,6 +42,10 @@ class GuestOrderStatusOut(BaseModel):
     status: JobStatus
     payment_status: str
     estimated_cost: float
+    progress: int
+    stage: str
+    detail: str
+    updated_at: datetime
     currency: str="XOF"
 class GuestPaymentIn(BaseModel):
     status: Literal["PENDING","PAID","REJECTED"]
