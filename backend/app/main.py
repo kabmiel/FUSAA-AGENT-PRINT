@@ -5,6 +5,7 @@ import json
 import io
 import csv
 import zipfile
+import re
 from contextlib import asynccontextmanager
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -17,7 +18,7 @@ from sqlalchemy import text, or_, JSON
 from .config import settings
 from .database import Base, SessionLocal, engine, get_db
 from .events import agent_hub, hub
-from .models import AgentCommand, AuditLog, CommandStatus, ComputerAgent, Connector, ConnectorEvent, Customer, Document, GuestOrder, Invoice, InvoiceLine, JobStatus, Organization, OrganizationMember, Payment, PriceRule, PrintCost, PrintJob, Printer, Product, PushSubscription, Service, User, Workshop, WorkshopMember, WorkshopSettings as WorkshopSettingsModel
+from .models import AgentCommand, AuditLog, CommandStatus, ComputerAgent, Connector, ConnectorEvent, Customer, Document, GuestOrder, Invoice, InvoiceLine, JobStatus, Organization, OrganizationMember, Payment, PriceRule, PrintCost, PrintJob, Printer, Product, PushSubscription, Service, ShopCategory, ShopOrder, ShopOrderLine, ShopProduct, User, Workshop, WorkshopMember, WorkshopSettings as WorkshopSettingsModel
 from .schemas import *
 from .security import create_access_token, current_user, hash_password, verify_password
 from .services import DIRECT_PRINT_MIMES, audit, build_command, create_preview, inspect_file, issue_agent_key, storage_path, transition
@@ -29,6 +30,7 @@ from .processing_schemas import LayoutRequest, ProcessRequest
 from .connector_schemas import ConnectorCreate, ConnectorOut, ConnectorSecretOut
 from .connectors import IncomingDocument, ingest_incoming_document, verify_meta_signature, whatsapp_media_message_ids
 from .business_schemas import CatalogIn, CustomerIn, CustomerOut, FinalCostIn, InvoiceCreate, InvoiceOut, PaymentIn, PriceRuleIn, PriceRuleOut, PrintCostOut, ServiceIn
+from .shop_schemas import ShopCategoryIn, ShopOrderStatusIn, ShopProductIn, ShopPublicOrderIn
 from .business import estimate_print_cost
 from .multisite_schemas import RouteJobIn, WorkshopMemberIn, WorkshopMemberRoleIn
 from .observability import RequestAuditMiddleware, configure_logging
@@ -83,6 +85,74 @@ def readyz():
 def public_workshop_details(db:Session=Depends(get_db)):
     workshop=public_workshop(db)
     return {"name":workshop.name,"workshop_id":workshop.id,"formats":["PDF","JPG","PNG","Autres fichiers"],"currency":"XOF"}
+
+def shop_slug(value:str, fallback:str="article")->str:
+    clean=re.sub(r"[^a-z0-9]+", "-", value.lower().strip()).strip("-")
+    return clean[:260] or fallback
+
+def shop_category_out(item:ShopCategory)->dict:
+    return {"id":item.id,"name":item.name,"slug":item.slug,"description":item.description or "","icon":item.icon or "","enabled":item.enabled}
+
+def shop_product_out(db:Session,item:ShopProduct, include_disabled_category:bool=False)->dict:
+    category=db.get(ShopCategory,item.category_id) if item.category_id else None
+    return {"id":item.id,"category_id":item.category_id,"category":shop_category_out(category) if category and (category.enabled or include_disabled_category) else None,"name":item.name,"slug":item.slug,"description":item.description,"brand":item.brand or "","price_xof":float(item.price_xof),"original_price_xof":float(item.original_price_xof) if item.original_price_xof is not None else None,"condition":item.condition,"stock_quantity":item.stock_quantity,"specifications":item.specifications or {},"image_url":item.image_url,"enabled":item.enabled,"created_at":item.created_at}
+
+def shop_order_out(db:Session,order:ShopOrder, include_lines:bool=True)->dict:
+    lines=db.query(ShopOrderLine).filter_by(order_id=order.id).all() if include_lines else []
+    return {"id":order.id,"order_number":order.order_number,"customer_name":order.customer_name,"customer_phone":order.customer_phone,"delivery_address":order.delivery_address,"notes":order.notes,"status":order.status,"payment_status":order.payment_status,"payment_method":order.payment_method,"total_xof":float(order.total_xof),"created_at":order.created_at,"updated_at":order.updated_at,"items":[{"product_id":line.product_id,"product_name":line.product_name,"unit_price_xof":float(line.unit_price_xof),"quantity":line.quantity,"subtotal_xof":float(line.unit_price_xof)*line.quantity} for line in lines]}
+
+def shop_order_number(db:Session)->str:
+    while True:
+        number=f"SHOP-{datetime.now(timezone.utc):%Y%m%d}-{secrets.token_hex(3).upper()}"
+        if not db.query(ShopOrder).filter_by(order_number=number).first(): return number
+
+@app.get("/api/v1/shop/public/config")
+def shop_public_config(db:Session=Depends(get_db)):
+    workshop=public_workshop(db)
+    return {"name":"Boutique FUSAA","workshop_name":workshop.name,"currency":"XOF","currency_label":"FCFA","orders_enabled":True}
+
+@app.get("/api/v1/shop/public/categories")
+def shop_public_categories(db:Session=Depends(get_db)):
+    organization_id=public_workshop(db).organization_id
+    return [shop_category_out(item) for item in db.query(ShopCategory).filter_by(organization_id=organization_id,enabled=True).order_by(ShopCategory.name).all()]
+
+@app.get("/api/v1/shop/public/products")
+def shop_public_products(q:str|None=None,category:str|None=None,db:Session=Depends(get_db)):
+    organization_id=public_workshop(db).organization_id
+    query=db.query(ShopProduct).filter_by(organization_id=organization_id,enabled=True)
+    if q and q.strip():
+        needle=f"%{q.strip()}%";query=query.filter(or_(ShopProduct.name.ilike(needle),ShopProduct.brand.ilike(needle),ShopProduct.description.ilike(needle)))
+    if category:
+        found=db.query(ShopCategory).filter_by(organization_id=organization_id,slug=category,enabled=True).one_or_none()
+        if not found:return []
+        query=query.filter_by(category_id=found.id)
+    return [shop_product_out(db,item) for item in query.order_by(ShopProduct.created_at.desc()).all()]
+
+@app.post("/api/v1/shop/public/orders",status_code=201)
+async def create_shop_order(data:ShopPublicOrderIn,db:Session=Depends(get_db)):
+    organization_id=public_workshop(db).organization_id
+    requested={line.product_id:line.quantity for line in data.items}
+    if len(requested)!=len(data.items):raise HTTPException(422,"Chaque article ne peut apparaître qu’une fois dans le panier")
+    products=db.query(ShopProduct).filter(ShopProduct.organization_id==organization_id,ShopProduct.id.in_(requested),ShopProduct.enabled.is_(True)).all()
+    if len(products)!=len(requested):raise HTTPException(422,"Un article du panier est indisponible")
+    for product in products:
+        if product.stock_quantity<requested[product.id]:raise HTTPException(409,f"Stock insuffisant pour {product.name}")
+    token=secrets.token_urlsafe(32);total=sum(float(item.price_xof)*requested[item.id] for item in products)
+    order=ShopOrder(organization_id=organization_id,order_number=shop_order_number(db),customer_name=data.customer_name.strip(),customer_phone=data.customer_phone.strip(),delivery_address=(data.delivery_address or "").strip() or None,notes=(data.notes or "").strip() or None,payment_method=(data.payment_method or "").strip() or None,total_xof=total,access_token_hash=hashlib.sha256(token.encode()).hexdigest())
+    db.add(order);db.flush()
+    for product in products:
+        quantity=requested[product.id];product.stock_quantity-=quantity
+        db.add(ShopOrderLine(order_id=order.id,product_id=product.id,product_name=product.name,unit_price_xof=float(product.price_xof),quantity=quantity))
+    audit(db,f"shop:{order.order_number}","SHOP_ORDER_CREATED","ShopOrder",order.id,parameters={"total_xof":total},result="SUCCESS");db.commit()
+    await hub.publish("SHOP_ORDER_CREATED",{"order_number":order.order_number,"total_xof":total},organization_id)
+    return {**shop_order_out(db,order),"tracking_url":f"/boutique/suivi/{order.order_number}/{token}","currency":"XOF"}
+
+@app.get("/api/v1/shop/public/orders/{number}/{token}")
+def shop_public_order_status(number:str,token:str,db:Session=Depends(get_db)):
+    order=db.query(ShopOrder).filter_by(order_number=number).one_or_none()
+    digest=hashlib.sha256(token.encode()).hexdigest()
+    if not order or not secrets.compare_digest(order.access_token_hash,digest):raise HTTPException(404,"Commande introuvable")
+    return {**shop_order_out(db,order),"currency":"XOF"}
 
 @app.post("/api/v1/public/orders",response_model=GuestOrderOut,status_code=201)
 async def create_guest_order(
@@ -316,6 +386,88 @@ def record_payment(invoice_id:str,data:PaymentIn,user:User=Depends(current_user)
 @app.get("/api/v1/business/stats")
 def business_stats(organization_id:str,user:User=Depends(current_user),db:Session=Depends(get_db)):
     require_member(db,user,organization_id);invoices=db.query(Invoice).filter_by(organization_id=organization_id).all();jobs=db.query(PrintJob).filter_by(organization_id=organization_id).all();return {"customers":db.query(Customer).filter_by(organization_id=organization_id).count(),"invoices":len(invoices),"paid_revenue":sum(float(i.total_amount) for i in invoices if i.status=="PAID"),"estimated_print_revenue":sum(float(j.estimated_cost or 0) for j in jobs),"completed_jobs":sum(j.status==JobStatus.COMPLETED for j in jobs)}
+
+# Boutique FUSAA administration. All endpoints use the same authenticated FUSAA
+# organization as printing; there is no second shop administrator or database.
+@app.get("/api/v1/shop/admin/overview")
+def shop_admin_overview(organization_id:str,user:User=Depends(current_user),db:Session=Depends(get_db)):
+    require_member(db,user,organization_id)
+    orders=db.query(ShopOrder).filter_by(organization_id=organization_id).all()
+    products=db.query(ShopProduct).filter_by(organization_id=organization_id).all()
+    return {"products":len(products),"low_stock":sum(product.stock_quantity<=3 for product in products),"orders_pending":sum(order.status in {"PENDING","CONFIRMED"} for order in orders),"orders_processing":sum(order.status in {"PROCESSING","READY"} for order in orders),"delivered":sum(order.status=="DELIVERED" for order in orders),"paid_revenue_xof":sum(float(order.total_xof) for order in orders if order.payment_status=="PAID"),"currency":"XOF"}
+
+@app.get("/api/v1/shop/admin/categories")
+def shop_admin_categories(organization_id:str,user:User=Depends(current_user),db:Session=Depends(get_db)):
+    require_member(db,user,organization_id)
+    return [shop_category_out(item) for item in db.query(ShopCategory).filter_by(organization_id=organization_id).order_by(ShopCategory.name).all()]
+
+@app.post("/api/v1/shop/admin/categories",status_code=201)
+def create_shop_category(organization_id:str,data:ShopCategoryIn,user:User=Depends(current_user),db:Session=Depends(get_db)):
+    require_member(db,user,organization_id);slug=shop_slug(data.slug or data.name,"categorie")
+    if db.query(ShopCategory).filter_by(organization_id=organization_id,slug=slug).first():raise HTTPException(409,"Cette catégorie existe déjà")
+    item=ShopCategory(organization_id=organization_id,slug=slug,**data.model_dump(exclude={"slug"}));db.add(item);db.flush();audit(db,user.id,"SHOP_CATEGORY_CREATED","ShopCategory",item.id,result="SUCCESS");db.commit();return shop_category_out(item)
+
+@app.patch("/api/v1/shop/admin/categories/{category_id}")
+def update_shop_category(category_id:str,data:ShopCategoryIn,user:User=Depends(current_user),db:Session=Depends(get_db)):
+    item=one(db,ShopCategory,category_id);require_member(db,user,item.organization_id);values=data.model_dump();item.slug=shop_slug(values.pop("slug") or values["name"],"categorie")
+    duplicate=db.query(ShopCategory).filter(ShopCategory.organization_id==item.organization_id,ShopCategory.slug==item.slug,ShopCategory.id!=item.id).first()
+    if duplicate:raise HTTPException(409,"Cette catégorie existe déjà")
+    for key,value in values.items():setattr(item,key,value)
+    audit(db,user.id,"SHOP_CATEGORY_UPDATED","ShopCategory",item.id,result="SUCCESS");db.commit();return shop_category_out(item)
+
+@app.get("/api/v1/shop/admin/products")
+def shop_admin_products(organization_id:str,user:User=Depends(current_user),db:Session=Depends(get_db)):
+    require_member(db,user,organization_id)
+    return [shop_product_out(db,item,True) for item in db.query(ShopProduct).filter_by(organization_id=organization_id).order_by(ShopProduct.created_at.desc()).all()]
+
+def apply_shop_product(db:Session,item:ShopProduct,data:ShopProductIn):
+    values=data.model_dump();category_id=values.get("category_id")
+    if category_id:
+        category=one(db,ShopCategory,category_id)
+        if category.organization_id!=item.organization_id:raise HTTPException(422,"La catégorie appartient à une autre organisation")
+    requested_slug=values.pop("slug") or values["name"]
+    item.slug=shop_slug(requested_slug,"article")
+    duplicate=db.query(ShopProduct).filter(ShopProduct.organization_id==item.organization_id,ShopProduct.slug==item.slug,ShopProduct.id!=item.id).first()
+    if duplicate:raise HTTPException(409,"Un produit utilise déjà ce nom")
+    for key,value in values.items():setattr(item,key,value)
+
+@app.post("/api/v1/shop/admin/products",status_code=201)
+def create_shop_product(organization_id:str,data:ShopProductIn,user:User=Depends(current_user),db:Session=Depends(get_db)):
+    require_member(db,user,organization_id);item=ShopProduct(organization_id=organization_id,name=data.name,slug="article")
+    db.add(item);db.flush();apply_shop_product(db,item,data);audit(db,user.id,"SHOP_PRODUCT_CREATED","ShopProduct",item.id,result="SUCCESS");db.commit();return shop_product_out(db,item,True)
+
+@app.patch("/api/v1/shop/admin/products/{product_id}")
+def update_shop_product(product_id:str,data:ShopProductIn,user:User=Depends(current_user),db:Session=Depends(get_db)):
+    item=one(db,ShopProduct,product_id);require_member(db,user,item.organization_id);apply_shop_product(db,item,data);audit(db,user.id,"SHOP_PRODUCT_UPDATED","ShopProduct",item.id,result="SUCCESS");db.commit();return shop_product_out(db,item,True)
+
+@app.delete("/api/v1/shop/admin/products/{product_id}")
+def archive_shop_product(product_id:str,user:User=Depends(current_user),db:Session=Depends(get_db)):
+    item=one(db,ShopProduct,product_id);require_member(db,user,item.organization_id);item.enabled=False;audit(db,user.id,"SHOP_PRODUCT_ARCHIVED","ShopProduct",item.id,result="SUCCESS");db.commit();return {"id":item.id,"archived":True}
+
+@app.post("/api/v1/shop/admin/products/{product_id}/image")
+async def upload_shop_image(product_id:str,file:UploadFile=File(...),user:User=Depends(current_user),db:Session=Depends(get_db)):
+    item=one(db,ShopProduct,product_id);require_member(db,user,item.organization_id)
+    if not (settings.cloudinary_cloud_name and settings.cloudinary_api_key and settings.cloudinary_api_secret):raise HTTPException(503,"Cloudinary n’est pas configuré. Ajoutez CLOUDINARY_CLOUD_NAME, CLOUDINARY_API_KEY et CLOUDINARY_API_SECRET dans les variables d’environnement.")
+    if not (file.content_type or "").startswith("image/"):raise HTTPException(422,"Choisissez une image (JPG, PNG, WEBP…)")
+    try:
+        import cloudinary
+        import cloudinary.uploader
+        cloudinary.config(cloud_name=settings.cloudinary_cloud_name,api_key=settings.cloudinary_api_key,api_secret=settings.cloudinary_api_secret,secure=True)
+        result=cloudinary.uploader.upload(await file.read(),folder="fusaa-shop/products",resource_type="image",public_id=f"{item.id}-{secrets.token_hex(4)}",overwrite=False)
+    except Exception as error:raise HTTPException(502,"Cloudinary a refusé l’image. Vérifiez les identifiants Cloudinary.") from error
+    item.image_url=result.get("secure_url");item.cloudinary_public_id=result.get("public_id");audit(db,user.id,"SHOP_PRODUCT_IMAGE_UPLOADED","ShopProduct",item.id,result="SUCCESS");db.commit();return shop_product_out(db,item,True)
+
+@app.get("/api/v1/shop/admin/orders")
+def shop_admin_orders(organization_id:str,status:str|None=None,user:User=Depends(current_user),db:Session=Depends(get_db)):
+    require_member(db,user,organization_id);query=db.query(ShopOrder).filter_by(organization_id=organization_id)
+    if status:query=query.filter_by(status=status)
+    return [shop_order_out(db,item) for item in query.order_by(ShopOrder.created_at.desc()).all()]
+
+@app.patch("/api/v1/shop/admin/orders/{order_id}")
+async def update_shop_order(order_id:str,data:ShopOrderStatusIn,user:User=Depends(current_user),db:Session=Depends(get_db)):
+    order=one(db,ShopOrder,order_id);require_member(db,user,order.organization_id);order.status=data.status
+    if data.payment_status is not None:order.payment_status=data.payment_status
+    audit(db,user.id,"SHOP_ORDER_UPDATED","ShopOrder",order.id,parameters=data.model_dump(exclude_none=True),result="SUCCESS");db.commit();await hub.publish("SHOP_ORDER_UPDATED",{"order_number":order.order_number,"status":order.status},order.organization_id);return shop_order_out(db,order)
 
 @app.post("/api/v1/connectors",response_model=ConnectorSecretOut,status_code=201)
 def create_connector(data:ConnectorCreate,user:User=Depends(current_user),db:Session=Depends(get_db)):
@@ -913,7 +1065,14 @@ async def agent_socket(ws:WebSocket,agent_id:str):
     except Exception: agent_hub.disconnect(agent_id,ws)
 
 @app.get("/",response_class=HTMLResponse)
-def index():return HTMLResponse((Path(__file__).parent/"web"/"public.html").read_text(encoding="utf-8"))
+def index():return HTMLResponse((Path(__file__).parent/"web"/"portal.html").read_text(encoding="utf-8"))
+
+@app.get("/impression",response_class=HTMLResponse)
+def impression_index():return HTMLResponse((Path(__file__).parent/"web"/"public.html").read_text(encoding="utf-8"))
+
+@app.get("/boutique",response_class=HTMLResponse)
+@app.get("/boutique/suivi/{number}/{token}",response_class=HTMLResponse)
+def shop_index(number:str|None=None,token:str|None=None):return HTMLResponse((Path(__file__).parent/"web"/"shop.html").read_text(encoding="utf-8"))
 
 @app.get("/admin",response_class=HTMLResponse)
 def admin_index():return HTMLResponse((Path(__file__).parent/"web"/"index.html").read_text(encoding="utf-8"))
@@ -941,6 +1100,9 @@ def app_js():return HTMLResponse((Path(__file__).parent/"web"/"app.js").read_tex
 
 @app.get("/public.js",response_class=HTMLResponse)
 def public_js():return HTMLResponse((Path(__file__).parent/"web"/"public.js").read_text(encoding="utf-8"),media_type="application/javascript")
+
+@app.get("/shop.js",response_class=HTMLResponse)
+def shop_js():return HTMLResponse((Path(__file__).parent/"web"/"shop.js").read_text(encoding="utf-8"),media_type="application/javascript")
 
 @app.get("/sw.js",response_class=HTMLResponse)
 def service_worker(): return HTMLResponse("""const CACHE='fusaa-pwa-v4';const SHELL=['/','/public.js','/manifest.webmanifest'];self.addEventListener('install',e=>e.waitUntil(caches.open(CACHE).then(c=>c.addAll(SHELL)).then(()=>self.skipWaiting())));self.addEventListener('activate',e=>e.waitUntil(caches.keys().then(keys=>Promise.all(keys.filter(key=>key!==CACHE).map(key=>caches.delete(key)))).then(()=>self.clients.claim())));self.addEventListener('fetch',e=>{if(e.request.method!=='GET')return;let u=new URL(e.request.url);if(u.origin!==location.origin||u.pathname.startsWith('/api/'))return;e.respondWith(fetch(e.request).then(r=>{caches.open(CACHE).then(c=>c.put(e.request,r.clone()));return r}).catch(()=>caches.match(e.request).then(r=>r||(e.request.mode==='navigate'?caches.match('/'):undefined))))});self.addEventListener('push',e=>{let d={};try{d=e.data.json()}catch{};e.waitUntil(self.registration.showNotification('FUSAA Service',{body:d.event||'Nouvel événement d’impression',data:d.payload||{}}))});self.addEventListener('notificationclick',e=>{e.notification.close();e.waitUntil(clients.openWindow('/'))});""",media_type="application/javascript")

@@ -12,7 +12,8 @@ def upgrade():
     if "archived_at" not in columns:
         op.add_column("guest_orders",sa.Column("archived_at",sa.DateTime(timezone=True),nullable=True))
     if "archived_by" not in columns:
-        op.add_column("guest_orders",sa.Column("archived_by",sa.String(36),sa.ForeignKey("users.id"),nullable=True))
+        with op.batch_alter_table("guest_orders") as batch:
+            batch.add_column(sa.Column("archived_by",sa.String(36),sa.ForeignKey("users.id",name="fk_guest_orders_archived_by_users"),nullable=True))
 
 def downgrade():
     with op.batch_alter_table("guest_orders") as batch:

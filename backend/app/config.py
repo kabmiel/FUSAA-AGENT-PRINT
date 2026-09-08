@@ -40,6 +40,11 @@ class Settings(BaseSettings):
     single_workshop_name: str = "FUSAA INFORMATIQUE"
     # Optional. Required only to activate signed Meta WhatsApp Business webhooks.
     meta_whatsapp_app_secret: str = ""
+    # Optional Cloudinary media storage for Boutique FUSAA product images.
+    # Leave empty locally: administrators may still use a direct image URL.
+    cloudinary_cloud_name: str = ""
+    cloudinary_api_key: str = ""
+    cloudinary_api_secret: str = ""
 
     def validate_runtime(self):
         if self.environment.lower()=="production":

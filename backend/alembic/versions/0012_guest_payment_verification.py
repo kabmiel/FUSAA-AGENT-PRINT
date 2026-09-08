@@ -14,7 +14,11 @@ def upgrade():
     if "payment_verified_at" not in columns:
         op.add_column("guest_orders",sa.Column("payment_verified_at",sa.DateTime(timezone=True),nullable=True))
     if "payment_verified_by" not in columns:
-        op.add_column("guest_orders",sa.Column("payment_verified_by",sa.String(36),sa.ForeignKey("users.id"),nullable=True))
+        # SQLite cannot add a foreign-key constraint with ALTER TABLE. Alembic's
+        # batch operation rebuilds the table safely while PostgreSQL keeps a
+        # normal ALTER operation.
+        with op.batch_alter_table("guest_orders") as batch:
+            batch.add_column(sa.Column("payment_verified_by",sa.String(36),sa.ForeignKey("users.id",name="fk_guest_orders_payment_verified_by_users"),nullable=True))
 
 def downgrade():
     with op.batch_alter_table("guest_orders") as batch:

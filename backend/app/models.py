@@ -92,6 +92,63 @@ class Product(Timestamped, Base):
     unit_price: Mapped[float] = mapped_column(Numeric(12,2), default=0)
     enabled: Mapped[bool] = mapped_column(Boolean, default=True)
 
+# Storefront models intentionally live beside the print models.  They share the
+# same organization and FUSAA administrator, without changing the older
+# business catalogue API used for print services.
+class ShopCategory(Timestamped, Base):
+    __tablename__="shop_categories"
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=uid)
+    organization_id: Mapped[str] = mapped_column(ForeignKey("organizations.id"), index=True)
+    name: Mapped[str] = mapped_column(String(100))
+    slug: Mapped[str] = mapped_column(String(140), index=True)
+    description: Mapped[str | None] = mapped_column(Text, nullable=True)
+    icon: Mapped[str | None] = mapped_column(String(80), nullable=True)
+    enabled: Mapped[bool] = mapped_column(Boolean, default=True)
+    __table_args__=(UniqueConstraint("organization_id", "slug", name="uq_shop_category_org_slug"),)
+
+class ShopProduct(Timestamped, Base):
+    __tablename__="shop_products"
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=uid)
+    organization_id: Mapped[str] = mapped_column(ForeignKey("organizations.id"), index=True)
+    category_id: Mapped[str | None] = mapped_column(ForeignKey("shop_categories.id"), nullable=True, index=True)
+    name: Mapped[str] = mapped_column(String(255))
+    slug: Mapped[str] = mapped_column(String(280), index=True)
+    description: Mapped[str] = mapped_column(Text, default="")
+    brand: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    price_xof: Mapped[float] = mapped_column(Numeric(12,2), default=0)
+    original_price_xof: Mapped[float | None] = mapped_column(Numeric(12,2), nullable=True)
+    condition: Mapped[str] = mapped_column(String(16), default="NEW")
+    stock_quantity: Mapped[int] = mapped_column(Integer, default=0)
+    specifications: Mapped[dict] = mapped_column(JSON, default=dict)
+    image_url: Mapped[str | None] = mapped_column(String(2048), nullable=True)
+    cloudinary_public_id: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    enabled: Mapped[bool] = mapped_column(Boolean, default=True)
+    __table_args__=(UniqueConstraint("organization_id", "slug", name="uq_shop_product_org_slug"),)
+
+class ShopOrder(Timestamped, Base):
+    __tablename__="shop_orders"
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=uid)
+    organization_id: Mapped[str] = mapped_column(ForeignKey("organizations.id"), index=True)
+    order_number: Mapped[str] = mapped_column(String(60), unique=True, index=True)
+    customer_name: Mapped[str] = mapped_column(String(160))
+    customer_phone: Mapped[str] = mapped_column(String(50), index=True)
+    delivery_address: Mapped[str | None] = mapped_column(Text, nullable=True)
+    notes: Mapped[str | None] = mapped_column(Text, nullable=True)
+    status: Mapped[str] = mapped_column(String(24), default="PENDING", index=True)
+    payment_status: Mapped[str] = mapped_column(String(24), default="PENDING")
+    payment_method: Mapped[str | None] = mapped_column(String(50), nullable=True)
+    total_xof: Mapped[float] = mapped_column(Numeric(12,2), default=0)
+    access_token_hash: Mapped[str] = mapped_column(String(64), unique=True)
+
+class ShopOrderLine(Base):
+    __tablename__="shop_order_lines"
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=uid)
+    order_id: Mapped[str] = mapped_column(ForeignKey("shop_orders.id"), index=True)
+    product_id: Mapped[str | None] = mapped_column(ForeignKey("shop_products.id"), nullable=True)
+    product_name: Mapped[str] = mapped_column(String(255))
+    unit_price_xof: Mapped[float] = mapped_column(Numeric(12,2), default=0)
+    quantity: Mapped[int] = mapped_column(Integer, default=1)
+
 class Service(Timestamped, Base):
     __tablename__="services"
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=uid)
