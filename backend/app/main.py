@@ -403,17 +403,23 @@ def shop_admin_categories(organization_id:str,user:User=Depends(current_user),db
 
 @app.post("/api/v1/shop/admin/categories",status_code=201)
 def create_shop_category(organization_id:str,data:ShopCategoryIn,user:User=Depends(current_user),db:Session=Depends(get_db)):
-    require_member(db,user,organization_id);slug=shop_slug(data.slug or data.name,"categorie")
+    require_org_admin(db,user,organization_id);slug=shop_slug(data.slug or data.name,"categorie")
     if db.query(ShopCategory).filter_by(organization_id=organization_id,slug=slug).first():raise HTTPException(409,"Cette catégorie existe déjà")
     item=ShopCategory(organization_id=organization_id,slug=slug,**data.model_dump(exclude={"slug"}));db.add(item);db.flush();audit(db,user.id,"SHOP_CATEGORY_CREATED","ShopCategory",item.id,result="SUCCESS");db.commit();return shop_category_out(item)
 
 @app.patch("/api/v1/shop/admin/categories/{category_id}")
 def update_shop_category(category_id:str,data:ShopCategoryIn,user:User=Depends(current_user),db:Session=Depends(get_db)):
-    item=one(db,ShopCategory,category_id);require_member(db,user,item.organization_id);values=data.model_dump();item.slug=shop_slug(values.pop("slug") or values["name"],"categorie")
+    item=one(db,ShopCategory,category_id);require_org_admin(db,user,item.organization_id);values=data.model_dump();item.slug=shop_slug(values.pop("slug") or values["name"],"categorie")
     duplicate=db.query(ShopCategory).filter(ShopCategory.organization_id==item.organization_id,ShopCategory.slug==item.slug,ShopCategory.id!=item.id).first()
     if duplicate:raise HTTPException(409,"Cette catégorie existe déjà")
     for key,value in values.items():setattr(item,key,value)
     audit(db,user.id,"SHOP_CATEGORY_UPDATED","ShopCategory",item.id,result="SUCCESS");db.commit();return shop_category_out(item)
+
+@app.delete("/api/v1/shop/admin/categories/{category_id}")
+def archive_shop_category(category_id:str,user:User=Depends(current_user),db:Session=Depends(get_db)):
+    item=one(db,ShopCategory,category_id);require_org_admin(db,user,item.organization_id)
+    if db.query(ShopProduct).filter_by(category_id=item.id,enabled=True).first():raise HTTPException(409,"Archivez ou reclassez d’abord les produits de cette catégorie")
+    item.enabled=False;audit(db,user.id,"SHOP_CATEGORY_ARCHIVED","ShopCategory",item.id,result="SUCCESS");db.commit();return {"id":item.id,"archived":True}
 
 @app.get("/api/v1/shop/admin/products")
 def shop_admin_products(organization_id:str,user:User=Depends(current_user),db:Session=Depends(get_db)):
@@ -433,20 +439,20 @@ def apply_shop_product(db:Session,item:ShopProduct,data:ShopProductIn):
 
 @app.post("/api/v1/shop/admin/products",status_code=201)
 def create_shop_product(organization_id:str,data:ShopProductIn,user:User=Depends(current_user),db:Session=Depends(get_db)):
-    require_member(db,user,organization_id);item=ShopProduct(organization_id=organization_id,name=data.name,slug="article")
+    require_org_admin(db,user,organization_id);item=ShopProduct(organization_id=organization_id,name=data.name,slug="article")
     db.add(item);db.flush();apply_shop_product(db,item,data);audit(db,user.id,"SHOP_PRODUCT_CREATED","ShopProduct",item.id,result="SUCCESS");db.commit();return shop_product_out(db,item,True)
 
 @app.patch("/api/v1/shop/admin/products/{product_id}")
 def update_shop_product(product_id:str,data:ShopProductIn,user:User=Depends(current_user),db:Session=Depends(get_db)):
-    item=one(db,ShopProduct,product_id);require_member(db,user,item.organization_id);apply_shop_product(db,item,data);audit(db,user.id,"SHOP_PRODUCT_UPDATED","ShopProduct",item.id,result="SUCCESS");db.commit();return shop_product_out(db,item,True)
+    item=one(db,ShopProduct,product_id);require_org_admin(db,user,item.organization_id);apply_shop_product(db,item,data);audit(db,user.id,"SHOP_PRODUCT_UPDATED","ShopProduct",item.id,result="SUCCESS");db.commit();return shop_product_out(db,item,True)
 
 @app.delete("/api/v1/shop/admin/products/{product_id}")
 def archive_shop_product(product_id:str,user:User=Depends(current_user),db:Session=Depends(get_db)):
-    item=one(db,ShopProduct,product_id);require_member(db,user,item.organization_id);item.enabled=False;audit(db,user.id,"SHOP_PRODUCT_ARCHIVED","ShopProduct",item.id,result="SUCCESS");db.commit();return {"id":item.id,"archived":True}
+    item=one(db,ShopProduct,product_id);require_org_admin(db,user,item.organization_id);item.enabled=False;audit(db,user.id,"SHOP_PRODUCT_ARCHIVED","ShopProduct",item.id,result="SUCCESS");db.commit();return {"id":item.id,"archived":True}
 
 @app.post("/api/v1/shop/admin/products/{product_id}/image")
 async def upload_shop_image(product_id:str,file:UploadFile=File(...),user:User=Depends(current_user),db:Session=Depends(get_db)):
-    item=one(db,ShopProduct,product_id);require_member(db,user,item.organization_id)
+    item=one(db,ShopProduct,product_id);require_org_admin(db,user,item.organization_id)
     if not (settings.cloudinary_cloud_name and settings.cloudinary_api_key and settings.cloudinary_api_secret):raise HTTPException(503,"Cloudinary n’est pas configuré. Ajoutez CLOUDINARY_CLOUD_NAME, CLOUDINARY_API_KEY et CLOUDINARY_API_SECRET dans les variables d’environnement.")
     if not (file.content_type or "").startswith("image/"):raise HTTPException(422,"Choisissez une image (JPG, PNG, WEBP…)")
     try:
@@ -465,7 +471,7 @@ def shop_admin_orders(organization_id:str,status:str|None=None,user:User=Depends
 
 @app.patch("/api/v1/shop/admin/orders/{order_id}")
 async def update_shop_order(order_id:str,data:ShopOrderStatusIn,user:User=Depends(current_user),db:Session=Depends(get_db)):
-    order=one(db,ShopOrder,order_id);require_member(db,user,order.organization_id);order.status=data.status
+    order=one(db,ShopOrder,order_id);require_org_admin(db,user,order.organization_id);order.status=data.status
     if data.payment_status is not None:order.payment_status=data.payment_status
     audit(db,user.id,"SHOP_ORDER_UPDATED","ShopOrder",order.id,parameters=data.model_dump(exclude_none=True),result="SUCCESS");db.commit();await hub.publish("SHOP_ORDER_UPDATED",{"order_number":order.order_number,"status":order.status},order.organization_id);return shop_order_out(db,order)
 
