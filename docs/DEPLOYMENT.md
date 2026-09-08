@@ -11,9 +11,11 @@ Pour permettre l’import direct des images produits depuis l’administration F
 CLOUDINARY_CLOUD_NAME=votre_cloud_name
 CLOUDINARY_API_KEY=votre_api_key
 CLOUDINARY_API_SECRET=votre_api_secret
+CLOUDINARY_UPLOAD_BASE_FOLDER=fusaa-shop
+CLOUDINARY_FORCE_SIGNED_UPLOADS=true
 ```
 
-Ne mettez jamais ces valeurs dans Git. Sans elles, la boutique fonctionne toujours avec des URL d’images saisies manuellement ; seul le bouton d’import Cloudinary reste désactivé côté serveur avec un message explicite.
+Ne mettez jamais ces valeurs dans Git. FUSAA utilise le même mécanisme sécurisé que Boulangerie : le navigateur reçoit une signature temporaire, envoie le fichier directement à Cloudinary, puis FUSAA enregistre uniquement l’URL sécurisée. La clé secrète ne quitte jamais le serveur.
 
 ## Import initial de l’ancien catalogue Shopinverse
 

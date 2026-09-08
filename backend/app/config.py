@@ -45,6 +45,8 @@ class Settings(BaseSettings):
     cloudinary_cloud_name: str = ""
     cloudinary_api_key: str = ""
     cloudinary_api_secret: str = ""
+    cloudinary_upload_base_folder: str = "fusaa-shop"
+    cloudinary_force_signed_uploads: bool = True
 
     def validate_runtime(self):
         if self.environment.lower()=="production":

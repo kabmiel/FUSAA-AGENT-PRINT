@@ -30,7 +30,7 @@ from .processing_schemas import LayoutRequest, ProcessRequest
 from .connector_schemas import ConnectorCreate, ConnectorOut, ConnectorSecretOut
 from .connectors import IncomingDocument, ingest_incoming_document, verify_meta_signature, whatsapp_media_message_ids
 from .business_schemas import CatalogIn, CustomerIn, CustomerOut, FinalCostIn, InvoiceCreate, InvoiceOut, PaymentIn, PriceRuleIn, PriceRuleOut, PrintCostOut, ServiceIn
-from .shop_schemas import ShopCategoryIn, ShopOrderStatusIn, ShopProductIn, ShopPublicOrderIn
+from .shop_schemas import ShopCategoryIn, ShopCloudinaryImageIn, ShopOrderStatusIn, ShopProductIn, ShopPublicOrderIn
 from .business import estimate_print_cost
 from .multisite_schemas import RouteJobIn, WorkshopMemberIn, WorkshopMemberRoleIn
 from .observability import RequestAuditMiddleware, configure_logging
@@ -462,6 +462,30 @@ async def upload_shop_image(product_id:str,file:UploadFile=File(...),user:User=D
         result=cloudinary.uploader.upload(await file.read(),folder="fusaa-shop/products",resource_type="image",public_id=f"{item.id}-{secrets.token_hex(4)}",overwrite=False)
     except Exception as error:raise HTTPException(502,"Cloudinary a refusé l’image. Vérifiez les identifiants Cloudinary.") from error
     item.image_url=result.get("secure_url");item.cloudinary_public_id=result.get("public_id");audit(db,user.id,"SHOP_PRODUCT_IMAGE_UPLOADED","ShopProduct",item.id,result="SUCCESS");db.commit();return shop_product_out(db,item,True)
+
+def cloudinary_is_configured()->bool:
+    return bool(settings.cloudinary_cloud_name and settings.cloudinary_api_key and settings.cloudinary_api_secret and settings.cloudinary_force_signed_uploads)
+
+@app.post("/api/v1/shop/admin/cloudinary/signature")
+def shop_cloudinary_signature(organization_id:str,user:User=Depends(current_user),db:Session=Depends(get_db)):
+    """Return a short-lived signed upload payload; the secret never leaves FUSAA."""
+    require_org_admin(db,user,organization_id)
+    if not cloudinary_is_configured():raise HTTPException(503,"Cloudinary n’est pas configuré. Vérifiez CLOUDINARY_CLOUD_NAME, CLOUDINARY_API_KEY, CLOUDINARY_API_SECRET et CLOUDINARY_FORCE_SIGNED_UPLOADS.")
+    try:
+        import cloudinary
+        from cloudinary.utils import api_sign_request
+        cloudinary.config(cloud_name=settings.cloudinary_cloud_name,api_key=settings.cloudinary_api_key,api_secret=settings.cloudinary_api_secret,secure=True)
+        timestamp=int(datetime.now(timezone.utc).timestamp());base=settings.cloudinary_upload_base_folder.strip("/") or "fusaa-shop";folder=f"{base}/products";public_id=secrets.token_hex(16)
+        signature=api_sign_request({"folder":folder,"public_id":public_id,"timestamp":timestamp},settings.cloudinary_api_secret)
+    except Exception as error:raise HTTPException(503,"Cloudinary n’est pas disponible sur ce serveur. Vérifiez le package et les variables d’environnement.") from error
+    return {"signature":signature,"timestamp":timestamp,"folder":folder,"public_id":public_id,"api_key":settings.cloudinary_api_key,"cloud_name":settings.cloudinary_cloud_name,"resource_type":"image"}
+
+@app.post("/api/v1/shop/admin/products/{product_id}/cloudinary-image")
+def save_shop_cloudinary_image(product_id:str,data:ShopCloudinaryImageIn,user:User=Depends(current_user),db:Session=Depends(get_db)):
+    item=one(db,ShopProduct,product_id);require_org_admin(db,user,item.organization_id)
+    expected_prefix=f"https://res.cloudinary.com/{settings.cloudinary_cloud_name}/"
+    if not settings.cloudinary_cloud_name or not data.image_url.startswith(expected_prefix):raise HTTPException(422,"L’URL ne provient pas du compte Cloudinary configuré")
+    item.image_url=data.image_url;item.cloudinary_public_id=data.public_id;audit(db,user.id,"SHOP_PRODUCT_CLOUDINARY_IMAGE_SAVED","ShopProduct",item.id,result="SUCCESS");db.commit();return shop_product_out(db,item,True)
 
 @app.get("/api/v1/shop/admin/orders")
 def shop_admin_orders(organization_id:str,status:str|None=None,user:User=Depends(current_user),db:Session=Depends(get_db)):

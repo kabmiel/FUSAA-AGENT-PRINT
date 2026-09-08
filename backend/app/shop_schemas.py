@@ -37,3 +37,7 @@ class ShopPublicOrderIn(BaseModel):
 class ShopOrderStatusIn(BaseModel):
     status: str = Field(pattern="^(PENDING|CONFIRMED|PROCESSING|READY|DELIVERED|CANCELLED)$")
     payment_status: str | None = Field(default=None, pattern="^(PENDING|PAID|REJECTED)$")
+
+class ShopCloudinaryImageIn(BaseModel):
+    image_url: str = Field(min_length=12, max_length=2048)
+    public_id: str = Field(min_length=1, max_length=255)
