@@ -1134,7 +1134,9 @@ def public_js():return HTMLResponse((Path(__file__).parent/"web"/"public.js").re
 @app.get("/shop.js",response_class=HTMLResponse)
 def shop_js():
     glass_css=".product{overflow:hidden;background:#fff;color:#122036;border-color:#dce6ed;box-shadow:0 8px 24px #0000001c}.product:hover{border-color:#23bfae}.product .image,.product:has(.image img) .image{height:300px;background:#f3f5f6}.product .image img{object-fit:cover;object-position:center}.product:has(.image img){min-height:0;background:#fff}.product .info,.product:has(.image img) .info{position:relative;inset:auto;padding:18px 16px 16px;border:0;border-radius:0;background:#fff;backdrop-filter:none;box-shadow:none;text-shadow:none}.product .tag,.product:has(.image img) .tag{color:#169b91;font-weight:900}.product h2,.product:has(.image img) h2{min-height:3.15em;color:#102038;font-size:1.03rem;line-height:1.35}.product .price,.product:has(.image img) .price{display:flex;align-items:baseline;gap:8px;flex-wrap:wrap;color:#ec3151;font-size:1.02rem}.product .price:has(.old)::before{content:'Prix réduit';font-size:.65rem;font-weight:800;letter-spacing:.06em;text-transform:uppercase}.product .price:not(:has(.old))::before{content:'Prix';font-size:.65rem;font-weight:800;letter-spacing:.06em;text-transform:uppercase;color:#667a8b}.product .old,.product:has(.image img) .old{color:#83919d;font-size:.83rem}.product .old::before{content:'Prix normal · '}.product .stock,.product:has(.image img) .stock{color:#587082}.product .info button{background:#142132}.product .info button:hover{background:#213552}@media(max-width:470px){.product .image,.product:has(.image img) .image{height:275px}}"
-    bootstrap=f"document.head.insertAdjacentHTML('beforeend','<style>{glass_css}</style>');\n"
+    # JSON encoding keeps CSS quotes (for example the sale-price labels) safe
+    # inside the JavaScript response.
+    bootstrap="document.head.insertAdjacentHTML('beforeend',"+json.dumps("<style>"+glass_css+"</style>")+ ");\n"
     return HTMLResponse(bootstrap+(Path(__file__).parent/"web"/"shop.js").read_text(encoding="utf-8"),media_type="application/javascript")
 
 @app.get("/sw.js",response_class=HTMLResponse)
