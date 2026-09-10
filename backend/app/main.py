@@ -23,7 +23,7 @@ from .schemas import *
 from .security import create_access_token, current_user, hash_password, verify_password
 from .services import DIRECT_PRINT_MIMES, audit, build_command, create_preview, inspect_file, issue_agent_key, storage_path, transition
 from .ai import DeterministicProvider, OllamaProvider, SafetyLevel, TOOL_SAFETY, execute_safe_tool, resolve_job
-from .assistant_schemas import AssistantExecuteRequest, AssistantRequest, AssistantResponse, ToolCall
+from .assistant_schemas import AssistantExecuteRequest, AssistantRequest, AssistantResponse, GuestAssistantRequest, ToolCall
 from .assistant_flow import workflow_response, safe_result_response
 from .document_processing import DocumentProcessor, LayoutEngine
 from .processing_schemas import LayoutRequest, ProcessRequest
@@ -85,6 +85,25 @@ def readyz():
 def public_workshop_details(db:Session=Depends(get_db)):
     workshop=public_workshop(db)
     return {"name":workshop.name,"workshop_id":workshop.id,"formats":["PDF","JPG","PNG","Autres fichiers"],"currency":"XOF"}
+
+def guest_assistant_reply(message:str,profile:str)->dict:
+    text=message.lower()
+    if any(word in text for word in ("format","pdf","word","docx","image","fichier")):
+        return {"title":"Formats et fichier","answer":"Vous pouvez envoyer tous les formats. Les PDF, JPG et PNG sont généralement imprimables directement. Les documents Office ou autres formats sont conservés et l’atelier vous indique si une préparation est nécessaire.","suggestions":["Comment envoyer mon fichier ?","Comment obtenir le prix ?"]}
+    if any(word in text for word in ("prix","tarif","coût","cout","cher","fcfa","estimation")):
+        return {"title":"Estimation du prix","answer":"Choisissez votre fichier, le format, le nombre d’exemplaires et la couleur : FUSAA affiche ensuite une estimation. L’atelier confirme toujours le montant final avant impression.","suggestions":["Noir et blanc ou couleur ?","Comment payer ?"]}
+    if any(word in text for word in ("paiement","payer","mobile money","espèce","espece")):
+        return {"title":"Paiement","answer":"Aucun paiement n’est débité automatiquement. L’atelier confirme la disponibilité, le montant et le mode de paiement avec vous avant de lancer l’impression.","suggestions":["Suivre ma commande","Que se passe-t-il après l’envoi ?"]}
+    if any(word in text for word in ("suivi","statut","commande","lien","termin")) or profile=="tracking_guest":
+        return {"title":"Suivi de commande","answer":"Après l’envoi, conservez votre lien de suivi personnel. Il indique les étapes : fichier reçu, paiement, préparation, impression puis terminé. Seule une personne disposant de ce lien peut consulter cette commande.","suggestions":["Activer les alertes","Nouvelle impression"]}
+    if any(word in text for word in ("sécurité","securite","confidentiel","donnée","donnee","protéger","proteger")):
+        return {"title":"Confidentialité","answer":"Votre fichier est utilisé pour traiter votre commande. L’assistant invité ne peut ni imprimer, ni modifier une commande, ni accéder aux autres commandes ou aux réglages de l’atelier.","suggestions":["Formats acceptés","Suivre ma commande"]}
+    return {"title":"Assistant invité FUSAA","answer":"Je peux vous guider pour envoyer un fichier, choisir les réglages, comprendre une estimation, le paiement ou le suivi. Dites-moi simplement ce dont vous avez besoin.","suggestions":["Quels formats sont acceptés ?","Comment obtenir le prix ?","Suivre ma commande"]}
+
+@app.post("/api/v1/public/assistant")
+def public_guest_assistant(data:GuestAssistantRequest):
+    """Read-only assistant for unauthenticated customers; never exposes workshop data."""
+    return guest_assistant_reply(data.message,data.profile)
 
 def shop_slug(value:str, fallback:str="article")->str:
     clean=re.sub(r"[^a-z0-9]+", "-", value.lower().strip()).strip("-")

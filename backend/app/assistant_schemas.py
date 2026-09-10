@@ -9,6 +9,9 @@ class AssistantRequest(BaseModel):
     message:str=Field(min_length=1,max_length=2000)
     history:list[ChatMessage]=Field(default_factory=list,max_length=8)
     selected_job_id:str|None=Field(default=None,max_length=36)
+class GuestAssistantRequest(BaseModel):
+    message:str=Field(min_length=1,max_length=1000)
+    profile:Literal["new_guest","tracking_guest"]="new_guest"
 class ToolCall(BaseModel): name:str; arguments:dict[str,Any]={}; safety:SafetyLevel; result:dict[str,Any]|None=None
 class AssistantResponse(BaseModel):
     answer:str
