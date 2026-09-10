@@ -208,6 +208,14 @@ def test_assistant_uses_saved_public_price_grid(setup_db,monkeypatch):
     assert response.answer=="Pour 20 pages en noir et blanc : 1,000 FCFA."
     assert "Tarif appliqué : 50 FCFA par page" in response.steps
 
+def test_guest_assistant_greets_and_shares_payment_contacts():
+    from app.main import guest_assistant_reply
+    greeting=guest_assistant_reply("Bonjour", "shop_guest")
+    payment=guest_assistant_reply("Comment payer par Wave ?", "shop_guest")
+    assert greeting["title"].startswith("Bonjour")
+    assert "+227 98313369" in greeting["answer"]
+    assert "MYNITA" in payment["answer"] and "+227 90531465" in payment["answer"]
+
 def test_public_home_and_admin_have_separate_shells():
     storefront=index().body.decode("utf-8")
     public=impression_index().body.decode("utf-8")

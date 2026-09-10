@@ -6,6 +6,7 @@ import io
 import csv
 import zipfile
 import re
+import unicodedata
 from contextlib import asynccontextmanager
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -99,6 +100,30 @@ def guest_assistant_reply(message:str,profile:str)->dict:
     if any(word in text for word in ("sécurité","securite","confidentiel","donnée","donnee","protéger","proteger")):
         return {"title":"Confidentialité","answer":"Votre fichier est utilisé pour traiter votre commande. L’assistant invité ne peut ni imprimer, ni modifier une commande, ni accéder aux autres commandes ou aux réglages de l’atelier.","suggestions":["Formats acceptés","Suivre ma commande"]}
     return {"title":"Assistant invité FUSAA","answer":"Je peux vous guider pour envoyer un fichier, choisir les réglages, comprendre une estimation, le paiement ou le suivi. Dites-moi simplement ce dont vous avez besoin.","suggestions":["Quels formats sont acceptés ?","Comment obtenir le prix ?","Suivre ma commande"]}
+
+PAYMENT_NUMBER="+227 98313369"
+WHATSAPP_NUMBER="+227 90531465"
+
+def payment_instructions()->str:
+    return f"Pour payer, utilisez MYNITA, AMANATA ou WAVE au {PAYMENT_NUMBER}. Pour toute discussion WhatsApp : {WHATSAPP_NUMBER}."
+
+def guest_assistant_reply(message:str,profile:str)->dict:
+    text="".join(char for char in unicodedata.normalize("NFD",message.lower()) if not unicodedata.combining(char))
+    if any(word in text for word in ("bonjour","bonsoir","salut","hello","coucou")):
+        return {"title":"Bonjour, bienvenue chez FUSAA","answer":"Bonjour ! Je peux vous aider avec les produits, le panier, une impression, le paiement ou le suivi de commande. "+payment_instructions(),"suggestions":["Comment payer ?","Voir les produits","Envoyer un fichier"]}
+    if any(word in text for word in ("paiement","payer","mynita","amanata","wave","mobile money","espece")):
+        return {"title":"Paiement FUSAA","answer":payment_instructions()+" Indiquez votre nom ou votre numéro de commande dans le message de paiement ; FUSAA confirme ensuite la commande avant traitement.","suggestions":["Suivre ma commande","Discuter sur WhatsApp"]}
+    if any(word in text for word in ("whatsapp","discussion","contact","parler","joindre")):
+        return {"title":"Discussion WhatsApp","answer":f"Écrivez à FUSAA sur WhatsApp au {WHATSAPP_NUMBER}. Pour le paiement, le numéro dédié reste {PAYMENT_NUMBER}.","suggestions":["Comment payer ?","Suivre ma commande"]}
+    if profile=="shop_guest" and any(word in text for word in ("produit","boutique","panier","livraison","stock","article","commande")):
+        return {"title":"Boutique FUSAA","answer":"Ajoutez vos produits au panier, ajustez les quantités, puis envoyez la commande. La disponibilité et la livraison sont confirmées par FUSAA. "+payment_instructions(),"suggestions":["Comment payer ?","Discuter sur WhatsApp","Voir mon panier"]}
+    if any(word in text for word in ("format","pdf","word","docx","image","fichier")):
+        return {"title":"Formats et fichier","answer":"Vous pouvez envoyer tous les formats. Les PDF, JPG et PNG sont généralement imprimables directement. Les documents Office ou autres formats sont conservés et l’atelier vous indique si une préparation est nécessaire.","suggestions":["Comment envoyer mon fichier ?","Comment obtenir le prix ?"]}
+    if any(word in text for word in ("prix","tarif","cout","cher","fcfa","estimation")):
+        return {"title":"Estimation du prix","answer":"Choisissez votre fichier, le format, le nombre d’exemplaires et la couleur : FUSAA affiche ensuite une estimation. L’atelier confirme toujours le montant final avant impression.","suggestions":["Noir et blanc ou couleur ?","Comment payer ?"]}
+    if any(word in text for word in ("suivi","statut","commande","lien","termin")) or profile=="tracking_guest":
+        return {"title":"Suivi de commande","answer":"Après l’envoi, conservez votre lien de suivi personnel. Il indique les étapes : fichier reçu, paiement, préparation, impression puis terminé. Seule une personne disposant de ce lien peut consulter cette commande.","suggestions":["Activer les alertes","Nouvelle impression"]}
+    return {"title":"Assistant invité FUSAA","answer":"Je peux vous guider pour envoyer un fichier, choisir les réglages, utiliser la boutique, comprendre une estimation, le paiement ou le suivi. "+payment_instructions(),"suggestions":["Bonjour","Comment payer ?","Discuter sur WhatsApp"]}
 
 @app.post("/api/v1/public/assistant")
 def public_guest_assistant(data:GuestAssistantRequest):
