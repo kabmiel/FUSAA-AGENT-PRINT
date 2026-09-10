@@ -190,11 +190,11 @@ def test_explicit_monochrome_and_color_price_tiers(setup_db,monkeypatch):
     assert float(amount)==750 and breakdown["per_page"]==75
 
 def test_public_home_and_admin_have_separate_shells():
-    portal=index().body.decode("utf-8")
+    storefront=index().body.decode("utf-8")
     public=impression_index().body.decode("utf-8")
     tracked=public_tracking_page("FUS-20260101-ABCDEF","secret").body.decode("utf-8")
     admin=admin_index().body.decode("utf-8")
-    assert "FUSAA Service" in portal and "Boutique FUSAA" in portal
+    assert "Boutique FUSAA" in storefront and "shop.js" in storefront and "cartButton" in storefront
     assert "guestPhone" in public and "public.js" in public
     assert 'aria-live="polite"' in public and "prefers-reduced-motion" in public
     assert tracked==public
