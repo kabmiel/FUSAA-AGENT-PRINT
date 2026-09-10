@@ -442,6 +442,26 @@ def shop_admin_products(organization_id:str,user:User=Depends(current_user),db:S
     require_member(db,user,organization_id)
     return [shop_product_out(db,item,True) for item in db.query(ShopProduct).filter_by(organization_id=organization_id).order_by(ShopProduct.created_at.desc()).all()]
 
+@app.get("/api/v1/shop/admin/products/page")
+def shop_admin_products_page(organization_id:str,page:int=1,page_size:int=12,q:str|None=None,category_id:str|None=None,stock:str|None=None,user:User=Depends(current_user),db:Session=Depends(get_db)):
+    """Fast product-management list: only one small page and its card data."""
+    require_member(db,user,organization_id)
+    query=db.query(ShopProduct).filter_by(organization_id=organization_id)
+    if q and q.strip():
+        needle=f"%{q.strip()}%";query=query.filter(or_(ShopProduct.name.ilike(needle),ShopProduct.brand.ilike(needle),ShopProduct.description.ilike(needle)))
+    if category_id:query=query.filter_by(category_id=category_id)
+    if stock=="low":query=query.filter(ShopProduct.stock_quantity.between(0,3),ShopProduct.enabled.is_(True))
+    elif stock=="out":query=query.filter(ShopProduct.stock_quantity==0,ShopProduct.enabled.is_(True))
+    elif stock=="active":query=query.filter(ShopProduct.enabled.is_(True))
+    elif stock=="archived":query=query.filter(ShopProduct.enabled.is_(False))
+    safe_page=max(page,1);safe_size=min(max(page_size,1),24)
+    rows=query.order_by(ShopProduct.created_at.desc()).offset((safe_page-1)*safe_size).limit(safe_size+1).all()
+    return {"items":[shop_product_out(db,item,True) for item in rows[:safe_size]],"page":safe_page,"page_size":safe_size,"has_more":len(rows)>safe_size}
+
+@app.get("/api/v1/shop/admin/products/{product_id}")
+def shop_admin_product_detail(product_id:str,user:User=Depends(current_user),db:Session=Depends(get_db)):
+    item=one(db,ShopProduct,product_id);require_member(db,user,item.organization_id);return shop_product_out(db,item,True)
+
 def apply_shop_product(db:Session,item:ShopProduct,data:ShopProductIn):
     values=data.model_dump();category_id=values.get("category_id")
     if category_id:
