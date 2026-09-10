@@ -198,6 +198,16 @@ def test_explicit_monochrome_and_color_price_tiers(setup_db,monkeypatch):
     job.color_mode="COLOR";amount,breakdown=estimate_print_cost(db,job)
     assert float(amount)==750 and breakdown["per_page"]==75
 
+def test_assistant_uses_saved_public_price_grid(setup_db,monkeypatch):
+    from app.assistant_flow import workflow_response
+    from app.assistant_schemas import AssistantRequest
+    db,_,admin=setup_db
+    monkeypatch.setattr(settings,"single_workshop_id","a")
+    set_public_pricing(PublicPricingIn(monochrome_page=50,monochrome_discount_from=50,monochrome_discount_page=25,color_page=100,color_discount_from=50,color_discount_page=50),admin,db)
+    response=workflow_response(AssistantRequest(message="Combien pour 20 pages noir et blanc ?"),db,admin)
+    assert response.answer=="Pour 20 pages en noir et blanc : 1,000 FCFA."
+    assert "Tarif appliqué : 50 FCFA par page" in response.steps
+
 def test_public_home_and_admin_have_separate_shells():
     storefront=index().body.decode("utf-8")
     public=impression_index().body.decode("utf-8")
