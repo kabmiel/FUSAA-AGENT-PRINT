@@ -15,12 +15,12 @@ ROOT=Path(__file__).parents[1]
 sys.path[:0]=[str(ROOT/"backend"),str(ROOT/"local-agent")]
 from app.database import Base
 from app.models import User,Organization,OrganizationMember,Workshop,WorkshopMember,Document,PrintJob,ComputerAgent,Printer,JobStatus,LocalActivity,BrowserLink,GuestOrder,ShopCategory,ShopProduct
-from app.main import cancel_job,confirm_job,prepare_job,central_supervision,list_jobs,list_documents,audit_history,list_workshop_members,update_workshop_member,remove_workshop_member,create_guest_order,guest_order_status,verify_guest_payment,list_guest_orders,export_guest_orders,archive_guest_order,restore_guest_order,set_public_pricing,get_public_pricing,refresh_guest_quote,create_guest_receipt,production_dashboard,index,impression_index,admin_index,public_tracking_page,delete_job,archive_public_job,create_shop_order,shop_public_products,shop_public_products_page,shop_admin_products_page
+from app.main import cancel_job,confirm_job,prepare_job,central_supervision,list_jobs,list_documents,audit_history,list_workshop_members,update_workshop_member,remove_workshop_member,assign_workshop_member,register,create_guest_order,guest_order_status,verify_guest_payment,list_guest_orders,export_guest_orders,archive_guest_order,restore_guest_order,set_public_pricing,get_public_pricing,refresh_guest_quote,create_guest_receipt,production_dashboard,index,impression_index,admin_index,public_tracking_page,delete_job,archive_public_job,create_shop_order,shop_public_products,shop_public_products_page,shop_admin_products_page
 from app.connectors import IncomingDocument, ingest_incoming_document
 from app.config import settings
-from app.schemas import JobOptions,GuestPaymentIn,PublicPricingIn
+from app.schemas import JobOptions,GuestPaymentIn,PublicPricingIn,RegisterIn
 from app.shop_schemas import ShopPublicOrderIn
-from app.multisite_schemas import WorkshopMemberRoleIn
+from app.multisite_schemas import WorkshopMemberIn,WorkshopMemberRoleIn
 from app.ai import execute_safe_tool,OllamaProvider
 from fusaa_agent.main import Agent,Settings
 from fusaa_agent.printing import page_indices
@@ -64,6 +64,15 @@ def test_workshop_roles_are_admin_managed_and_enforced(setup_db):
     assert not audit_history(action="WORKSHOP_MEMBER_ROLE_UPDATED",user=viewer,db=db)
     assert remove_workshop_member("a",viewer.id,admin,db)["removed"]
     with pytest.raises(HTTPException):require_workshop_write(db,viewer,"a")
+
+def test_team_invitation_is_claimed_on_registration(setup_db):
+    db,_,admin=setup_db
+    invitation=assign_workshop_member("a",WorkshopMemberIn(user_email="invite@example.com",role="OPERATOR"),admin,db)
+    invited=db.query(User).filter_by(email="invite@example.com").one()
+    assert invitation["invited"] and invitation["registration_url"].startswith("/inscription") and not invited.is_active
+    register(RegisterIn(email="invite@example.com",password="a-secure-password",display_name="Invité"),db)
+    db.refresh(invited)
+    assert invited.is_active and db.query(WorkshopMember).filter_by(workshop_id="a",user_id=invited.id).one().role=="OPERATOR"
 
 def test_system_health_exposes_verified_backup_timestamp(setup_db,tmp_path,monkeypatch):
     from app import main

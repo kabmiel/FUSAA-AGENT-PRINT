@@ -668,8 +668,13 @@ async def execute_assistant(data:AssistantExecuteRequest,user:User=Depends(curre
 
 @app.post("/api/v1/auth/register",response_model=TokenOut,status_code=201)
 def register(data:RegisterIn,db:Session=Depends(get_db)):
-    if db.query(User).filter_by(email=data.email.lower()).first(): raise HTTPException(409,"Email already registered")
-    user=User(email=data.email.lower(),password_hash=hash_password(data.password),display_name=data.display_name); db.add(user); db.flush()
+    user=db.query(User).filter_by(email=data.email.lower()).first()
+    if user and user.is_active: raise HTTPException(409,"Email already registered")
+    if user:
+        # A workshop manager can pre-create a safe inactive invitation. Claim it here.
+        user.password_hash=hash_password(data.password);user.display_name=data.display_name;user.is_active=True
+    else:
+        user=User(email=data.email.lower(),password_hash=hash_password(data.password),display_name=data.display_name); db.add(user); db.flush()
     # First registration bootstraps the configured single FUSAA workshop.
     if settings.single_workshop_id:
         workshop=db.get(Workshop,settings.single_workshop_id)
@@ -678,10 +683,11 @@ def register(data:RegisterIn,db:Session=Depends(get_db)):
             db.add(organization); db.flush()
             workshop=Workshop(id=settings.single_workshop_id,organization_id=organization.id,name=settings.single_workshop_name)
             db.add(workshop); db.flush()
-        if not db.query(OrganizationMember).filter_by(organization_id=workshop.organization_id,user_id=user.id).first():
-            db.add(OrganizationMember(organization_id=workshop.organization_id,user_id=user.id,role="OWNER"))
-        if not db.query(WorkshopMember).filter_by(workshop_id=workshop.id,user_id=user.id).first():
-            db.add(WorkshopMember(workshop_id=workshop.id,user_id=user.id,role="OWNER"))
+            # Only the person who creates the one-workshop installation is its owner.
+            if not db.query(OrganizationMember).filter_by(organization_id=workshop.organization_id,user_id=user.id).first():
+                db.add(OrganizationMember(organization_id=workshop.organization_id,user_id=user.id,role="OWNER"))
+            if not db.query(WorkshopMember).filter_by(workshop_id=workshop.id,user_id=user.id).first():
+                db.add(WorkshopMember(workshop_id=workshop.id,user_id=user.id,role="OWNER"))
     db.commit(); db.refresh(user)
     audit(db,user.id,"USER_REGISTERED","User",user.id); db.commit(); return TokenOut(access_token=create_access_token(user.id))
 
@@ -784,18 +790,21 @@ def list_workshops(organization_id:str,user:User=Depends(current_user),db:Sessio
 def assign_workshop_member(workshop_id:str,data:WorkshopMemberIn,user:User=Depends(current_user),db:Session=Depends(get_db)):
     workshop=one(db,Workshop,workshop_id);require_org_admin(db,user,workshop.organization_id);target=db.query(User).filter_by(email=data.user_email.lower()).one_or_none()
     if settings.single_workshop_id and workshop.id!=settings.single_workshop_id:raise HTTPException(403,"Only the configured FUSAA workshop may be assigned")
-    if not target:raise HTTPException(404,"User must register before being assigned")
+    invited=False
+    if not target:
+        target=User(email=data.user_email.lower(),display_name="Invitation FUSAA en attente",password_hash=hash_password(secrets.token_urlsafe(32)),is_active=False)
+        db.add(target);db.flush();invited=True
     if not db.query(OrganizationMember).filter_by(organization_id=workshop.organization_id,user_id=target.id).first():db.add(OrganizationMember(organization_id=workshop.organization_id,user_id=target.id,role="OPERATOR"))
     member=db.query(WorkshopMember).filter_by(workshop_id=workshop.id,user_id=target.id).one_or_none()
     if member:member.role=data.role
     else:member=WorkshopMember(workshop_id=workshop.id,user_id=target.id,role=data.role);db.add(member)
-    audit(db,user.id,"WORKSHOP_MEMBER_ASSIGNED","Workshop",workshop.id,parameters={"user_id":target.id,"role":data.role},result="SUCCESS");db.commit();return {"workshop_id":workshop.id,"user_id":target.id,"role":data.role}
+    audit(db,user.id,"WORKSHOP_MEMBER_ASSIGNED","Workshop",workshop.id,parameters={"user_id":target.id,"role":data.role,"invited":invited},result="SUCCESS");db.commit();return {"workshop_id":workshop.id,"user_id":target.id,"role":data.role,"invited":invited,"registration_url":f"/inscription?email={target.email}" if invited else None}
 
 @app.get("/api/v1/workshops/{workshop_id}/members")
 def list_workshop_members(workshop_id:str,user:User=Depends(current_user),db:Session=Depends(get_db)):
     workshop=one(db,Workshop,workshop_id);require_org_admin(db,user,workshop.organization_id)
     members=db.query(WorkshopMember).filter_by(workshop_id=workshop.id).all()
-    return [{"user_id":member.user_id,"email":one(db,User,member.user_id).email,"display_name":one(db,User,member.user_id).display_name,"role":member.role,"organization_role":db.query(OrganizationMember).filter_by(organization_id=workshop.organization_id,user_id=member.user_id).one().role} for member in members]
+    return [{"user_id":member.user_id,"email":one(db,User,member.user_id).email,"display_name":one(db,User,member.user_id).display_name,"role":member.role,"active":one(db,User,member.user_id).is_active,"organization_role":db.query(OrganizationMember).filter_by(organization_id=workshop.organization_id,user_id=member.user_id).one().role} for member in members]
 
 @app.put("/api/v1/workshops/{workshop_id}/members/{member_user_id}")
 def update_workshop_member(workshop_id:str,member_user_id:str,data:WorkshopMemberRoleIn,user:User=Depends(current_user),db:Session=Depends(get_db)):
@@ -1161,6 +1170,9 @@ def shop_index(number:str|None=None,token:str|None=None):return HTMLResponse((Pa
 
 @app.get("/admin",response_class=HTMLResponse)
 def admin_index():return HTMLResponse((Path(__file__).parent/"web"/"index.html").read_text(encoding="utf-8"))
+
+@app.get("/inscription",response_class=HTMLResponse)
+def registration_index():return HTMLResponse((Path(__file__).parent/"web"/"register.html").read_text(encoding="utf-8"))
 
 @app.get("/suivi/{number}/{token}",response_class=HTMLResponse)
 def public_tracking_page(number:str,token:str):return HTMLResponse((Path(__file__).parent/"web"/"public.html").read_text(encoding="utf-8"))
