@@ -125,10 +125,46 @@ def guest_assistant_reply(message:str,profile:str)->dict:
         return {"title":"Suivi de commande","answer":"Après l’envoi, conservez votre lien de suivi personnel. Il indique les étapes : fichier reçu, paiement, préparation, impression puis terminé. Seule une personne disposant de ce lien peut consulter cette commande.","suggestions":["Activer les alertes","Nouvelle impression"]}
     return {"title":"Assistant invité FUSAA","answer":"Je peux vous guider pour envoyer un fichier, choisir les réglages, utiliser la boutique, comprendre une estimation, le paiement ou le suivi. "+payment_instructions(),"suggestions":["Bonjour","Comment payer ?","Discuter sur WhatsApp"]}
 
+def catalogue_assistant_reply(message:str,db:Session)->dict|None:
+    """Public, grounded product answers: only enabled catalogue data is exposed."""
+    text="".join(char for char in unicodedata.normalize("NFD",message.lower()) if not unicodedata.combining(char))
+    organization_id=public_workshop(db).organization_id
+    products=db.query(ShopProduct).filter_by(organization_id=organization_id,enabled=True).all()
+    categories=db.query(ShopCategory).filter_by(organization_id=organization_id,enabled=True).order_by(ShopCategory.name).all()
+    if "categorie" in text:
+        names=", ".join(item.name for item in categories[:12]) or "aucune catégorie"
+        return {"title":"Catégories disponibles","answer":f"La boutique propose actuellement : {names}.","suggestions":["Quels produits sont disponibles ?","Comment payer ?"]}
+    if any(word in text for word in ("rupture","stock","disponible")):
+        available=[item for item in products if item.stock_quantity>0]
+        low=[item for item in available if item.stock_quantity<=3]
+        out=[item for item in products if item.stock_quantity==0]
+        detail=(" Stock faible : "+", ".join(f"{item.name} ({item.stock_quantity})" for item in low[:4])+"." if low else "")
+        if out:detail+=" Rupture : "+", ".join(item.name for item in out[:4])+"."
+        return {"title":"Disponibilité boutique","answer":f"{len(available)} produit(s) sont actuellement disponibles sur {len(products)}.{detail}","suggestions":["Voir les produits","Comment payer ?"]}
+    ignored={"produit","produits","boutique","article","articles","prix","combien","cher","quel","quelle","quels","avec","pour","avez","vous","disponible","disponibles","stock","marque"}
+    tokens=[item for item in re.findall(r"[a-z0-9]{3,}",text) if item not in ignored]
+    matched=[]
+    for item in products:
+        haystack=" ".join((item.name,item.brand or "",item.description or "")).lower()
+        if tokens and any(token in haystack for token in tokens):matched.append(item)
+    if matched:
+        rows=" ; ".join(f"{item.name} — {float(item.price_xof):,.0f} FCFA ({'disponible' if item.stock_quantity else 'rupture'})" for item in matched[:5])
+        return {"title":"Produits trouvés","answer":rows+". Ajoutez le produit au panier pour choisir la quantité.","suggestions":["Voir mon panier","Comment payer ?"]}
+    return {"title":"Catalogue FUSAA","answer":f"La boutique compte {len(products)} produit(s) dans {len(categories)} catégorie(s). Dites-moi le nom, la marque ou le type de produit recherché pour une réponse précise.","suggestions":["Quels produits sont disponibles ?","Comment payer ?"]}
+
+guest_assistant_reply_base=guest_assistant_reply
+def guest_assistant_reply(message:str,profile:str,db:Session|None=None)->dict:
+    text="".join(char for char in unicodedata.normalize("NFD",message.lower()) if not unicodedata.combining(char))
+    direct_help=("bonjour","bonsoir","salut","hello","coucou","paiement","payer","mynita","amanata","wave","whatsapp","discussion","contact","parler","joindre")
+    if profile=="shop_guest" and db is not None and not any(word in text for word in direct_help):
+        catalogue_answer=catalogue_assistant_reply(message,db)
+        if catalogue_answer:return catalogue_answer
+    return guest_assistant_reply_base(message,profile)
+
 @app.post("/api/v1/public/assistant")
-def public_guest_assistant(data:GuestAssistantRequest):
+def public_guest_assistant(data:GuestAssistantRequest,db:Session=Depends(get_db)):
     """Read-only assistant for unauthenticated customers; never exposes workshop data."""
-    return guest_assistant_reply(data.message,data.profile)
+    return guest_assistant_reply(data.message,data.profile,db)
 
 def shop_slug(value:str, fallback:str="article")->str:
     clean=re.sub(r"[^a-z0-9]+", "-", value.lower().strip()).strip("-")
@@ -566,6 +602,29 @@ def save_shop_cloudinary_image(product_id:str,data:ShopCloudinaryImageIn,user:Us
     expected_prefix=f"https://res.cloudinary.com/{settings.cloudinary_cloud_name}/"
     if not settings.cloudinary_cloud_name or not data.image_url.startswith(expected_prefix):raise HTTPException(422,"L’URL ne provient pas du compte Cloudinary configuré")
     item.image_url=data.image_url;item.cloudinary_public_id=data.public_id;audit(db,user.id,"SHOP_PRODUCT_CLOUDINARY_IMAGE_SAVED","ShopProduct",item.id,result="SUCCESS");db.commit();return shop_product_out(db,item,True)
+
+@app.post("/api/v1/shop/admin/assistant")
+def shop_admin_assistant(data:GuestAssistantRequest,organization_id:str,user:User=Depends(current_user),db:Session=Depends(get_db)):
+    """Ground the administrator chat in current catalogue and order data."""
+    require_org_admin(db,user,organization_id)
+    text="".join(char for char in unicodedata.normalize("NFD",data.message.lower()) if not unicodedata.combining(char))
+    products=db.query(ShopProduct).filter_by(organization_id=organization_id).all()
+    active=[item for item in products if item.enabled]
+    orders=db.query(ShopOrder).filter_by(organization_id=organization_id).all()
+    if any(word in text for word in ("commande","vente","livraison","client")):
+        pending=[item for item in orders if item.status in {"PENDING","CONFIRMED","PROCESSING","READY"}]
+        paid=sum(float(item.total_xof) for item in orders if item.payment_status=="PAID")
+        return {"title":"Commandes boutique","answer":f"{len(pending)} commande(s) à traiter sur {len(orders)}. Revenu payé enregistré : {paid:,.0f} FCFA.","next_view":"publicOrders","next_label":"Voir les commandes"}
+    if any(word in text for word in ("stock","rupture","manque","disponible")):
+        out=[item for item in active if item.stock_quantity==0]
+        low=[item for item in active if 0<item.stock_quantity<=3]
+        detail=("Ruptures : "+", ".join(item.name for item in out[:5])+". " if out else "Aucune rupture. ")+("Stock faible : "+", ".join(f"{item.name} ({item.stock_quantity})" for item in low[:5])+"." if low else "Aucun stock faible.")
+        return {"title":"Stock boutique","answer":detail,"next_view":"shopProductsManage","next_label":"Gérer le catalogue"}
+    if any(word in text for word in ("prix","promo","reduction","tarif")):
+        promos=[item for item in active if item.original_price_xof is not None and float(item.original_price_xof)>float(item.price_xof)]
+        return {"title":"Prix et promotions","answer":("Promotions actives : "+", ".join(f"{item.name} à {float(item.price_xof):,.0f} FCFA" for item in promos[:5])+"." if promos else "Aucune promotion active. Ajoutez un prix normal supérieur au prix de vente dans Configurer."),"next_view":"shopProductsManage","next_label":"Gérer les prix"}
+    categories=db.query(ShopCategory).filter_by(organization_id=organization_id,enabled=True).all()
+    return {"title":"Assistant Boutique FUSAA","answer":f"Catalogue actuel : {len(active)} produit(s) actifs, {len(categories)} catégorie(s) et {len(orders)} commande(s). Je peux analyser les stocks, les prix, les promotions ou les commandes.","next_view":"shopProductsManage","next_label":"Ouvrir le catalogue"}
 
 @app.get("/api/v1/shop/admin/orders")
 def shop_admin_orders(organization_id:str,status:str|None=None,user:User=Depends(current_user),db:Session=Depends(get_db)):

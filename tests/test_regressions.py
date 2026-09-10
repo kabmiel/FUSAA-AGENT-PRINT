@@ -216,6 +216,24 @@ def test_guest_assistant_greets_and_shares_payment_contacts():
     assert "+227 98313369" in greeting["answer"]
     assert "MYNITA" in payment["answer"] and "+227 90531465" in payment["answer"]
 
+def test_shop_guest_assistant_uses_live_catalogue(setup_db,monkeypatch):
+    from app.main import guest_assistant_reply
+    db,_,_=setup_db;monkeypatch.setattr(settings,"single_workshop_id","a")
+    product=ShopProduct(organization_id="o",name="Imprimante Laser",slug="imprimante-laser",description="Rapide",price_xof=125000,stock_quantity=2,enabled=True)
+    db.add(product);db.commit()
+    reply=guest_assistant_reply("Avez-vous une imprimante laser ?","shop_guest",db)
+    assert "Imprimante Laser" in reply["answer"]
+    assert "125,000 FCFA" in reply["answer"]
+
+def test_shop_admin_assistant_uses_all_stock_not_only_current_page(setup_db):
+    from app.main import shop_admin_assistant
+    from app.assistant_schemas import GuestAssistantRequest
+    db,_,admin=setup_db
+    db.add(ShopProduct(organization_id="o",name="Toner",slug="toner",description="",price_xof=3000,stock_quantity=0,enabled=True));db.commit()
+    reply=shop_admin_assistant(GuestAssistantRequest(message="Quels produits sont en rupture ?"),"o",admin,db)
+    assert reply["next_view"]=="shopProductsManage"
+    assert "Toner" in reply["answer"]
+
 def test_public_home_and_admin_have_separate_shells():
     storefront=index().body.decode("utf-8")
     public=impression_index().body.decode("utf-8")
