@@ -128,6 +128,22 @@ def shop_public_products(q:str|None=None,category:str|None=None,db:Session=Depen
         query=query.filter_by(category_id=found.id)
     return [shop_product_out(db,item) for item in query.order_by(ShopProduct.created_at.desc()).all()]
 
+@app.get("/api/v1/shop/public/products/page")
+def shop_public_products_page(page:int=1,page_size:int=12,q:str|None=None,category:str|None=None,db:Session=Depends(get_db)):
+    """Small catalogue pages for the public storefront infinite scroll."""
+    organization_id=public_workshop(db).organization_id
+    query=db.query(ShopProduct).filter_by(organization_id=organization_id,enabled=True)
+    if q and q.strip():
+        needle=f"%{q.strip()}%";query=query.filter(or_(ShopProduct.name.ilike(needle),ShopProduct.brand.ilike(needle),ShopProduct.description.ilike(needle)))
+    if category:
+        found=db.query(ShopCategory).filter_by(organization_id=organization_id,slug=category,enabled=True).one_or_none()
+        if not found:return {"items":[],"page":1,"page_size":min(max(page_size,1),24),"has_more":False}
+        query=query.filter_by(category_id=found.id)
+    safe_page=max(page,1);safe_size=min(max(page_size,1),24)
+    items=query.order_by(ShopProduct.created_at.desc()).offset((safe_page-1)*safe_size).limit(safe_size+1).all()
+    has_more=len(items)>safe_size
+    return {"items":[shop_product_out(db,item) for item in items[:safe_size]],"page":safe_page,"page_size":safe_size,"has_more":has_more}
+
 @app.post("/api/v1/shop/public/orders",status_code=201)
 async def create_shop_order(data:ShopPublicOrderIn,db:Session=Depends(get_db)):
     organization_id=public_workshop(db).organization_id

@@ -15,7 +15,7 @@ ROOT=Path(__file__).parents[1]
 sys.path[:0]=[str(ROOT/"backend"),str(ROOT/"local-agent")]
 from app.database import Base
 from app.models import User,Organization,OrganizationMember,Workshop,WorkshopMember,Document,PrintJob,ComputerAgent,Printer,JobStatus,LocalActivity,BrowserLink,GuestOrder,ShopCategory,ShopProduct
-from app.main import cancel_job,confirm_job,prepare_job,central_supervision,list_jobs,list_documents,audit_history,list_workshop_members,update_workshop_member,remove_workshop_member,create_guest_order,guest_order_status,verify_guest_payment,list_guest_orders,export_guest_orders,archive_guest_order,restore_guest_order,set_public_pricing,get_public_pricing,refresh_guest_quote,create_guest_receipt,production_dashboard,index,impression_index,admin_index,public_tracking_page,delete_job,archive_public_job,create_shop_order,shop_public_products
+from app.main import cancel_job,confirm_job,prepare_job,central_supervision,list_jobs,list_documents,audit_history,list_workshop_members,update_workshop_member,remove_workshop_member,create_guest_order,guest_order_status,verify_guest_payment,list_guest_orders,export_guest_orders,archive_guest_order,restore_guest_order,set_public_pricing,get_public_pricing,refresh_guest_quote,create_guest_receipt,production_dashboard,index,impression_index,admin_index,public_tracking_page,delete_job,archive_public_job,create_shop_order,shop_public_products,shop_public_products_page
 from app.connectors import IncomingDocument, ingest_incoming_document
 from app.config import settings
 from app.schemas import JobOptions,GuestPaymentIn,PublicPricingIn
@@ -207,6 +207,8 @@ def test_shop_order_uses_fcfa_stock_and_public_workshop(setup_db,monkeypatch):
     product=ShopProduct(organization_id="o",category_id=category.id,name="Portable",slug="portable",description="Test",price_xof=250000,stock_quantity=2);db.add(product);db.commit()
     products=shop_public_products(db=db)
     assert products[0]["price_xof"]==250000 and products[0]["stock_quantity"]==2
+    page=shop_public_products_page(page=1,page_size=1,db=db)
+    assert page["items"][0]["id"]==product.id and page["has_more"] is False
     order=asyncio.run(create_shop_order(ShopPublicOrderIn(customer_name="Client Test",customer_phone="90000000",items=[{"product_id":product.id,"quantity":2}]),db))
     db.refresh(product)
     assert order["currency"]=="XOF" and order["total_xof"]==500000 and product.stock_quantity==0
