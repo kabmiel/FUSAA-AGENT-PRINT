@@ -29,6 +29,10 @@ function network(){
   $("network").textContent=online?"● Connecté":"● Hors ligne — envois en attente";
   $("network").className=online?"network online":"network offline";
 }
+let fusaaOperationDepth=0;
+function showFusaaOperation(label="Traitement en cours…"){let panel=$("fusaaOperation");if(!panel){document.body.insertAdjacentHTML("beforeend",'<div id="fusaaOperation" class="fusaa-operation" role="status" aria-live="polite"><div class="fusaa-operation-card"><i></i><b id="fusaaOperationLabel"></b><span>FUSAA sécurise et enregistre votre action</span><em><u></u></em></div></div>');panel=$("fusaaOperation")}fusaaOperationDepth++;$("fusaaOperationLabel").textContent=label;panel.classList.add("active");return performance.now()}
+async function hideFusaaOperation(start){const remaining=Math.max(0,700-(performance.now()-start));if(remaining)await new Promise(resolve=>setTimeout(resolve,remaining));fusaaOperationDepth=Math.max(0,fusaaOperationDepth-1);if(!fusaaOperationDepth)$("fusaaOperation")?.classList.remove("active")}
+document.head.insertAdjacentHTML("beforeend",'<style>.fusaa-operation{position:fixed;inset:0;z-index:200;display:grid;place-items:center;padding:20px;background:#03101a70;backdrop-filter:blur(6px);opacity:0;pointer-events:none;transition:opacity .2s ease}.fusaa-operation.active{opacity:1;pointer-events:auto}.fusaa-operation-card{width:min(360px,100%);padding:28px;border:1px solid #46e1ce88;border-radius:24px;background:linear-gradient(145deg,#123149f7,#071522fa);box-shadow:0 28px 90px #000a;text-align:center}.fusaa-operation-card i{display:block;width:58px;height:58px;margin:0 auto 16px;border:5px solid #ffffff18;border-top-color:#36e1c7;border-right-color:#287cf0;border-radius:50%;animation:fusaaOperationSpin .8s linear infinite;box-shadow:0 0 30px #26d2b566}.fusaa-operation-card b{display:block;color:#effbff;font-size:1.05rem}.fusaa-operation-card span{display:block;margin:7px 0 16px;color:#a7c3d3;font-size:.82rem}.fusaa-operation-card em{display:block;height:7px;overflow:hidden;border-radius:99px;background:#ffffff14}.fusaa-operation-card u{display:block;width:48%;height:100%;border-radius:inherit;background:linear-gradient(90deg,#25d3b8,#287cf0);animation:fusaaOperationLoad 1.05s ease-in-out infinite}@keyframes fusaaOperationSpin{to{transform:rotate(360deg)}}@keyframes fusaaOperationLoad{50%{transform:translateX(108%)}}@media(prefers-reduced-motion:reduce){.fusaa-operation-card i,.fusaa-operation-card u{animation:none}}</style>');
 function state(){
   const on=Boolean(token);
   document.documentElement.classList.remove("session-pending");
@@ -37,11 +41,8 @@ function state(){
 }
 async function api(path,options={}){
   if(!navigator.onLine)throw Error("Connexion absente.");
-  const response=await fetch(path,{...options,headers:{...(options.headers||{}),Authorization:"Bearer "+token}});
-  let data={};try{data=await response.json()}catch{}
-  if(response.status===401){logout();throw Error("Session expirée. Reconnectez-vous.")}
-  if(!response.ok)throw Error(friendlyPrintError(readableApiError(data.detail)));
-  return data;
+  const animated=String(options.method||"GET").toUpperCase()!=="GET",started=animated?showFusaaOperation(options.method==="DELETE"?"Suppression en cours…":"Traitement de votre demande…"):0;
+  try{const response=await fetch(path,{...options,headers:{...(options.headers||{}),Authorization:"Bearer "+token}});let data={};try{data=await response.json()}catch{}if(response.status===401){logout();throw Error("Session expirée. Reconnectez-vous.")}if(!response.ok)throw Error(friendlyPrintError(readableApiError(data.detail)));return data}finally{if(animated)await hideFusaaOperation(started)}
 }
 async function restoreWorkspace(){
   if(!token)return;
