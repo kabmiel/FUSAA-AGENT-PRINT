@@ -92,6 +92,16 @@ class Product(Timestamped, Base):
     unit_price: Mapped[float] = mapped_column(Numeric(12,2), default=0)
     enabled: Mapped[bool] = mapped_column(Boolean, default=True)
 
+class AnonymousVisit(Timestamped, Base):
+    """Anonymous public traffic, stored as a one-way browser identifier hash."""
+    __tablename__="anonymous_visits"
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=uid)
+    organization_id: Mapped[str] = mapped_column(ForeignKey("organizations.id"), index=True)
+    visitor_key: Mapped[str] = mapped_column(String(64), index=True)
+    page: Mapped[str] = mapped_column(String(32), index=True)
+    last_seen_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda:datetime.now(timezone.utc), index=True)
+    __table_args__=(UniqueConstraint("organization_id", "visitor_key", "page", name="uq_anonymous_visit_page"),)
+
 # Storefront models intentionally live beside the print models.  They share the
 # same organization and FUSAA administrator, without changing the older
 # business catalogue API used for print services.

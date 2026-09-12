@@ -14,11 +14,11 @@ from sqlalchemy.orm import Session
 ROOT=Path(__file__).parents[1]
 sys.path[:0]=[str(ROOT/"backend"),str(ROOT/"local-agent")]
 from app.database import Base
-from app.models import User,Organization,OrganizationMember,Workshop,WorkshopMember,Document,PrintJob,ComputerAgent,Printer,JobStatus,LocalActivity,BrowserLink,GuestOrder,ShopCategory,ShopProduct
-from app.main import cancel_job,confirm_job,prepare_job,central_supervision,list_jobs,list_documents,audit_history,list_workshop_members,update_workshop_member,remove_workshop_member,assign_workshop_member,register,create_guest_order,guest_order_status,verify_guest_payment,list_guest_orders,export_guest_orders,archive_guest_order,restore_guest_order,set_public_pricing,get_public_pricing,refresh_guest_quote,create_guest_receipt,production_dashboard,index,impression_index,admin_index,public_tracking_page,delete_job,archive_public_job,create_shop_order,shop_public_products,shop_public_products_page,shop_admin_products_page
+from app.models import User,Organization,OrganizationMember,Workshop,WorkshopMember,Document,PrintJob,ComputerAgent,Printer,JobStatus,LocalActivity,BrowserLink,GuestOrder,ShopCategory,ShopProduct,AnonymousVisit
+from app.main import cancel_job,confirm_job,prepare_job,central_supervision,list_jobs,list_documents,audit_history,list_workshop_members,update_workshop_member,remove_workshop_member,assign_workshop_member,register,create_guest_order,guest_order_status,verify_guest_payment,list_guest_orders,export_guest_orders,archive_guest_order,restore_guest_order,set_public_pricing,get_public_pricing,refresh_guest_quote,create_guest_receipt,production_dashboard,index,impression_index,admin_index,public_tracking_page,delete_job,archive_public_job,create_shop_order,shop_public_products,shop_public_products_page,shop_admin_products_page,record_public_visit,visitor_analytics
 from app.connectors import IncomingDocument, ingest_incoming_document
 from app.config import settings
-from app.schemas import JobOptions,GuestPaymentIn,PublicPricingIn,RegisterIn
+from app.schemas import JobOptions,GuestPaymentIn,PublicPricingIn,PublicVisitIn,RegisterIn
 from app.shop_schemas import ShopPublicOrderIn
 from app.multisite_schemas import WorkshopMemberIn,WorkshopMemberRoleIn
 from app.ai import execute_safe_tool,OllamaProvider
@@ -50,6 +50,20 @@ def test_assistant_and_http_share_workshop_scope(setup_db):
     assert len(list_documents(user,db))==1
     assert len(execute_safe_tool(db,user,"list_print_jobs",{})["jobs"])==1
     assert len(execute_safe_tool(db,user,"list_printers",{})["printers"])==1
+
+def test_anonymous_visitors_are_unique_and_admin_only(setup_db,monkeypatch):
+    db,viewer,admin=setup_db
+    monkeypatch.setattr(settings,"single_workshop_id","a")
+    record_public_visit(PublicVisitIn(visitor_id="visitor-identifier-0001",page="shop"),db)
+    record_public_visit(PublicVisitIn(visitor_id="visitor-identifier-0001",page="print"),db)
+    record_public_visit(PublicVisitIn(visitor_id="visitor-identifier-0002",page="shop"),db)
+    analytics=visitor_analytics("o",admin,db)
+    assert analytics["today_unique"]==2
+    assert analytics["total_unique"]==2
+    assert {item["page"] for item in analytics["pages"]}=={"shop","print"}
+    assert db.query(AnonymousVisit).count()==3
+    with pytest.raises(HTTPException) as error: visitor_analytics("o",viewer,db)
+    assert error.value.status_code==403
 
 def test_workshop_roles_are_admin_managed_and_enforced(setup_db):
     from app.access import require_workshop_write

@@ -78,6 +78,9 @@ class PublicPricingIn(BaseModel):
     color_discount_page: float=Field(default=0,ge=0)
 class PublicPricingOut(PublicPricingIn):
     rule_id: str|None=None
+class PublicVisitIn(BaseModel):
+    visitor_id: str=Field(min_length=16,max_length=128,pattern=r"^[A-Za-z0-9_-]+$")
+    page: Literal["shop","print","tracking"]="shop"
 class GuestReceiptOut(BaseModel):
     invoice_id: str
     invoice_number: str

@@ -1,4 +1,6 @@
 const $=id=>document.getElementById(id);let currentFile=null;
+function trackAnonymousPrintVisit(){try{let id=localStorage.getItem("fusaa-anonymous-visitor");if(!id){id=globalThis.crypto?.randomUUID?.().replaceAll("-","")||("v"+Date.now()+Math.random().toString(36).slice(2));localStorage.setItem("fusaa-anonymous-visitor",id)}fetch("/api/v1/public/visits",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({visitor_id:id,page:location.pathname.startsWith("/suivi/")?"tracking":"print"})}).catch(()=>{})}catch{}}
+trackAnonymousPrintVisit();
 function show(id){document.querySelectorAll(".screen").forEach(item=>item.classList.toggle("active",item.id===id));const step={stepFile:0,stepOptions:1,stepContact:2,stepDone:3}[id]??0;document.querySelectorAll(".stepper span").forEach((item,index)=>item.classList.toggle("active",index<=step))}
 function formatMoney(value){return new Intl.NumberFormat("fr-FR",{maximumFractionDigits:0}).format(value||0)+" F CFA"}
 async function request(path,options={}){const response=await fetch(path,options);let data={};try{data=await response.json()}catch{}if(!response.ok)throw Error(data.detail||"La demande n’a pas pu être traitée.");return data}

@@ -15,11 +15,11 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.trustedhost import TrustedHostMiddleware
 from fastapi.responses import FileResponse, HTMLResponse, PlainTextResponse, StreamingResponse
 from sqlalchemy.orm import Session
-from sqlalchemy import text, or_, JSON
+from sqlalchemy import text, or_, JSON, func
 from .config import settings
 from .database import Base, SessionLocal, engine, get_db
 from .events import agent_hub, hub
-from .models import AgentCommand, AuditLog, CommandStatus, ComputerAgent, Connector, ConnectorEvent, Customer, Document, GuestOrder, Invoice, InvoiceLine, JobStatus, Organization, OrganizationMember, Payment, PriceRule, PrintCost, PrintJob, Printer, Product, PushSubscription, Service, ShopCategory, ShopOrder, ShopOrderLine, ShopProduct, User, Workshop, WorkshopMember, WorkshopSettings as WorkshopSettingsModel
+from .models import AgentCommand, AnonymousVisit, AuditLog, CommandStatus, ComputerAgent, Connector, ConnectorEvent, Customer, Document, GuestOrder, Invoice, InvoiceLine, JobStatus, Organization, OrganizationMember, Payment, PriceRule, PrintCost, PrintJob, Printer, Product, PushSubscription, Service, ShopCategory, ShopOrder, ShopOrderLine, ShopProduct, User, Workshop, WorkshopMember, WorkshopSettings as WorkshopSettingsModel
 from .schemas import *
 from .security import create_access_token, current_user, hash_password, verify_password
 from .services import DIRECT_PRINT_MIMES, audit, build_command, create_preview, inspect_file, issue_agent_key, storage_path, transition
@@ -43,6 +43,7 @@ async def lifespan(_app):
     settings.validate_runtime();configure_logging(settings.log_level)
     settings.storage_dir.mkdir(parents=True,exist_ok=True)
     if settings.database_url.startswith("sqlite"): Base.metadata.create_all(engine)
+    AnonymousVisit.__table__.create(engine, checkfirst=True)
     yield
 
 app=FastAPI(title="FUSAA PRINT AGENT",version="0.1.0",docs_url=None if settings.environment.lower()=="production" else "/docs",redoc_url=None if settings.environment.lower()=="production" else "/redoc",lifespan=lifespan)
@@ -416,6 +417,29 @@ def public_workshop(db:Session)->Workshop:
         workshop=workshops[0] if len(workshops)==1 else None
     if not workshop:raise HTTPException(503,"L’atelier public n’est pas encore configuré")
     return workshop
+
+@app.post("/api/v1/public/visits")
+def record_public_visit(data:PublicVisitIn,db:Session=Depends(get_db)):
+    """Record an anonymous page visit without retaining personal data or IP."""
+    workshop=public_workshop(db)
+    visitor_key=hashlib.sha256(data.visitor_id.encode("utf-8")).hexdigest()
+    visit=db.query(AnonymousVisit).filter_by(organization_id=workshop.organization_id,visitor_key=visitor_key,page=data.page).one_or_none()
+    now=datetime.now(timezone.utc)
+    if visit: visit.last_seen_at=now
+    else: db.add(AnonymousVisit(organization_id=workshop.organization_id,visitor_key=visitor_key,page=data.page,last_seen_at=now))
+    db.commit()
+    return {"ok":True}
+
+@app.get("/api/v1/analytics/visitors")
+def visitor_analytics(organization_id:str,user:User=Depends(current_user),db:Session=Depends(get_db)):
+    require_org_admin(db,user,organization_id)
+    now=datetime.now(timezone.utc);today=now.replace(hour=0,minute=0,second=0,microsecond=0)
+    base=db.query(AnonymousVisit).filter_by(organization_id=organization_id)
+    total_unique=base.with_entities(func.count(func.distinct(AnonymousVisit.visitor_key))).scalar() or 0
+    today_unique=base.filter(AnonymousVisit.last_seen_at>=today).with_entities(func.count(func.distinct(AnonymousVisit.visitor_key))).scalar() or 0
+    active_now=base.filter(AnonymousVisit.last_seen_at>=now-timedelta(minutes=5)).with_entities(func.count(func.distinct(AnonymousVisit.visitor_key))).scalar() or 0
+    pages=[{"page":page,"visitors":count} for page,count in base.with_entities(AnonymousVisit.page,func.count(func.distinct(AnonymousVisit.visitor_key))).group_by(AnonymousVisit.page).all()]
+    return {"today_unique":today_unique,"total_unique":total_unique,"active_now":active_now,"pages":pages,"privacy":"Comptage anonyme : aucun nom, téléphone, compte ou IP n’est conservé."}
 
 def public_order_number(db:Session)->str:
     while True:
