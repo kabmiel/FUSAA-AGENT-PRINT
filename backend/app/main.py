@@ -437,9 +437,9 @@ def visitor_analytics(organization_id:str,user:User=Depends(current_user),db:Ses
     base=db.query(AnonymousVisit).filter_by(organization_id=organization_id)
     total_unique=base.with_entities(func.count(func.distinct(AnonymousVisit.visitor_key))).scalar() or 0
     today_unique=base.filter(AnonymousVisit.last_seen_at>=today).with_entities(func.count(func.distinct(AnonymousVisit.visitor_key))).scalar() or 0
-    active_now=base.filter(AnonymousVisit.last_seen_at>=now-timedelta(minutes=5)).with_entities(func.count(func.distinct(AnonymousVisit.visitor_key))).scalar() or 0
+    last_24_hours=base.filter(AnonymousVisit.last_seen_at>=now-timedelta(hours=24)).with_entities(func.count(func.distinct(AnonymousVisit.visitor_key))).scalar() or 0
     pages=[{"page":page,"visitors":count} for page,count in base.with_entities(AnonymousVisit.page,func.count(func.distinct(AnonymousVisit.visitor_key))).group_by(AnonymousVisit.page).all()]
-    return {"today_unique":today_unique,"total_unique":total_unique,"active_now":active_now,"pages":pages,"privacy":"Comptage anonyme : aucun nom, téléphone, compte ou IP n’est conservé."}
+    return {"today_unique":today_unique,"last_24_hours":last_24_hours,"total_unique":total_unique,"pages":pages,"privacy":"Comptage anonyme : aucun nom, téléphone, compte ou IP n’est conservé."}
 
 def public_order_number(db:Session)->str:
     while True:

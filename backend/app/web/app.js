@@ -420,7 +420,7 @@ openDashboardIndicator=function(kind){
   if(kind!=="visitors")return openDashboardIndicatorDefault(kind);
   if(!visitorSnapshot)return;
   const names={shop:"Boutique",print:"Impression",tracking:"Suivi de commande"};
-  const items=["Total depuis l’activation : "+(visitorSnapshot.total_unique||0),"Actifs ces 5 dernières minutes : "+(visitorSnapshot.active_now||0),...(visitorSnapshot.pages||[]).map(item=>(names[item.page]||item.page)+" : "+item.visitors),visitorSnapshot.privacy];
+  const items=["Visiteurs uniques sur les dernières 24 heures : "+(visitorSnapshot.last_24_hours||0),"Total depuis l’activation : "+(visitorSnapshot.total_unique||0),...(visitorSnapshot.pages||[]).map(item=>(names[item.page]||item.page)+" : "+item.visitors),visitorSnapshot.privacy];
   $("indicatorTitle").textContent="Visiteurs anonymes";
   $("indicatorValue").textContent=visitorSnapshot.today_unique||0;
   $("indicatorItems").innerHTML=items.map(item=>'<div class="indicator-item">'+esc(item)+"</div>").join("");

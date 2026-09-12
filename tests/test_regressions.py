@@ -59,6 +59,7 @@ def test_anonymous_visitors_are_unique_and_admin_only(setup_db,monkeypatch):
     record_public_visit(PublicVisitIn(visitor_id="visitor-identifier-0002",page="shop"),db)
     analytics=visitor_analytics("o",admin,db)
     assert analytics["today_unique"]==2
+    assert analytics["last_24_hours"]==2
     assert analytics["total_unique"]==2
     assert {item["page"] for item in analytics["pages"]}=={"shop","print"}
     assert db.query(AnonymousVisit).count()==3
