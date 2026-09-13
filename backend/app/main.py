@@ -766,7 +766,7 @@ def create_stock_movement(organization_id:str,data:StockMovementIn,user:User=Dep
     previous=product.stock_quantity;result=data.quantity if data.movement_type=="ADJUSTMENT" else previous+data.quantity if data.movement_type=="IN" else previous-data.quantity
     if result<0:raise HTTPException(409,"Stock insuffisant")
     product.stock_quantity=result;movement=StockMovement(organization_id=organization_id,catalogue=data.catalogue,product_id=product.id,movement_type=data.movement_type,quantity=data.quantity,previous_quantity=previous,resulting_quantity=result,reason=data.reason)
-    db.add(movement);audit(db,user.id,"STOCK_MOVEMENT_CREATED","StockMovement",movement.id,parameters={"catalogue":data.catalogue,"product_id":product.id,"result":result},result="SUCCESS");db.commit()
+    db.add(movement);db.flush();audit(db,user.id,"STOCK_MOVEMENT_CREATED","StockMovement",movement.id,parameters={"catalogue":data.catalogue,"product_id":product.id,"result":result},result="SUCCESS");db.commit()
     return {"id":movement.id,"resulting_quantity":result}
 @app.get("/api/v1/billing/stock/movements")
 def list_stock_movements(organization_id:str,limit:int=50,user:User=Depends(current_user),db:Session=Depends(get_db)):
