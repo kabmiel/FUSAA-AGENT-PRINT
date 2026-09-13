@@ -1,22 +1,36 @@
 /* Facturation FUSAA : espace de gestion inspiré des parcours Boulangerie. */
 const billingState={tab:"dashboard",page:1,productPage:1,productSearch:"",products:[],headers:[],customers:[],categories:[],selectedHeader:null};
 const billingLabels={dashboard:"Tableau de bord",new:"Nouvelle facture",documents:"Documents",clients:"Clients",products:"Produits",headers:"Entêtes",categories:"Catégories",reports:"Rapports",maintenance:"Maintenance",settings:"Paramètres"};
+const billingIcon=paths=>'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">'+paths+'</svg>';
+const billingIcons={
+  dashboard:billingIcon('<rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/>'),
+  new:billingIcon('<path d="M12 4v16M4 12h16"/><rect x="3" y="3" width="18" height="18" rx="3"/>'),
+  documents:billingIcon('<path d="M7 3h7l4 4v14H7zM14 3v5h4M10 12h5M10 16h5"/>'),
+  clients:billingIcon('<circle cx="9" cy="8" r="3"/><path d="M3 20v-2a6 6 0 0 1 12 0v2M17 5a3 3 0 0 1 0 6M18 15a5 5 0 0 1 3 5"/>'),
+  products:billingIcon('<path d="m12 3 9 5-9 5-9-5 9-5ZM3 8v9l9 5 9-5V8M12 13v9"/>'),
+  headers:billingIcon('<rect x="3" y="4" width="18" height="16" rx="2"/><path d="M3 9h18M7 14h5M7 17h8"/>'),
+  categories:billingIcon('<path d="M3 7h7v7H3zM14 7h7v7h-7zM3 17h7v4H3zM14 17h7v4h-7z"/>'),
+  reports:billingIcon('<path d="M4 20V11m5 9V6m5 14v-8m5 8V4M2 20h20"/>'),
+  maintenance:billingIcon('<circle cx="12" cy="12" r="3"/><path d="M12 2v3m0 14v3M2 12h3m14 0h3M4.9 4.9 7 7m10 10 2.1 2.1M19.1 4.9 17 7M7 17l-2.1 2.1"/>'),
+  settings:billingIcon('<path d="M4 7h16M4 17h16M8 4v6m8 4v6"/><circle cx="8" cy="7" r="2"/><circle cx="16" cy="17" r="2"/>')
+};
 const billingCurrency=value=>money(Number(value||0));
 const billingDate=value=>value?new Date(value).toLocaleDateString("fr-FR"):"—";
 const billingSelect=(items,placeholder)=>'<option value="">'+esc(placeholder)+'</option>'+items.map(item=>'<option value="'+esc(item.id)+'">'+esc(item.company_name||item.name)+'</option>').join("");
 const billingView=document.getElementById("billing");
 if(billingView){
   Array.from(billingView.children).forEach(item=>item.style.display="none");
-  billingView.insertAdjacentHTML("beforeend",'<div id="billingWorkspace" class="billing-workspace"><aside class="billing-menu"><h2>Gestion Factures</h2>'+Object.entries(billingLabels).map(([key,label])=>'<button type="button" data-billtab="'+key+'">'+esc(label)+'</button>').join("")+'</aside><div class="billing-main"><div id="billingWorkspaceContent"></div></div></div>');
+  billingView.insertAdjacentHTML("beforeend",'<div id="billingWorkspace" class="billing-workspace"><aside class="billing-menu"><h2>Gestion Factures</h2><div class="billing-menu-grid">'+Object.entries(billingLabels).map(([key,label])=>'<button type="button" data-billtab="'+key+'" aria-label="'+esc(label)+'"><i>'+billingIcons[key]+'</i><span>'+esc(label)+'</span></button>').join("")+'</div></aside><div class="billing-main"><div id="billingWorkspaceContent"></div></div></div>');
   document.getElementById("billingWorkspace").addEventListener("click",event=>{const button=event.target.closest("[data-billtab]");if(button)billingOpen(button.dataset.billtab)});
   loadBilling=()=>billingOpen("dashboard");
 }
+document.querySelector("#dashboard #stats")?.insertAdjacentHTML("afterend",'<button id="billingHomeBadge" type="button" onclick="selectView(\'billing\')"><span class="billing-home-icon">'+billingIcons.documents+'</span><span><strong>Facturation FUSAA</strong><small>Factures, devis, entêtes et rapports</small></span><b>Ouvrir →</b></button>');
 
 function billingHero(title,subtitle,action=""){
   return '<div class="billing-hero"><div><span class="billing-eyebrow">BOUTIQUE & SERVICE · FCFA</span><h1>'+esc(title)+'</h1><p>'+esc(subtitle)+'</p></div><div class="billing-actions">'+action+'</div></div>';
 }
 function billingSet(html){const target=document.getElementById("billingWorkspaceContent");if(target)target.innerHTML=html}
-function billingActive(tab){document.querySelectorAll("#billing .billing-menu button").forEach(button=>button.classList.toggle("active",button.dataset.billtab===tab))}
+function billingActive(tab){document.querySelectorAll("#billing .billing-menu button").forEach(button=>{const active=button.dataset.billtab===tab;button.classList.toggle("active",active);button.setAttribute("aria-pressed",active?"true":"false")})}
 async function billingOpen(tab){
   if(!billingLabels[tab])tab="dashboard";
   billingState.tab=tab;billingActive(tab);
@@ -71,7 +85,7 @@ async function billingNew(){
 function billingAskAi(){const prompt=document.getElementById("billingAiPrompt")?.value.trim();openBillingAssistant();if(prompt){document.getElementById("aiMessage").value=prompt;document.getElementById("aiMessage").focus()}}
 function billingAddLine(item){
   const box=document.getElementById("billingLines");if(!box)return;
-  const row=document.createElement("div");row.className="billing-line";row.dataset.productId=item?.id||"";
+  const row=document.createElement("div");row.className="billing-line";row.dataset.productId=item?.id||"";row.dataset.unit=item?.unit||"piece";
   row.innerHTML='<input class="bill-designation" placeholder="Désignation" required value="'+esc(item?.name||"")+'"><input class="bill-quantity" type="number" min="0.01" step="0.01" value="1" aria-label="Quantité"><input class="bill-price" type="number" min="0" step="0.01" value="'+esc(item?.price_xof??"")+'" placeholder="Prix" aria-label="Prix unitaire"><button class="danger" type="button" aria-label="Supprimer la ligne">×</button>';
   row.querySelector("button").onclick=()=>{row.remove();billingUpdateTotal()};row.querySelectorAll("input").forEach(input=>input.addEventListener("input",billingUpdateTotal));box.append(row);billingUpdateTotal();
 }
@@ -85,7 +99,7 @@ async function billingProductSearch(reset=false){
 }
 async function billingSaveDocument(event){
   event.preventDefault();const rows=[...document.querySelectorAll("#billingLines .billing-line")];
-  const lines=rows.map(row=>({product_id:row.dataset.productId||null,description:row.querySelector(".bill-designation").value.trim(),quantity:Number(row.querySelector(".bill-quantity").value),unit_amount:Number(row.querySelector(".bill-price").value),unit:"piece"})).filter(item=>item.description);
+  const lines=rows.map(row=>({product_id:row.dataset.productId||null,description:row.querySelector(".bill-designation").value.trim(),quantity:Number(row.querySelector(".bill-quantity").value),unit_amount:Number(row.querySelector(".bill-price").value),unit:row.dataset.unit||"piece"})).filter(item=>item.description);
   if(!lines.length){tell("Ajoutez au moins une ligne à la facture.");return}
   const customerId=document.getElementById("billingNewCustomer").value;
   const body={organization_id:org,billing_header_id:document.getElementById("billingNewHeader").value,customer_id:customerId||null,customer_name:customerId?null:document.getElementById("billingNewCustomerName").value.trim(),customer_phone:document.getElementById("billingNewCustomerPhone").value.trim()||null,customer_address:document.getElementById("billingNewCustomerAddress").value.trim()||null,issued_on:document.getElementById("billingNewDate").value+"T12:00:00Z",document_type:document.getElementById("billingNewType").value,subject:document.getElementById("billingNewSubject").value.trim()||null,notes:document.getElementById("billingNewNotes").value.trim()||null,discount_amount:Number(document.getElementById("billingNewDiscount").value||0),lines};
