@@ -44,3 +44,5 @@ class StockMovementIn(BaseModel):
     movement_type:str=Field(pattern="^(IN|OUT|ADJUSTMENT)$")
     quantity:int=Field(ge=0,le=999999)
     reason:str|None=Field(default=None,max_length=255)
+class BillingCategoryIn(BaseModel): name:str=Field(min_length=1,max_length=100);description:str|None=Field(default=None,max_length=2000)
+class BillingProductIn(CatalogIn): billing_category_id:str|None=None;stock_quantity:int=Field(default=0,ge=0);stock_minimum:int=Field(default=3,ge=0);cost_xof:float=Field(default=0,ge=0);unit:str=Field(default="piece",max_length=20)

@@ -94,7 +94,16 @@ class Product(Timestamped, Base):
     cost_xof: Mapped[float] = mapped_column(Numeric(12,2), default=0)
     stock_quantity: Mapped[int] = mapped_column(Integer, default=0)
     stock_minimum: Mapped[int] = mapped_column(Integer, default=3)
+    billing_category_id: Mapped[str | None] = mapped_column(ForeignKey("billing_categories.id"), nullable=True, index=True)
     enabled: Mapped[bool] = mapped_column(Boolean, default=True)
+
+class BillingCategory(Timestamped, Base):
+    __tablename__="billing_categories"
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=uid)
+    organization_id: Mapped[str] = mapped_column(ForeignKey("organizations.id"), index=True)
+    name: Mapped[str] = mapped_column(String(100))
+    description: Mapped[str | None] = mapped_column(Text, nullable=True)
+    __table_args__=(UniqueConstraint("organization_id","name",name="uq_billing_category_name"),)
 
 class StockMovement(Timestamped, Base):
     __tablename__="stock_movements"

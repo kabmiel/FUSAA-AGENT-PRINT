@@ -15,11 +15,11 @@ ROOT=Path(__file__).parents[1]
 sys.path[:0]=[str(ROOT/"backend"),str(ROOT/"local-agent")]
 from app.database import Base
 from app.models import User,Organization,OrganizationMember,Workshop,WorkshopMember,Document,PrintJob,ComputerAgent,Printer,JobStatus,LocalActivity,BrowserLink,GuestOrder,ShopCategory,ShopProduct,AnonymousVisit,Invoice
-from app.main import cancel_job,confirm_job,prepare_job,central_supervision,list_jobs,list_documents,audit_history,list_workshop_members,update_workshop_member,remove_workshop_member,assign_workshop_member,register,create_guest_order,guest_order_status,verify_guest_payment,list_guest_orders,export_guest_orders,archive_guest_order,restore_guest_order,set_public_pricing,get_public_pricing,refresh_guest_quote,create_guest_receipt,production_dashboard,index,impression_index,admin_index,public_tracking_page,delete_job,archive_public_job,create_shop_order,shop_public_products,shop_public_products_page,shop_admin_products_page,record_public_visit,visitor_analytics,create_billing_document,duplicate_billing_invoice,create_stock_movement,billing_stock_alerts
+from app.main import cancel_job,confirm_job,prepare_job,central_supervision,list_jobs,list_documents,audit_history,list_workshop_members,update_workshop_member,remove_workshop_member,assign_workshop_member,register,create_guest_order,guest_order_status,verify_guest_payment,list_guest_orders,export_guest_orders,archive_guest_order,restore_guest_order,set_public_pricing,get_public_pricing,refresh_guest_quote,create_guest_receipt,production_dashboard,index,impression_index,admin_index,public_tracking_page,delete_job,archive_public_job,create_shop_order,shop_public_products,shop_public_products_page,shop_admin_products_page,record_public_visit,visitor_analytics,create_billing_document,duplicate_billing_invoice,create_stock_movement,billing_stock_alerts,create_billing_category,create_billing_product,list_billing_products
 from app.connectors import IncomingDocument, ingest_incoming_document
 from app.config import settings
 from app.schemas import JobOptions,GuestPaymentIn,PublicPricingIn,PublicVisitIn,RegisterIn
-from app.business_schemas import BillingDocumentIn
+from app.business_schemas import BillingCategoryIn,BillingDocumentIn,BillingProductIn
 from app.business_schemas import StockMovementIn
 from app.shop_schemas import ShopPublicOrderIn
 from app.multisite_schemas import WorkshopMemberIn,WorkshopMemberRoleIn
@@ -296,6 +296,15 @@ def test_stock_movement_and_alerts_cover_both_catalogues(setup_db):
     assert result["resulting_quantity"]==7
     create_stock_movement("o",StockMovementIn(catalogue="SHOP",product_id=product.id,movement_type="ADJUSTMENT",quantity=2),admin,db)
     assert billing_stock_alerts("o",admin,db)["count"]==1
+
+def test_billing_categories_and_products_stay_out_of_public_shop(setup_db):
+    db,_,admin=setup_db
+    category=create_billing_category("o",BillingCategoryIn(name="Prestations",description="Usage interne"),admin,db)
+    product=create_billing_product(BillingProductIn(organization_id="o",name="Installation",unit_price=5000,sku="SERV-001",billing_category_id=category["id"],stock_quantity=8,stock_minimum=2,unit="service"),admin,db)
+    items=list_billing_products("o",user=admin,db=db)["items"]
+    found=next(item for item in items if item["id"]==product["id"])
+    assert found["source"]=="FACTURATION" and found["billing_category_id"]==category["id"] and found["stock_quantity"]==8
+    assert db.query(ShopProduct).count()==0
 
 def test_printer_must_match_job_workshop(setup_db):
     db,_,admin=setup_db

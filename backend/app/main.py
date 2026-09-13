@@ -19,7 +19,7 @@ from sqlalchemy import text, or_, JSON, func
 from .config import settings
 from .database import Base, SessionLocal, engine, get_db
 from .events import agent_hub, hub
-from .models import AgentCommand, AnonymousVisit, AuditLog, BillingProfile, CommandStatus, ComputerAgent, Connector, ConnectorEvent, Customer, Document, GuestOrder, Invoice, InvoiceLine, JobStatus, Organization, OrganizationMember, Payment, PriceRule, PrintCost, PrintJob, Printer, Product, PushSubscription, Service, ShopCategory, ShopOrder, ShopOrderLine, ShopProduct, StockMovement, User, Workshop, WorkshopMember, WorkshopSettings as WorkshopSettingsModel
+from .models import AgentCommand, AnonymousVisit, AuditLog, BillingCategory, BillingProfile, CommandStatus, ComputerAgent, Connector, ConnectorEvent, Customer, Document, GuestOrder, Invoice, InvoiceLine, JobStatus, Organization, OrganizationMember, Payment, PriceRule, PrintCost, PrintJob, Printer, Product, PushSubscription, Service, ShopCategory, ShopOrder, ShopOrderLine, ShopProduct, StockMovement, User, Workshop, WorkshopMember, WorkshopSettings as WorkshopSettingsModel
 from .schemas import *
 from .security import create_access_token, current_user, hash_password, verify_password
 from .services import DIRECT_PRINT_MIMES, audit, build_command, create_preview, inspect_file, issue_agent_key, storage_path, transition
@@ -30,7 +30,7 @@ from .document_processing import DocumentProcessor, LayoutEngine
 from .processing_schemas import LayoutRequest, ProcessRequest
 from .connector_schemas import ConnectorCreate, ConnectorOut, ConnectorSecretOut
 from .connectors import IncomingDocument, ingest_incoming_document, verify_meta_signature, whatsapp_media_message_ids
-from .business_schemas import BillingDocumentIn, BillingProfileIn, CatalogIn, CustomerIn, CustomerOut, FinalCostIn, InvoiceCreate, InvoiceOut, PaymentIn, PriceRuleIn, PriceRuleOut, PrintCostOut, ServiceIn, StockMovementIn
+from .business_schemas import BillingCategoryIn, BillingDocumentIn, BillingProductIn, BillingProfileIn, CatalogIn, CustomerIn, CustomerOut, FinalCostIn, InvoiceCreate, InvoiceOut, PaymentIn, PriceRuleIn, PriceRuleOut, PrintCostOut, ServiceIn, StockMovementIn
 from .shop_schemas import ShopCategoryIn, ShopCloudinaryImageIn, ShopOrderStatusIn, ShopProductIn, ShopPublicOrderIn
 from .business import estimate_print_cost
 from .billing import billing_profile, ensure_shop_invoice, generate_invoice_pdf
@@ -565,11 +565,19 @@ def list_billing_products(organization_id:str,q:str|None=None,user:User=Depends(
     if needle:
         shop_query=shop_query.filter(ShopProduct.name.ilike(needle));own_query=own_query.filter(Product.name.ilike(needle))
     shop=[{"id":item.id,"name":item.name,"price_xof":float(item.price_xof),"sku":item.sku,"unit":item.unit,"source":"BOUTIQUE","stock_quantity":item.stock_quantity} for item in shop_query.order_by(ShopProduct.name).all()]
-    own=[{"id":item.id,"name":item.name,"price_xof":float(item.unit_price),"sku":item.sku,"unit":"piece","source":"FACTURATION","stock_quantity":None} for item in own_query.order_by(Product.name).all()]
+    own=[{"id":item.id,"name":item.name,"price_xof":float(item.unit_price),"sku":item.sku,"unit":item.unit,"source":"FACTURATION","stock_quantity":item.stock_quantity,"stock_minimum":item.stock_minimum,"cost_xof":float(item.cost_xof or 0),"billing_category_id":item.billing_category_id} for item in own_query.order_by(Product.name).all()]
     return {"items":shop+own,"shop_products":len(shop),"billing_products":len(own)}
+@app.get("/api/v1/billing/categories")
+def list_billing_categories(organization_id:str,user:User=Depends(current_user),db:Session=Depends(get_db)):
+    require_member(db,user,organization_id);return [{"id":item.id,"name":item.name,"description":item.description} for item in db.query(BillingCategory).filter_by(organization_id=organization_id).order_by(BillingCategory.name).all()]
+@app.post("/api/v1/billing/categories",status_code=201)
+def create_billing_category(organization_id:str,data:BillingCategoryIn,user:User=Depends(current_user),db:Session=Depends(get_db)):
+    require_org_admin(db,user,organization_id);item=BillingCategory(organization_id=organization_id,**data.model_dump());db.add(item);db.flush();audit(db,user.id,"BILLING_CATEGORY_CREATED","BillingCategory",item.id,result="SUCCESS");db.commit();return {"id":item.id,"name":item.name}
 @app.post("/api/v1/billing/products",status_code=201)
-def create_billing_product(data:CatalogIn,user:User=Depends(current_user),db:Session=Depends(get_db)):
-    require_org_admin(db,user,data.organization_id);product=Product(**data.model_dump());db.add(product);db.flush();audit(db,user.id,"BILLING_PRODUCT_CREATED","Product",product.id,result="SUCCESS");db.commit()
+def create_billing_product(data:BillingProductIn,user:User=Depends(current_user),db:Session=Depends(get_db)):
+    require_org_admin(db,user,data.organization_id)
+    if data.billing_category_id and not db.query(BillingCategory).filter_by(id=data.billing_category_id,organization_id=data.organization_id).first():raise HTTPException(422,"Catégorie introuvable")
+    product=Product(**data.model_dump());db.add(product);db.flush();audit(db,user.id,"BILLING_PRODUCT_CREATED","Product",product.id,result="SUCCESS");db.commit()
     return {"id":product.id,"name":product.name,"source":"FACTURATION"}
 @app.post("/api/v1/billing/products/import")
 async def import_billing_products(organization_id:str,file:UploadFile=File(...),user:User=Depends(current_user),db:Session=Depends(get_db)):
@@ -586,7 +594,18 @@ async def import_billing_products(organization_id:str,file:UploadFile=File(...),
         except ValueError:errors.append({"line":index,"error":"prix invalide"});continue
         sku=(row.get("sku") or row.get("code") or row.get("code_produit") or "").strip() or None
         if sku and db.query(Product).filter_by(organization_id=organization_id,sku=sku).first():errors.append({"line":index,"error":"code déjà utilisé"});continue
-        db.add(Product(organization_id=organization_id,name=name,unit_price=amount,sku=sku));created+=1
+        category_name=(row.get("categorie") or row.get("category") or "").strip()
+        category_id=None
+        if category_name:
+            category=db.query(BillingCategory).filter_by(organization_id=organization_id,name=category_name).first()
+            if not category:
+                category=BillingCategory(organization_id=organization_id,name=category_name);db.add(category);db.flush()
+            category_id=category.id
+        def csv_number(*keys,default=0):
+            raw_value=next((row.get(key) for key in keys if row.get(key) not in (None,"")),default)
+            try:return float(str(raw_value).replace(" ","").replace(",","."))
+            except (TypeError,ValueError):return default
+        db.add(Product(organization_id=organization_id,name=name,unit_price=amount,sku=sku,billing_category_id=category_id,unit=(row.get("unite") or row.get("unit") or "piece").strip()[:20] or "piece",stock_quantity=max(0,int(csv_number("stock","quantite","quantity"))),stock_minimum=max(0,int(csv_number("seuil_stock","stock_minimum","minimum"))),cost_xof=max(0,csv_number("cout","cost","prix_achat"))));created+=1
     audit(db,user.id,"BILLING_PRODUCTS_IMPORTED","Product","csv",parameters={"created":created,"errors":len(errors)},result="SUCCESS");db.commit()
     return {"created":created,"errors":errors[:30],"message":"Les produits importés sont réservés à la facturation et ne sont pas visibles dans la Boutique."}
 @app.get("/api/v1/billing/invoices/{invoice_id}/pdf")
