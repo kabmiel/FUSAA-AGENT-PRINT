@@ -19,7 +19,7 @@ from sqlalchemy import text, or_, JSON, func
 from .config import settings
 from .database import Base, SessionLocal, engine, get_db
 from .events import agent_hub, hub
-from .models import AgentCommand, AnonymousVisit, AuditLog, BillingCategory, BillingProfile, CommandStatus, ComputerAgent, Connector, ConnectorEvent, Customer, Document, GuestOrder, Invoice, InvoiceLine, JobStatus, Organization, OrganizationMember, Payment, PriceRule, PrintCost, PrintJob, Printer, Product, PushSubscription, Service, ShopCategory, ShopOrder, ShopOrderLine, ShopProduct, StockMovement, User, Workshop, WorkshopMember, WorkshopSettings as WorkshopSettingsModel
+from .models import AgentCommand, AnonymousVisit, AuditLog, BillingCategory, BillingHeader, BillingProfile, CommandStatus, ComputerAgent, Connector, ConnectorEvent, Customer, Document, GuestOrder, Invoice, InvoiceLine, JobStatus, Organization, OrganizationMember, Payment, PriceRule, PrintCost, PrintJob, Printer, Product, PushSubscription, Service, ShopCategory, ShopOrder, ShopOrderLine, ShopProduct, StockMovement, User, Workshop, WorkshopMember, WorkshopSettings as WorkshopSettingsModel
 from .schemas import *
 from .security import create_access_token, current_user, hash_password, verify_password
 from .services import DIRECT_PRINT_MIMES, audit, build_command, create_preview, inspect_file, issue_agent_key, storage_path, transition
@@ -30,10 +30,10 @@ from .document_processing import DocumentProcessor, LayoutEngine
 from .processing_schemas import LayoutRequest, ProcessRequest
 from .connector_schemas import ConnectorCreate, ConnectorOut, ConnectorSecretOut
 from .connectors import IncomingDocument, ingest_incoming_document, verify_meta_signature, whatsapp_media_message_ids
-from .business_schemas import BillingCategoryIn, BillingDocumentIn, BillingProductIn, BillingProfileIn, CatalogIn, CustomerIn, CustomerOut, FinalCostIn, InvoiceCreate, InvoiceOut, PaymentIn, PriceRuleIn, PriceRuleOut, PrintCostOut, ServiceIn, StockMovementIn
+from .business_schemas import BillingCategoryIn, BillingCompetitionIn, BillingDocumentIn, BillingHeaderIn, BillingProductIn, BillingProfileIn, CatalogIn, CustomerIn, CustomerOut, FinalCostIn, InvoiceCreate, InvoiceOut, PaymentIn, PriceRuleIn, PriceRuleOut, PrintCostOut, ServiceIn, StockMovementIn
 from .shop_schemas import ShopCategoryIn, ShopCloudinaryImageIn, ShopOrderStatusIn, ShopProductIn, ShopPublicOrderIn
 from .business import estimate_print_cost
-from .billing import billing_profile, ensure_shop_invoice, generate_invoice_pdf
+from .billing import billing_profile, default_billing_header, header_tax, ensure_shop_invoice, generate_invoice_pdf
 from .multisite_schemas import RouteJobIn, WorkshopMemberIn, WorkshopMemberRoleIn
 from .observability import RequestAuditMiddleware, configure_logging
 from .local_monitor import router as local_monitor_router
@@ -478,6 +478,20 @@ def create_customer(data:CustomerIn,user:User=Depends(current_user),db:Session=D
 @app.get("/api/v1/customers",response_model=list[CustomerOut])
 def list_customers(organization_id:str,user:User=Depends(current_user),db:Session=Depends(get_db)):
     require_member(db,user,organization_id);return db.query(Customer).filter_by(organization_id=organization_id).order_by(Customer.name).all()
+@app.put("/api/v1/billing/customers/{customer_id}",response_model=CustomerOut)
+def update_billing_customer(customer_id:str,data:CustomerIn,user:User=Depends(current_user),db:Session=Depends(get_db)):
+    customer=one(db,Customer,customer_id)
+    if customer.organization_id!=data.organization_id:raise HTTPException(422,"Client d'une autre organisation")
+    require_org_admin(db,user,data.organization_id)
+    for key,value in data.model_dump(exclude={"organization_id"}).items():setattr(customer,key,value)
+    audit(db,user.id,"BILLING_CUSTOMER_UPDATED","Customer",customer.id,result="SUCCESS");db.commit();db.refresh(customer);return customer
+@app.delete("/api/v1/billing/customers/{customer_id}")
+def delete_billing_customer(customer_id:str,organization_id:str,user:User=Depends(current_user),db:Session=Depends(get_db)):
+    customer=one(db,Customer,customer_id)
+    if customer.organization_id!=organization_id:raise HTTPException(422,"Client d'une autre organisation")
+    require_org_admin(db,user,organization_id)
+    if db.query(Invoice).filter_by(customer_id=customer.id).first():raise HTTPException(409,"Ce client possède des documents : archivez-le dans vos procédures, son historique reste conservé.")
+    db.delete(customer);audit(db,user.id,"BILLING_CUSTOMER_DELETED","Customer",customer_id,result="SUCCESS");db.commit();return {"ok":True}
 @app.post("/api/v1/products",status_code=201)
 def create_product(data:CatalogIn,user:User=Depends(current_user),db:Session=Depends(get_db)):
     require_member(db,user,data.organization_id);product=Product(**data.model_dump());db.add(product);db.flush();audit(db,user.id,"PRODUCT_CREATED","Product",product.id,result="SUCCESS");db.commit();return {"id":product.id,"name":product.name}
@@ -526,24 +540,103 @@ def update_billing_profile(organization_id:str,data:BillingProfileIn,user:User=D
     for key,value in data.model_dump().items():setattr(profile,key,value)
     audit(db,user.id,"BILLING_PROFILE_UPDATED","BillingProfile",profile.id,result="SUCCESS");db.commit()
     return {"ok":True,"id":profile.id}
+
+def billing_header_out(item:BillingHeader):
+    return {key:(float(getattr(item,key)) if key in {"tax_rate","isb_rate","table_font_size"} and getattr(item,key) is not None else getattr(item,key)) for key in ("id","company_name","address","phone","email","nif","rccm","logo_url","document_style","tax_enabled","tax_rate","isb_enabled","isb_rate","table_font_family","table_font_size","is_default")}
+
+@app.get("/api/v1/billing/headers")
+def list_billing_headers(organization_id:str,user:User=Depends(current_user),db:Session=Depends(get_db)):
+    require_member(db,user,organization_id);default_billing_header(db,organization_id);items=db.query(BillingHeader).filter_by(organization_id=organization_id).order_by(BillingHeader.company_name).all();db.commit()
+    return [billing_header_out(item) for item in items]
+
+@app.post("/api/v1/billing/headers",status_code=201)
+def create_billing_header(organization_id:str,data:BillingHeaderIn,user:User=Depends(current_user),db:Session=Depends(get_db)):
+    require_org_admin(db,user,organization_id)
+    if data.is_default or not db.query(BillingHeader).filter_by(organization_id=organization_id).first():
+        for item in db.query(BillingHeader).filter_by(organization_id=organization_id).all():item.is_default=False
+        is_default=True
+    else:is_default=False
+    values=data.model_dump();values["is_default"]=is_default
+    if values["isb_enabled"]:values["tax_enabled"]=False
+    item=BillingHeader(organization_id=organization_id,**values);db.add(item);db.flush();audit(db,user.id,"BILLING_HEADER_CREATED","BillingHeader",item.id,result="SUCCESS");db.commit();return billing_header_out(item)
+
+@app.put("/api/v1/billing/headers/{header_id}")
+def update_billing_header(header_id:str,data:BillingHeaderIn,user:User=Depends(current_user),db:Session=Depends(get_db)):
+    item=one(db,BillingHeader,header_id);require_org_admin(db,user,item.organization_id)
+    values=data.model_dump()
+    if values["isb_enabled"]:values["tax_enabled"]=False
+    if values["is_default"]:
+        for other in db.query(BillingHeader).filter_by(organization_id=item.organization_id).all():other.is_default=False
+    elif item.is_default:values["is_default"]=True
+    for key,value in values.items():setattr(item,key,value)
+    audit(db,user.id,"BILLING_HEADER_UPDATED","BillingHeader",item.id,result="SUCCESS");db.commit();return billing_header_out(item)
+
+@app.delete("/api/v1/billing/headers/{header_id}")
+def delete_billing_header(header_id:str,user:User=Depends(current_user),db:Session=Depends(get_db)):
+    item=one(db,BillingHeader,header_id);require_org_admin(db,user,item.organization_id)
+    if db.query(Invoice).filter_by(billing_header_id=item.id).first():raise HTTPException(409,"Cet entête est utilisé par des factures et doit être conservé.")
+    if db.query(BillingHeader).filter_by(organization_id=item.organization_id).count()<=1:raise HTTPException(409,"Conservez au moins un entête de facturation.")
+    was_default=item.is_default;organization_id=item.organization_id;db.delete(item);db.flush()
+    if was_default:default_billing_header(db,organization_id)
+    audit(db,user.id,"BILLING_HEADER_DELETED","BillingHeader",header_id,result="SUCCESS");db.commit();return {"ok":True}
 @app.get("/api/v1/billing/invoices")
-def list_billing_invoices(organization_id:str,user:User=Depends(current_user),db:Session=Depends(get_db)):
-    require_member(db,user,organization_id);items=db.query(Invoice).filter_by(organization_id=organization_id).order_by(Invoice.created_at.desc()).all()
-    return [{"id":item.id,"number":item.number,"status":item.status,"document_type":item.document_type,"subject":item.subject,"total_amount":float(item.total_amount),"currency":item.currency,"created_at":item.created_at,"source_shop_order_id":item.source_shop_order_id} for item in items]
+def list_billing_invoices(organization_id:str,page:int=1,page_size:int=0,user:User=Depends(current_user),db:Session=Depends(get_db)):
+    require_member(db,user,organization_id);query=db.query(Invoice).filter_by(organization_id=organization_id).order_by(Invoice.created_at.desc())
+    items=query.offset((max(1,page)-1)*min(page_size,100)).limit(min(page_size,100)).all() if page_size>0 else query.all()
+    customers={item.id:item for item in db.query(Customer).filter_by(organization_id=organization_id).all()}
+    payments=db.query(Payment).join(Invoice,Payment.invoice_id==Invoice.id).filter(Invoice.organization_id==organization_id,Payment.status=="CONFIRMED").all();settled={}
+    for payment in payments:settled[payment.invoice_id]=settled.get(payment.invoice_id,0)+float(payment.amount)
+    return [{"id":item.id,"number":item.number,"status":item.status,"document_type":item.document_type,"subject":item.subject,"total_amount":float(item.total_amount),"paid_amount":settled.get(item.id,0),"balance_amount":max(0,float(item.total_amount)-settled.get(item.id,0)),"customer_name":customers.get(item.customer_id).name if item.customer_id in customers else None,"currency":item.currency,"created_at":item.created_at,"source_shop_order_id":item.source_shop_order_id} for item in items]
+@app.get("/api/v1/billing/dashboard")
+def billing_dashboard(organization_id:str,user:User=Depends(current_user),db:Session=Depends(get_db)):
+    require_member(db,user,organization_id);default_billing_header(db,organization_id)
+    invoices=db.query(Invoice).filter_by(organization_id=organization_id)
+    count=invoices.count();customers=db.query(Customer).filter_by(organization_id=organization_id).count();headers=db.query(BillingHeader).filter_by(organization_id=organization_id).count()
+    products=db.query(Product).filter_by(organization_id=organization_id,enabled=True).count();shop_products=db.query(ShopProduct).filter_by(organization_id=organization_id,enabled=True).count()
+    total=float(db.query(func.coalesce(func.sum(Invoice.total_amount),0)).filter(Invoice.organization_id==organization_id,Invoice.document_type=="INVOICE").scalar() or 0)
+    paid=float(db.query(func.coalesce(func.sum(Payment.amount),0)).join(Invoice,Payment.invoice_id==Invoice.id).filter(Invoice.organization_id==organization_id,Payment.status=="CONFIRMED").scalar() or 0)
+    recent=invoices.order_by(Invoice.created_at.desc()).limit(6).all()
+    customer_ids={item.customer_id for item in recent if item.customer_id};customer_names={item.id:item.name for item in db.query(Customer).filter(Customer.id.in_(customer_ids)).all()} if customer_ids else {}
+    db.commit()
+    return {"invoices":count,"customers":customers,"headers":headers,"billing_products":products,"shop_products":shop_products,"invoiced_xof":total,"paid_xof":paid,"outstanding_xof":max(0,total-paid),"recent":[{"id":item.id,"number":item.number,"customer":customer_names.get(item.customer_id,"Client comptant"),"document_type":item.document_type,"total_amount":float(item.total_amount),"created_at":item.created_at} for item in recent]}
+@app.get("/api/v1/billing/catalog/page")
+def billing_catalog_page(organization_id:str,q:str="",page:int=1,page_size:int=20,user:User=Depends(current_user),db:Session=Depends(get_db)):
+    require_member(db,user,organization_id);page=max(1,page);page_size=max(1,min(50,page_size));needle=f"%{q.strip()}%" if q.strip() else None
+    own=db.query(Product).filter_by(organization_id=organization_id,enabled=True)
+    shop=db.query(ShopProduct).filter_by(organization_id=organization_id,enabled=True)
+    if needle:own=own.filter(Product.name.ilike(needle));shop=shop.filter(ShopProduct.name.ilike(needle))
+    own_count=own.count();shop_count=shop.count();skip=(page-1)*page_size
+    own_items=own.order_by(Product.name).offset(skip).limit(page_size).all() if skip<own_count else []
+    shop_skip=max(0,skip-own_count);shop_limit=page_size-len(own_items)
+    shop_items=shop.order_by(ShopProduct.name).offset(shop_skip).limit(shop_limit).all() if shop_limit>0 else []
+    items=[{"id":item.id,"name":item.name,"price_xof":float(item.unit_price),"sku":item.sku,"unit":item.unit,"stock_quantity":item.stock_quantity,"stock_minimum":item.stock_minimum,"cost_xof":float(item.cost_xof or 0),"billing_category_id":item.billing_category_id,"source":"FACTURATION"} for item in own_items]
+    items += [{"id":item.id,"name":item.name,"price_xof":float(item.price_xof),"sku":item.sku,"unit":item.unit,"stock_quantity":item.stock_quantity,"source":"BOUTIQUE"} for item in shop_items]
+    return {"items":items,"page":page,"page_size":page_size,"total":own_count+shop_count,"has_more":skip+len(items)<own_count+shop_count}
+@app.get("/api/v1/billing/invoices/{invoice_id}")
+def get_billing_invoice(invoice_id:str,user:User=Depends(current_user),db:Session=Depends(get_db)):
+    invoice=one(db,Invoice,invoice_id);require_member(db,user,invoice.organization_id);customer=db.get(Customer,invoice.customer_id) if invoice.customer_id else None
+    lines=db.query(InvoiceLine).filter_by(invoice_id=invoice.id).all();payments=db.query(Payment).filter_by(invoice_id=invoice.id).order_by(Payment.created_at.desc()).all();paid=sum(float(item.amount) for item in payments if item.status=="CONFIRMED")
+    header=db.get(BillingHeader,invoice.billing_header_id) if invoice.billing_header_id else None
+    return {"id":invoice.id,"number":invoice.number,"document_type":invoice.document_type,"status":invoice.status,"subject":invoice.subject,"notes":invoice.notes,"currency":invoice.currency,"issued_on":invoice.issued_on,"billing_header_id":invoice.billing_header_id,"header_name":header.company_name if header else None,"subtotal_amount":float(invoice.subtotal_amount or 0),"discount_amount":float(invoice.discount_amount or 0),"tax_rate":float(invoice.tax_rate or 0),"tax_amount":float(invoice.tax_amount or 0),"isb_amount":float(invoice.isb_amount or 0),"total_amount":float(invoice.total_amount),"paid_amount":paid,"balance_amount":max(0,float(invoice.total_amount)-paid),"customer":{"id":customer.id,"name":customer.name,"phone":customer.phone,"email":customer.email,"address":customer.address} if customer else None,"lines":[{"id":line.id,"description":line.description,"unit":line.unit,"quantity":line.quantity,"unit_amount":float(line.unit_amount),"total_amount":float(line.total_amount)} for line in lines],"payments":[{"id":payment.id,"amount":float(payment.amount),"method":payment.method,"status":payment.status,"reference":payment.reference,"created_at":payment.created_at} for payment in payments]}
+@app.post("/api/v1/billing/invoices/{invoice_id}/payments",status_code=201)
+def record_billing_payment(invoice_id:str,data:PaymentIn,user:User=Depends(current_user),db:Session=Depends(get_db)):
+    return record_payment(invoice_id,data,user,db)
 @app.post("/api/v1/billing/documents",status_code=201)
 def create_billing_document(data:BillingDocumentIn,user:User=Depends(current_user),db:Session=Depends(get_db)):
     require_member(db,user,data.organization_id)
     customer=one(db,Customer,data.customer_id) if data.customer_id else None
     if customer and customer.organization_id!=data.organization_id:raise HTTPException(422,"Client d’une autre organisation")
     if not customer and data.customer_name:
-        customer=Customer(organization_id=data.organization_id,name=data.customer_name.strip(),phone=(data.customer_phone or "").strip() or None,email=(data.customer_email or "").strip() or None);db.add(customer);db.flush()
+        customer=Customer(organization_id=data.organization_id,name=data.customer_name.strip(),phone=(data.customer_phone or "").strip() or None,email=(data.customer_email or "").strip() or None,address=(data.customer_address or "").strip() or None);db.add(customer);db.flush()
     if not customer:raise HTTPException(422,"Sélectionnez ou renseignez un client")
-    profile=billing_profile(db,data.organization_id);product_ids=[line.product_id for line in data.lines if line.product_id]
+    header=db.get(BillingHeader,data.billing_header_id) if data.billing_header_id else default_billing_header(db,data.organization_id)
+    if not header or header.organization_id!=data.organization_id:raise HTTPException(422,"Entête de facturation introuvable")
+    product_ids=[line.product_id for line in data.lines if line.product_id]
     shop_products={item.id:item for item in db.query(ShopProduct).filter(ShopProduct.organization_id==data.organization_id,ShopProduct.id.in_(product_ids)).all()}
     billing_products={item.id:item for item in db.query(Product).filter(Product.organization_id==data.organization_id,Product.id.in_(product_ids),Product.enabled.is_(True)).all()}
     if len(shop_products)+len(billing_products)!=len(set(product_ids)):raise HTTPException(422,"Produit de facturation introuvable")
-    subtotal=sum(line.quantity*line.unit_amount for line in data.lines);discount=min(data.discount_amount,subtotal);tax_rate=float(profile.tax_rate or 0) if profile.tax_enabled else 0;tax_amount=round((subtotal-discount)*tax_rate/100,2)
-    invoice=Invoice(organization_id=data.organization_id,customer_id=customer.id,number=f"{data.document_type[:3]}-{datetime.now(timezone.utc):%Y%m%d}-{secrets.token_hex(3).upper()}",status="DRAFT" if data.document_type!="INVOICE" else "PENDING_PAYMENT",currency="XOF",document_type=data.document_type,subject=data.subject,notes=data.notes,subtotal_amount=subtotal,discount_amount=discount,tax_rate=tax_rate,tax_amount=tax_amount,total_amount=subtotal-discount+tax_amount);db.add(invoice);db.flush()
+    subtotal=sum(line.quantity*line.unit_amount for line in data.lines);discount=min(data.discount_amount,subtotal);tax_amount,isb_amount,total=header_tax(header,subtotal,discount);tax_rate=float(header.tax_rate or 0) if header.tax_enabled else 0
+    invoice=Invoice(organization_id=data.organization_id,customer_id=customer.id,billing_header_id=header.id,issued_on=data.issued_on or datetime.now(timezone.utc),number=f"{data.document_type[:3]}-{datetime.now(timezone.utc):%Y%m%d}-{secrets.token_hex(3).upper()}",status="DRAFT" if data.document_type!="INVOICE" else "PENDING_PAYMENT",currency="XOF",document_type=data.document_type,subject=data.subject,notes=data.notes,subtotal_amount=subtotal,discount_amount=discount,tax_rate=tax_rate,tax_amount=tax_amount,isb_amount=isb_amount,total_amount=total);db.add(invoice);db.flush()
     for line in data.lines:
         product=shop_products.get(line.product_id) if line.product_id else None
         db.add(InvoiceLine(invoice_id=invoice.id,shop_product_id=product.id if product else None,description=line.description,unit=line.unit,quantity=line.quantity,unit_amount=line.unit_amount,total_amount=line.quantity*line.unit_amount))
@@ -553,10 +646,25 @@ def create_billing_document(data:BillingDocumentIn,user:User=Depends(current_use
 def duplicate_billing_invoice(invoice_id:str,document_type:str="QUOTE",user:User=Depends(current_user),db:Session=Depends(get_db)):
     original=one(db,Invoice,invoice_id);require_member(db,user,original.organization_id)
     if document_type not in {"QUOTE","PROFORMA","INVOICE","DELIVERY_NOTE","RECEIPT"}:raise HTTPException(422,"Type de document invalide")
-    copy=Invoice(organization_id=original.organization_id,customer_id=original.customer_id,number=f"{document_type[:3]}-{datetime.now(timezone.utc):%Y%m%d}-{secrets.token_hex(3).upper()}",status="DRAFT",currency=original.currency,document_type=document_type,subject=original.subject,notes=original.notes,subtotal_amount=original.subtotal_amount,discount_amount=original.discount_amount,tax_rate=original.tax_rate,tax_amount=original.tax_amount,total_amount=original.total_amount);db.add(copy);db.flush()
+    copy=Invoice(organization_id=original.organization_id,customer_id=original.customer_id,billing_header_id=original.billing_header_id,issued_on=datetime.now(timezone.utc),number=f"{document_type[:3]}-{datetime.now(timezone.utc):%Y%m%d}-{secrets.token_hex(3).upper()}",status="PENDING_PAYMENT" if document_type=="INVOICE" else "DRAFT",currency=original.currency,document_type=document_type,subject=original.subject,notes=original.notes,subtotal_amount=original.subtotal_amount,discount_amount=original.discount_amount,tax_rate=original.tax_rate,tax_amount=original.tax_amount,isb_amount=original.isb_amount,total_amount=original.total_amount);db.add(copy);db.flush()
     for line in db.query(InvoiceLine).filter_by(invoice_id=original.id).all():db.add(InvoiceLine(invoice_id=copy.id,shop_product_id=line.shop_product_id,description=line.description,unit=line.unit,quantity=line.quantity,unit_amount=line.unit_amount,total_amount=line.total_amount))
     audit(db,user.id,"BILLING_DOCUMENT_DUPLICATED","Invoice",copy.id,parameters={"source":original.id,"document_type":document_type},result="SUCCESS");db.commit()
     return {"id":copy.id,"number":copy.number,"document_type":copy.document_type}
+@app.post("/api/v1/billing/invoices/{invoice_id}/competition",status_code=201)
+def create_billing_competition(invoice_id:str,data:BillingCompetitionIn,user:User=Depends(current_user),db:Session=Depends(get_db)):
+    original=one(db,Invoice,invoice_id);require_org_admin(db,user,original.organization_id)
+    header=one(db,BillingHeader,data.billing_header_id)
+    if header.organization_id!=original.organization_id:raise HTTPException(422,"Entête d'une autre organisation")
+    source_lines=db.query(InvoiceLine).filter_by(invoice_id=original.id).all()
+    if not source_lines:raise HTTPException(422,"Le document n'a aucune ligne")
+    copied=[(line,round(float(line.unit_amount)*(1+data.margin_percent/100),2)) for line in source_lines]
+    subtotal=sum(float(line.quantity)*price for line,price in copied)
+    tax_amount,isb_amount,total=header_tax(header,subtotal)
+    copy=Invoice(organization_id=original.organization_id,customer_id=original.customer_id,billing_header_id=header.id,issued_on=datetime.now(timezone.utc),number=f"CON-{datetime.now(timezone.utc):%Y%m%d}-{secrets.token_hex(3).upper()}",status="DRAFT",currency="XOF",document_type="QUOTE",subject=original.subject,notes=original.notes,subtotal_amount=subtotal,tax_rate=float(header.tax_rate or 0) if header.tax_enabled else 0,tax_amount=tax_amount,isb_amount=isb_amount,total_amount=total)
+    db.add(copy);db.flush()
+    for line,price in copied:db.add(InvoiceLine(invoice_id=copy.id,shop_product_id=line.shop_product_id,description=line.description,unit=line.unit,quantity=line.quantity,unit_amount=price,total_amount=round(float(line.quantity)*price,2)))
+    audit(db,user.id,"BILLING_COMPETITION_CREATED","Invoice",copy.id,parameters={"source":original.id,"margin_percent":data.margin_percent},result="SUCCESS");db.commit()
+    return {"id":copy.id,"number":copy.number,"document_type":copy.document_type,"total_amount":float(copy.total_amount)}
 @app.get("/api/v1/billing/products")
 def list_billing_products(organization_id:str,q:str|None=None,user:User=Depends(current_user),db:Session=Depends(get_db)):
     require_member(db,user,organization_id);needle=f"%{q.strip()}%" if q and q.strip() else None
@@ -573,12 +681,34 @@ def list_billing_categories(organization_id:str,user:User=Depends(current_user),
 @app.post("/api/v1/billing/categories",status_code=201)
 def create_billing_category(organization_id:str,data:BillingCategoryIn,user:User=Depends(current_user),db:Session=Depends(get_db)):
     require_org_admin(db,user,organization_id);item=BillingCategory(organization_id=organization_id,**data.model_dump());db.add(item);db.flush();audit(db,user.id,"BILLING_CATEGORY_CREATED","BillingCategory",item.id,result="SUCCESS");db.commit();return {"id":item.id,"name":item.name}
+@app.put("/api/v1/billing/categories/{category_id}")
+def update_billing_category(category_id:str,data:BillingCategoryIn,user:User=Depends(current_user),db:Session=Depends(get_db)):
+    item=one(db,BillingCategory,category_id);require_org_admin(db,user,item.organization_id);item.name=data.name.strip();item.description=data.description
+    audit(db,user.id,"BILLING_CATEGORY_UPDATED","BillingCategory",item.id,result="SUCCESS");db.commit();return {"id":item.id,"name":item.name}
+@app.delete("/api/v1/billing/categories/{category_id}")
+def delete_billing_category(category_id:str,user:User=Depends(current_user),db:Session=Depends(get_db)):
+    item=one(db,BillingCategory,category_id);require_org_admin(db,user,item.organization_id)
+    for product in db.query(Product).filter_by(billing_category_id=item.id).all():product.billing_category_id=None
+    db.delete(item);audit(db,user.id,"BILLING_CATEGORY_DELETED","BillingCategory",category_id,result="SUCCESS");db.commit();return {"ok":True}
 @app.post("/api/v1/billing/products",status_code=201)
 def create_billing_product(data:BillingProductIn,user:User=Depends(current_user),db:Session=Depends(get_db)):
     require_org_admin(db,user,data.organization_id)
     if data.billing_category_id and not db.query(BillingCategory).filter_by(id=data.billing_category_id,organization_id=data.organization_id).first():raise HTTPException(422,"Catégorie introuvable")
     product=Product(**data.model_dump());db.add(product);db.flush();audit(db,user.id,"BILLING_PRODUCT_CREATED","Product",product.id,result="SUCCESS");db.commit()
     return {"id":product.id,"name":product.name,"source":"FACTURATION"}
+@app.put("/api/v1/billing/products/{product_id}")
+def update_billing_product(product_id:str,data:BillingProductIn,user:User=Depends(current_user),db:Session=Depends(get_db)):
+    item=one(db,Product,product_id);require_org_admin(db,user,item.organization_id)
+    if item.organization_id!=data.organization_id:raise HTTPException(422,"Produit d'une autre organisation")
+    if data.billing_category_id and not db.query(BillingCategory).filter_by(id=data.billing_category_id,organization_id=item.organization_id).first():raise HTTPException(422,"Catégorie introuvable")
+    if item.stock_quantity!=data.stock_quantity:
+        raise HTTPException(422,"Utilisez un mouvement de stock pour changer la quantité")
+    for key,value in data.model_dump(exclude={"organization_id","stock_quantity"}).items():setattr(item,key,value)
+    audit(db,user.id,"BILLING_PRODUCT_UPDATED","Product",item.id,result="SUCCESS");db.commit();return {"id":item.id,"name":item.name}
+@app.delete("/api/v1/billing/products/{product_id}")
+def delete_billing_product(product_id:str,user:User=Depends(current_user),db:Session=Depends(get_db)):
+    item=one(db,Product,product_id);require_org_admin(db,user,item.organization_id);item.enabled=False
+    audit(db,user.id,"BILLING_PRODUCT_ARCHIVED","Product",item.id,result="SUCCESS");db.commit();return {"ok":True}
 @app.post("/api/v1/billing/products/import")
 async def import_billing_products(organization_id:str,file:UploadFile=File(...),user:User=Depends(current_user),db:Session=Depends(get_db)):
     require_org_admin(db,user,organization_id)
@@ -1446,6 +1576,10 @@ def manifest(): return {"name":"FUSAA Service","short_name":"FUSAA","start_url":
 
 @app.get("/app.js",response_class=HTMLResponse)
 def app_js():return HTMLResponse((Path(__file__).parent/"web"/"app.js").read_text(encoding="utf-8"),media_type="application/javascript")
+@app.get("/billing-workspace.js",response_class=HTMLResponse)
+def billing_workspace_js():return HTMLResponse((Path(__file__).parent/"web"/"billing-workspace.js").read_text(encoding="utf-8"),media_type="application/javascript",headers={"Cache-Control":"no-store, max-age=0"})
+@app.get("/billing-workspace.css",response_class=HTMLResponse)
+def billing_workspace_css():return HTMLResponse((Path(__file__).parent/"web"/"billing-workspace.css").read_text(encoding="utf-8"),media_type="text/css",headers={"Cache-Control":"no-store, max-age=0"})
 
 @app.get("/public.js",response_class=HTMLResponse)
 def public_js():return HTMLResponse((Path(__file__).parent/"web"/"public.js").read_text(encoding="utf-8"),media_type="application/javascript")

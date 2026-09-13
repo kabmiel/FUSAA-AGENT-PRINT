@@ -15,11 +15,11 @@ ROOT=Path(__file__).parents[1]
 sys.path[:0]=[str(ROOT/"backend"),str(ROOT/"local-agent")]
 from app.database import Base
 from app.models import User,Organization,OrganizationMember,Workshop,WorkshopMember,Document,PrintJob,ComputerAgent,Printer,JobStatus,LocalActivity,BrowserLink,GuestOrder,ShopCategory,ShopProduct,AnonymousVisit,Invoice
-from app.main import cancel_job,confirm_job,prepare_job,central_supervision,list_jobs,list_documents,audit_history,list_workshop_members,update_workshop_member,remove_workshop_member,assign_workshop_member,register,create_guest_order,guest_order_status,verify_guest_payment,list_guest_orders,export_guest_orders,archive_guest_order,restore_guest_order,set_public_pricing,get_public_pricing,refresh_guest_quote,create_guest_receipt,production_dashboard,index,impression_index,admin_index,public_tracking_page,delete_job,archive_public_job,create_shop_order,shop_public_products,shop_public_products_page,shop_admin_products_page,record_public_visit,visitor_analytics,create_billing_document,duplicate_billing_invoice,create_stock_movement,billing_stock_alerts,create_billing_category,create_billing_product,list_billing_products
+from app.main import cancel_job,confirm_job,prepare_job,central_supervision,list_jobs,list_documents,audit_history,list_workshop_members,update_workshop_member,remove_workshop_member,assign_workshop_member,register,create_guest_order,guest_order_status,verify_guest_payment,list_guest_orders,export_guest_orders,archive_guest_order,restore_guest_order,set_public_pricing,get_public_pricing,refresh_guest_quote,create_guest_receipt,production_dashboard,index,impression_index,admin_index,public_tracking_page,delete_job,archive_public_job,create_shop_order,shop_public_products,shop_public_products_page,shop_admin_products_page,record_public_visit,visitor_analytics,create_billing_document,duplicate_billing_invoice,create_stock_movement,billing_stock_alerts,create_billing_category,create_billing_product,list_billing_products,create_customer,update_billing_customer,delete_billing_customer,get_billing_invoice,record_billing_payment,list_billing_headers,create_billing_header,billing_dashboard,billing_catalog_page
 from app.connectors import IncomingDocument, ingest_incoming_document
 from app.config import settings
 from app.schemas import JobOptions,GuestPaymentIn,PublicPricingIn,PublicVisitIn,RegisterIn
-from app.business_schemas import BillingCategoryIn,BillingDocumentIn,BillingProductIn
+from app.business_schemas import BillingCategoryIn,BillingDocumentIn,BillingHeaderIn,BillingProductIn,CustomerIn,PaymentIn
 from app.business_schemas import StockMovementIn
 from app.shop_schemas import ShopPublicOrderIn
 from app.multisite_schemas import WorkshopMemberIn,WorkshopMemberRoleIn
@@ -277,7 +277,7 @@ def test_shop_order_uses_fcfa_stock_and_public_workshop(setup_db,monkeypatch,tmp
     db.refresh(product)
     assert order["currency"]=="XOF" and order["total_xof"]==500000 and product.stock_quantity==0
     invoice=db.query(Invoice).filter_by(source_shop_order_id=order["id"]).one()
-    assert invoice.number==order["invoice_number"] and float(invoice.total_amount)==500000
+    assert invoice.number==order["invoice_number"] and float(invoice.total_amount)==500000 and invoice.billing_header_id
     from app.billing import generate_invoice_pdf
     monkeypatch.setattr(settings,"storage_dir",tmp_path)
     assert generate_invoice_pdf(db,invoice).read_bytes().startswith(b"%PDF")
@@ -288,6 +288,29 @@ def test_billing_documents_support_quote_and_duplication(setup_db):
     assert document["document_type"]=="QUOTE" and document["total_amount"]==3000
     duplicate=duplicate_billing_invoice(document["id"],"PROFORMA",admin,db)
     assert duplicate["document_type"]=="PROFORMA"
+    details=get_billing_invoice(document["id"],admin,db)
+    assert details["customer"]["name"]=="Client devis" and len(details["lines"])==1
+    payment=record_billing_payment(document["id"],PaymentIn(amount=3000,method="CASH"),admin,db)
+    assert payment["invoice_status"]=="PAID"
+
+def test_boulangerie_headers_apply_to_multiline_invoices_and_pdf(setup_db,tmp_path,monkeypatch):
+    from app.billing import generate_invoice_pdf
+    from pypdf import PdfReader
+    db,_,admin=setup_db
+    original=list_billing_headers("o",admin,db)
+    assert original[0]["company_name"]=="KABIROU ABDOU SALAM MAMAN"
+    assert original[0]["document_style"]=="standard" and not original[0]["tax_enabled"]
+    header=create_billing_header("o",BillingHeaderIn(company_name="Atelier test",document_style="moderne_bandeau",isb_enabled=True,isb_rate=3,is_default=True),admin,db)
+    document=create_billing_document(BillingDocumentIn(organization_id="o",billing_header_id=header["id"],customer_name="Client test",document_type="INVOICE",discount_amount=500,lines=[{"description":"Service","quantity":2.5,"unit_amount":1000},{"description":"Article","quantity":1,"unit_amount":500}]),admin,db)
+    details=get_billing_invoice(document["id"],admin,db)
+    assert details["header_name"]=="Atelier test" and details["subtotal_amount"]==3000
+    assert details["isb_amount"]==75 and details["total_amount"]==2425 and len(details["lines"])==2
+    monkeypatch.setattr(settings,"storage_dir",tmp_path)
+    pdf=generate_invoice_pdf(db,db.get(Invoice,document["id"]))
+    text="\n".join(page.extract_text() for page in PdfReader(pdf).pages)
+    assert "Atelier test" in text and "Service" in text and "ISB" in text
+    assert billing_dashboard("o",admin,db)["headers"]==2
+    assert billing_catalog_page("o",page=1,page_size=10,user=admin,db=db)["total"]==0
 
 def test_stock_movement_and_alerts_cover_both_catalogues(setup_db):
     db,_,admin=setup_db
@@ -305,6 +328,13 @@ def test_billing_categories_and_products_stay_out_of_public_shop(setup_db):
     found=next(item for item in items if item["id"]==product["id"])
     assert found["source"]=="FACTURATION" and found["billing_category_id"]==category["id"] and found["stock_quantity"]==8
     assert db.query(ShopProduct).count()==0
+
+def test_billing_customer_can_be_updated_and_deleted_without_history(setup_db):
+    db,_,admin=setup_db
+    customer=create_customer(CustomerIn(organization_id="o",name="Ancien nom",phone="90112233"),admin,db)
+    updated=update_billing_customer(customer.id,CustomerIn(organization_id="o",name="Nouveau nom",phone="90909090"),admin,db)
+    assert updated.name=="Nouveau nom" and updated.phone=="90909090"
+    assert delete_billing_customer(customer.id,"o",admin,db)=={"ok":True}
 
 def test_printer_must_match_job_workshop(setup_db):
     db,_,admin=setup_db

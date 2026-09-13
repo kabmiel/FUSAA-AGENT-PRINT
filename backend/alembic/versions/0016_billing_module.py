@@ -22,7 +22,7 @@ def upgrade():
         batch.add_column(sa.Column("cost_xof", sa.Numeric(12,2), nullable=False, server_default="0"))
         batch.add_column(sa.Column("stock_minimum", sa.Integer(), nullable=False, server_default="3"))
     with op.batch_alter_table("invoices") as batch:
-        batch.add_column(sa.Column("source_shop_order_id", sa.String(36), sa.ForeignKey("shop_orders.id"), nullable=True))
+        batch.add_column(sa.Column("source_shop_order_id", sa.String(36), sa.ForeignKey("shop_orders.id", name="fk_invoices_source_shop_order"), nullable=True))
         batch.add_column(sa.Column("document_type", sa.String(24), nullable=False, server_default="INVOICE"))
         batch.add_column(sa.Column("subject", sa.String(255)))
         batch.add_column(sa.Column("notes", sa.Text()))
@@ -34,7 +34,7 @@ def upgrade():
         batch.create_unique_constraint("uq_invoices_source_shop_order", ["source_shop_order_id"])
     op.create_index("ix_invoices_source_shop_order_id", "invoices", ["source_shop_order_id"])
     with op.batch_alter_table("invoice_lines") as batch:
-        batch.add_column(sa.Column("shop_product_id", sa.String(36), sa.ForeignKey("shop_products.id"), nullable=True))
+        batch.add_column(sa.Column("shop_product_id", sa.String(36), sa.ForeignKey("shop_products.id", name="fk_invoice_lines_shop_product"), nullable=True))
         batch.add_column(sa.Column("unit", sa.String(20), nullable=False, server_default="piece"))
 
 def downgrade():

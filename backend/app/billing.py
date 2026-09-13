@@ -7,7 +7,8 @@ from reportlab.lib.pagesizes import A4
 from reportlab.lib.units import mm
 from reportlab.pdfgen import canvas
 from .config import settings
-from .models import BillingProfile, Customer, Invoice, InvoiceLine, ShopOrder, ShopOrderLine
+from .billing_pdf import render_invoice_pdf
+from .models import BillingHeader, BillingProfile, Customer, Invoice, InvoiceLine, ShopOrder, ShopOrderLine
 
 def money(value: float) -> str:
     return f"{float(value or 0):,.0f} FCFA".replace(",", " ")
@@ -24,6 +25,33 @@ def billing_profile(db, organization_id: str) -> BillingProfile:
         db.add(profile);db.flush()
     return profile
 
+
+def default_billing_header(db, organization_id: str) -> BillingHeader:
+    """Seed the existing Boulangerie header once for each FUSAA organization."""
+    header=db.query(BillingHeader).filter_by(organization_id=organization_id,is_default=True).first()
+    if header:return header
+    header=db.query(BillingHeader).filter_by(organization_id=organization_id).order_by(BillingHeader.created_at).first()
+    if header:
+        header.is_default=True
+        return header
+    header=BillingHeader(
+        organization_id=organization_id,company_name="KABIROU ABDOU SALAM MAMAN",
+        address="ZINDER, NIGER",phone="98313369",email="kabmiel43@gmail.com",
+        nif="35252/P",rccm="NI-ZIN-2014-A-387",document_style="standard",
+        tax_enabled=False,tax_rate=19,isb_enabled=False,isb_rate=3,is_default=True,
+    )
+    db.add(header);db.flush()
+    return header
+
+
+def header_tax(header: BillingHeader, subtotal: float, discount: float = 0) -> tuple[float,float,float]:
+    base=max(0,subtotal-discount)
+    if header.isb_enabled:
+        deduction=round(base*float(header.isb_rate or 0)/100,2)
+        return 0,deduction,round(base-deduction,2)
+    tax=round(base*float(header.tax_rate or 0)/100,2) if header.tax_enabled else 0
+    return tax,0,round(base+tax,2)
+
 def ensure_shop_invoice(db, order: ShopOrder) -> Invoice:
     existing=db.query(Invoice).filter_by(source_shop_order_id=order.id).one_or_none()
     if existing:return existing
@@ -31,18 +59,18 @@ def ensure_shop_invoice(db, order: ShopOrder) -> Invoice:
     if not customer:
         customer=Customer(organization_id=order.organization_id,name=order.customer_name,phone=order.customer_phone,notes=order.delivery_address)
         db.add(customer);db.flush()
-    profile=billing_profile(db,order.organization_id)
+    header=default_billing_header(db,order.organization_id)
     lines=db.query(ShopOrderLine).filter_by(order_id=order.id).all()
     subtotal=sum(float(line.unit_price_xof)*line.quantity for line in lines)
-    tax_rate=float(profile.tax_rate or 0) if profile.tax_enabled else 0
-    tax_amount=round(subtotal*tax_rate/100,2)
-    invoice=Invoice(organization_id=order.organization_id,customer_id=customer.id,source_shop_order_id=order.id,number=invoice_number(db),status="PENDING_PAYMENT",currency="XOF",document_type="INVOICE",subject=f"Commande boutique {order.order_number}",notes=order.notes,subtotal_amount=subtotal,tax_rate=tax_rate,tax_amount=tax_amount,total_amount=subtotal+tax_amount)
+    tax_amount,isb_amount,total=header_tax(header,subtotal)
+    tax_rate=float(header.tax_rate or 0) if header.tax_enabled else 0
+    invoice=Invoice(organization_id=order.organization_id,customer_id=customer.id,source_shop_order_id=order.id,billing_header_id=header.id,number=invoice_number(db),status="PENDING_PAYMENT",currency="XOF",document_type="INVOICE",subject=f"Commande boutique {order.order_number}",notes=order.notes,subtotal_amount=subtotal,tax_rate=tax_rate,tax_amount=tax_amount,isb_amount=isb_amount,total_amount=total)
     db.add(invoice);db.flush()
     for line in lines:
         db.add(InvoiceLine(invoice_id=invoice.id,shop_product_id=line.product_id,description=line.product_name,unit="piece",quantity=line.quantity,unit_amount=float(line.unit_price_xof),total_amount=float(line.unit_price_xof)*line.quantity))
     return invoice
 
-def generate_invoice_pdf(db, invoice: Invoice) -> Path:
+def _legacy_invoice_pdf(db, invoice: Invoice) -> Path:
     profile=billing_profile(db,invoice.organization_id)
     customer=db.get(Customer,invoice.customer_id) if invoice.customer_id else None
     lines=db.query(InvoiceLine).filter_by(invoice_id=invoice.id).order_by(InvoiceLine.id).all()
@@ -69,3 +97,13 @@ def generate_invoice_pdf(db, invoice: Invoice) -> Path:
     pdf.setFillColor(colors.HexColor("#0b8c83"));pdf.setFont("Helvetica-Bold",12);pdf.drawRightString(width-20*mm,y,"TOTAL : "+money(invoice.total_amount))
     pdf.setFillColor(colors.HexColor("#5a7180"));pdf.setFont("Helvetica",7);pdf.drawString(18*mm,16*mm,"Document généré par FUSAA · Paiement à confirmer avant livraison.")
     pdf.save();invoice.pdf_key=str(path.relative_to(settings.storage_dir));return path
+
+
+def generate_invoice_pdf(db, invoice: Invoice) -> Path:
+    header=db.get(BillingHeader,invoice.billing_header_id) if invoice.billing_header_id else default_billing_header(db,invoice.organization_id)
+    customer=db.get(Customer,invoice.customer_id) if invoice.customer_id else None
+    lines=db.query(InvoiceLine).filter_by(invoice_id=invoice.id).order_by(InvoiceLine.id).all()
+    path=settings.storage_dir / "invoices" / f"{invoice.number}.pdf"
+    render_invoice_pdf(path,invoice,header,customer,lines)
+    invoice.pdf_key=str(path.relative_to(settings.storage_dir))
+    return path

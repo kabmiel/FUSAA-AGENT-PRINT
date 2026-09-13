@@ -81,6 +81,7 @@ class Customer(Timestamped, Base):
     name: Mapped[str] = mapped_column(String(160))
     phone: Mapped[str | None] = mapped_column(String(50), nullable=True)
     email: Mapped[str | None] = mapped_column(String(320), nullable=True)
+    address: Mapped[str | None] = mapped_column(Text, nullable=True)
     notes: Mapped[str | None] = mapped_column(Text, nullable=True)
 
 class Product(Timestamped, Base):
@@ -233,8 +234,11 @@ class Invoice(Timestamped, Base):
     subtotal_amount: Mapped[float] = mapped_column(Numeric(12,2), default=0)
     tax_rate: Mapped[float] = mapped_column(Numeric(5,2), default=0)
     tax_amount: Mapped[float] = mapped_column(Numeric(12,2), default=0)
+    isb_amount: Mapped[float] = mapped_column(Numeric(12,2), default=0)
     discount_amount: Mapped[float] = mapped_column(Numeric(12,2), default=0)
     pdf_key: Mapped[str | None] = mapped_column(String(512), nullable=True)
+    billing_header_id: Mapped[str | None] = mapped_column(ForeignKey("billing_headers.id"), nullable=True, index=True)
+    issued_on: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
 class InvoiceLine(Base):
     __tablename__="invoice_lines"
@@ -244,7 +248,7 @@ class InvoiceLine(Base):
     shop_product_id: Mapped[str | None] = mapped_column(ForeignKey("shop_products.id"), nullable=True)
     description: Mapped[str] = mapped_column(String(255))
     unit: Mapped[str] = mapped_column(String(20), default="piece")
-    quantity: Mapped[int] = mapped_column(Integer, default=1)
+    quantity: Mapped[float] = mapped_column(Numeric(10,2), default=1)
     unit_amount: Mapped[float] = mapped_column(Numeric(12,2), default=0)
     total_amount: Mapped[float] = mapped_column(Numeric(12,2), default=0)
 
@@ -261,6 +265,26 @@ class BillingProfile(Timestamped, Base):
     tax_enabled: Mapped[bool] = mapped_column(Boolean, default=False)
     tax_rate: Mapped[float] = mapped_column(Numeric(5,2), default=0)
     document_style: Mapped[str] = mapped_column(String(40), default="moderne")
+
+class BillingHeader(Timestamped, Base):
+    __tablename__ = "billing_headers"
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=uid)
+    organization_id: Mapped[str] = mapped_column(ForeignKey("organizations.id"), index=True)
+    company_name: Mapped[str] = mapped_column(String(255))
+    address: Mapped[str | None] = mapped_column(Text, nullable=True)
+    phone: Mapped[str | None] = mapped_column(String(50), nullable=True)
+    email: Mapped[str | None] = mapped_column(String(320), nullable=True)
+    nif: Mapped[str | None] = mapped_column(String(80), nullable=True)
+    rccm: Mapped[str | None] = mapped_column(String(80), nullable=True)
+    logo_url: Mapped[str | None] = mapped_column(String(1024), nullable=True)
+    document_style: Mapped[str] = mapped_column(String(40), default="standard")
+    tax_enabled: Mapped[bool] = mapped_column(Boolean, default=False)
+    tax_rate: Mapped[float] = mapped_column(Numeric(5,2), default=19)
+    isb_enabled: Mapped[bool] = mapped_column(Boolean, default=False)
+    isb_rate: Mapped[float] = mapped_column(Numeric(5,2), default=3)
+    table_font_family: Mapped[str | None] = mapped_column(String(20), nullable=True)
+    table_font_size: Mapped[float | None] = mapped_column(Numeric(4,1), nullable=True)
+    is_default: Mapped[bool] = mapped_column(Boolean, default=False)
 
 class Payment(Timestamped, Base):
     __tablename__="payments"

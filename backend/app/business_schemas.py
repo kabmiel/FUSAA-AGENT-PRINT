@@ -1,6 +1,6 @@
 from datetime import datetime
 from pydantic import BaseModel, ConfigDict, Field
-class CustomerIn(BaseModel): organization_id:str; name:str=Field(min_length=1,max_length=160); phone:str|None=None; email:str|None=None; notes:str|None=None
+class CustomerIn(BaseModel): organization_id:str; name:str=Field(min_length=1,max_length=160); phone:str|None=None; email:str|None=None; address:str|None=None; notes:str|None=None
 class CustomerOut(CustomerIn): model_config=ConfigDict(from_attributes=True); id:str
 class CatalogIn(BaseModel): organization_id:str; name:str=Field(min_length=1,max_length=160); unit_price:float=Field(ge=0); sku:str|None=None
 class ServiceIn(BaseModel): organization_id:str; name:str=Field(min_length=1,max_length=160); unit_price:float=Field(ge=0)
@@ -24,11 +24,14 @@ class BillingProfileIn(BaseModel):
 class BillingLineIn(BaseModel):
     product_id:str|None=None
     description:str=Field(min_length=1,max_length=255)
-    quantity:int=Field(default=1,ge=1,le=9999)
+    quantity:float=Field(default=1,gt=0,le=9999)
     unit_amount:float=Field(ge=0)
     unit:str=Field(default="piece",max_length=20)
 class BillingDocumentIn(BaseModel):
     organization_id:str
+    billing_header_id:str|None=None
+    issued_on:datetime|None=None
+    customer_address:str|None=None
     document_type:str=Field(default="INVOICE",pattern="^(QUOTE|PROFORMA|INVOICE|DELIVERY_NOTE|RECEIPT)$")
     customer_id:str|None=None
     customer_name:str|None=Field(default=None,max_length=160)
@@ -46,3 +49,24 @@ class StockMovementIn(BaseModel):
     reason:str|None=Field(default=None,max_length=255)
 class BillingCategoryIn(BaseModel): name:str=Field(min_length=1,max_length=100);description:str|None=Field(default=None,max_length=2000)
 class BillingProductIn(CatalogIn): billing_category_id:str|None=None;stock_quantity:int=Field(default=0,ge=0);stock_minimum:int=Field(default=3,ge=0);cost_xof:float=Field(default=0,ge=0);unit:str=Field(default="piece",max_length=20)
+
+class BillingHeaderIn(BaseModel):
+    company_name:str=Field(min_length=1,max_length=255)
+    address:str|None=None
+    phone:str|None=Field(default=None,max_length=50)
+    email:str|None=Field(default=None,max_length=320)
+    nif:str|None=Field(default=None,max_length=80)
+    rccm:str|None=Field(default=None,max_length=80)
+    logo_url:str|None=Field(default=None,max_length=1024)
+    document_style:str=Field(default="standard",pattern="^(standard|scan_gauche|scan_alasko|scan_centre|scan_compact|scan_facture_simple|moderne_clair|moderne_bandeau|moderne_minimal)$")
+    tax_enabled:bool=False
+    tax_rate:float=Field(default=19,ge=0,le=100)
+    isb_enabled:bool=False
+    isb_rate:float=Field(default=3,ge=0,le=100)
+    table_font_family:str|None=Field(default=None,max_length=20)
+    table_font_size:float|None=Field(default=None,ge=8,le=14)
+    is_default:bool=False
+
+class BillingCompetitionIn(BaseModel):
+    billing_header_id:str
+    margin_percent:float=Field(ge=0,le=1000)
