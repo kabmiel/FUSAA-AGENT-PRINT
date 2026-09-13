@@ -19,7 +19,7 @@ from sqlalchemy import text, or_, JSON, func
 from .config import settings
 from .database import Base, SessionLocal, engine, get_db
 from .events import agent_hub, hub
-from .models import AgentCommand, AnonymousVisit, AuditLog, CommandStatus, ComputerAgent, Connector, ConnectorEvent, Customer, Document, GuestOrder, Invoice, InvoiceLine, JobStatus, Organization, OrganizationMember, Payment, PriceRule, PrintCost, PrintJob, Printer, Product, PushSubscription, Service, ShopCategory, ShopOrder, ShopOrderLine, ShopProduct, User, Workshop, WorkshopMember, WorkshopSettings as WorkshopSettingsModel
+from .models import AgentCommand, AnonymousVisit, AuditLog, BillingProfile, CommandStatus, ComputerAgent, Connector, ConnectorEvent, Customer, Document, GuestOrder, Invoice, InvoiceLine, JobStatus, Organization, OrganizationMember, Payment, PriceRule, PrintCost, PrintJob, Printer, Product, PushSubscription, Service, ShopCategory, ShopOrder, ShopOrderLine, ShopProduct, User, Workshop, WorkshopMember, WorkshopSettings as WorkshopSettingsModel
 from .schemas import *
 from .security import create_access_token, current_user, hash_password, verify_password
 from .services import DIRECT_PRINT_MIMES, audit, build_command, create_preview, inspect_file, issue_agent_key, storage_path, transition
@@ -30,9 +30,10 @@ from .document_processing import DocumentProcessor, LayoutEngine
 from .processing_schemas import LayoutRequest, ProcessRequest
 from .connector_schemas import ConnectorCreate, ConnectorOut, ConnectorSecretOut
 from .connectors import IncomingDocument, ingest_incoming_document, verify_meta_signature, whatsapp_media_message_ids
-from .business_schemas import CatalogIn, CustomerIn, CustomerOut, FinalCostIn, InvoiceCreate, InvoiceOut, PaymentIn, PriceRuleIn, PriceRuleOut, PrintCostOut, ServiceIn
+from .business_schemas import BillingProfileIn, CatalogIn, CustomerIn, CustomerOut, FinalCostIn, InvoiceCreate, InvoiceOut, PaymentIn, PriceRuleIn, PriceRuleOut, PrintCostOut, ServiceIn
 from .shop_schemas import ShopCategoryIn, ShopCloudinaryImageIn, ShopOrderStatusIn, ShopProductIn, ShopPublicOrderIn
 from .business import estimate_print_cost
+from .billing import billing_profile, ensure_shop_invoice, generate_invoice_pdf
 from .multisite_schemas import RouteJobIn, WorkshopMemberIn, WorkshopMemberRoleIn
 from .observability import RequestAuditMiddleware, configure_logging
 from .local_monitor import router as local_monitor_router
@@ -180,7 +181,8 @@ def shop_product_out(db:Session,item:ShopProduct, include_disabled_category:bool
 
 def shop_order_out(db:Session,order:ShopOrder, include_lines:bool=True)->dict:
     lines=db.query(ShopOrderLine).filter_by(order_id=order.id).all() if include_lines else []
-    return {"id":order.id,"order_number":order.order_number,"customer_name":order.customer_name,"customer_phone":order.customer_phone,"delivery_address":order.delivery_address,"notes":order.notes,"status":order.status,"payment_status":order.payment_status,"payment_method":order.payment_method,"total_xof":float(order.total_xof),"created_at":order.created_at,"updated_at":order.updated_at,"items":[{"product_id":line.product_id,"product_name":line.product_name,"unit_price_xof":float(line.unit_price_xof),"quantity":line.quantity,"subtotal_xof":float(line.unit_price_xof)*line.quantity} for line in lines]}
+    invoice=db.query(Invoice).filter_by(source_shop_order_id=order.id).one_or_none()
+    return {"id":order.id,"order_number":order.order_number,"customer_name":order.customer_name,"customer_phone":order.customer_phone,"delivery_address":order.delivery_address,"notes":order.notes,"status":order.status,"payment_status":order.payment_status,"payment_method":order.payment_method,"total_xof":float(order.total_xof),"created_at":order.created_at,"updated_at":order.updated_at,"invoice_number":invoice.number if invoice else None,"invoice_status":invoice.status if invoice else None,"items":[{"product_id":line.product_id,"product_name":line.product_name,"unit_price_xof":float(line.unit_price_xof),"quantity":line.quantity,"subtotal_xof":float(line.unit_price_xof)*line.quantity} for line in lines]}
 
 def shop_order_number(db:Session)->str:
     while True:
@@ -240,9 +242,10 @@ async def create_shop_order(data:ShopPublicOrderIn,db:Session=Depends(get_db)):
     for product in products:
         quantity=requested[product.id];product.stock_quantity-=quantity
         db.add(ShopOrderLine(order_id=order.id,product_id=product.id,product_name=product.name,unit_price_xof=float(product.price_xof),quantity=quantity))
-    audit(db,f"shop:{order.order_number}","SHOP_ORDER_CREATED","ShopOrder",order.id,parameters={"total_xof":total},result="SUCCESS");db.commit()
+    db.flush();invoice=ensure_shop_invoice(db,order)
+    audit(db,f"shop:{order.order_number}","SHOP_ORDER_CREATED","ShopOrder",order.id,parameters={"total_xof":total,"invoice_number":invoice.number},result="SUCCESS");db.commit()
     await hub.publish("SHOP_ORDER_CREATED",{"order_number":order.order_number,"total_xof":total},organization_id)
-    return {**shop_order_out(db,order),"tracking_url":f"/boutique/suivi/{order.order_number}/{token}","currency":"XOF"}
+    return {**shop_order_out(db,order),"tracking_url":f"/boutique/suivi/{order.order_number}/{token}","invoice_url":f"/api/v1/shop/public/orders/{order.order_number}/{token}/invoice","currency":"XOF"}
 
 @app.get("/api/v1/shop/public/orders/{number}/{token}")
 def shop_public_order_status(number:str,token:str,db:Session=Depends(get_db)):
@@ -250,6 +253,15 @@ def shop_public_order_status(number:str,token:str,db:Session=Depends(get_db)):
     digest=hashlib.sha256(token.encode()).hexdigest()
     if not order or not secrets.compare_digest(order.access_token_hash,digest):raise HTTPException(404,"Commande introuvable")
     return {**shop_order_out(db,order),"currency":"XOF"}
+
+@app.get("/api/v1/shop/public/orders/{number}/{token}/invoice")
+def shop_public_invoice(number:str,token:str,db:Session=Depends(get_db)):
+    order=db.query(ShopOrder).filter_by(order_number=number).one_or_none();digest=hashlib.sha256(token.encode()).hexdigest()
+    if not order or not secrets.compare_digest(order.access_token_hash,digest):raise HTTPException(404,"Commande introuvable")
+    invoice=db.query(Invoice).filter_by(source_shop_order_id=order.id).one_or_none()
+    if not invoice:raise HTTPException(404,"Facture indisponible")
+    path=generate_invoice_pdf(db,invoice);db.commit()
+    return FileResponse(path,media_type="application/pdf",filename=f"{invoice.number}.pdf")
 
 @app.post("/api/v1/public/orders",response_model=GuestOrderOut,status_code=201)
 async def create_guest_order(
@@ -503,6 +515,24 @@ def create_invoice(data:InvoiceCreate,user:User=Depends(current_user),db:Session
 @app.post("/api/v1/invoices/{invoice_id}/payments",status_code=201)
 def record_payment(invoice_id:str,data:PaymentIn,user:User=Depends(current_user),db:Session=Depends(get_db)):
     invoice=one(db,Invoice,invoice_id);require_member(db,user,invoice.organization_id);payment=Payment(invoice_id=invoice.id,**data.model_dump());db.add(payment);db.flush();paid=sum(float(p.amount) for p in db.query(Payment).filter_by(invoice_id=invoice.id,status="CONFIRMED").all());invoice.status="PAID" if paid>=float(invoice.total_amount) else "PARTIALLY_PAID";audit(db,user.id,"PAYMENT_RECORDED","Payment",payment.id,parameters={"invoice_id":invoice.id,"amount":data.amount},result="SUCCESS");db.commit();return {"payment_id":payment.id,"invoice_status":invoice.status,"paid_amount":paid}
+@app.get("/api/v1/billing/profile")
+def get_billing_profile(organization_id:str,user:User=Depends(current_user),db:Session=Depends(get_db)):
+    require_org_admin(db,user,organization_id);profile=billing_profile(db,organization_id);db.commit()
+    return {key:getattr(profile,key) for key in ("id","organization_id","company_name","address","phone","email","nif","rccm","tax_enabled","tax_rate","document_style")}
+@app.put("/api/v1/billing/profile")
+def update_billing_profile(organization_id:str,data:BillingProfileIn,user:User=Depends(current_user),db:Session=Depends(get_db)):
+    require_org_admin(db,user,organization_id);profile=billing_profile(db,organization_id)
+    for key,value in data.model_dump().items():setattr(profile,key,value)
+    audit(db,user.id,"BILLING_PROFILE_UPDATED","BillingProfile",profile.id,result="SUCCESS");db.commit()
+    return {"ok":True,"id":profile.id}
+@app.get("/api/v1/billing/invoices")
+def list_billing_invoices(organization_id:str,user:User=Depends(current_user),db:Session=Depends(get_db)):
+    require_member(db,user,organization_id);items=db.query(Invoice).filter_by(organization_id=organization_id).order_by(Invoice.created_at.desc()).all()
+    return [{"id":item.id,"number":item.number,"status":item.status,"document_type":item.document_type,"subject":item.subject,"total_amount":float(item.total_amount),"currency":item.currency,"created_at":item.created_at,"source_shop_order_id":item.source_shop_order_id} for item in items]
+@app.get("/api/v1/billing/invoices/{invoice_id}/pdf")
+def download_billing_invoice(invoice_id:str,user:User=Depends(current_user),db:Session=Depends(get_db)):
+    invoice=one(db,Invoice,invoice_id);require_member(db,user,invoice.organization_id);path=generate_invoice_pdf(db,invoice);db.commit()
+    return FileResponse(path,media_type="application/pdf",filename=f"{invoice.number}.pdf")
 @app.get("/api/v1/business/stats")
 def business_stats(organization_id:str,user:User=Depends(current_user),db:Session=Depends(get_db)):
     require_member(db,user,organization_id);invoices=db.query(Invoice).filter_by(organization_id=organization_id).all();jobs=db.query(PrintJob).filter_by(organization_id=organization_id).all();return {"customers":db.query(Customer).filter_by(organization_id=organization_id).count(),"invoices":len(invoices),"paid_revenue":sum(float(i.total_amount) for i in invoices if i.status=="PAID"),"estimated_print_revenue":sum(float(j.estimated_cost or 0) for j in jobs),"completed_jobs":sum(j.status==JobStatus.COMPLETED for j in jobs)}

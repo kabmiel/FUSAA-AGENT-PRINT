@@ -127,6 +127,10 @@ class ShopProduct(Timestamped, Base):
     brand: Mapped[str | None] = mapped_column(String(100), nullable=True)
     price_xof: Mapped[float] = mapped_column(Numeric(12,2), default=0)
     original_price_xof: Mapped[float | None] = mapped_column(Numeric(12,2), nullable=True)
+    sku: Mapped[str | None] = mapped_column(String(80), nullable=True)
+    unit: Mapped[str] = mapped_column(String(20), default="piece")
+    cost_xof: Mapped[float] = mapped_column(Numeric(12,2), default=0)
+    stock_minimum: Mapped[int] = mapped_column(Integer, default=3)
     condition: Mapped[str] = mapped_column(String(16), default="NEW")
     stock_quantity: Mapped[int] = mapped_column(Integer, default=0)
     specifications: Mapped[dict] = mapped_column(JSON, default=dict)
@@ -196,16 +200,41 @@ class Invoice(Timestamped, Base):
     currency: Mapped[str] = mapped_column(String(3), default="XOF")
     total_amount: Mapped[float] = mapped_column(Numeric(12,2), default=0)
     due_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    source_shop_order_id: Mapped[str | None] = mapped_column(ForeignKey("shop_orders.id"), nullable=True, unique=True, index=True)
+    document_type: Mapped[str] = mapped_column(String(24), default="INVOICE")
+    subject: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    notes: Mapped[str | None] = mapped_column(Text, nullable=True)
+    subtotal_amount: Mapped[float] = mapped_column(Numeric(12,2), default=0)
+    tax_rate: Mapped[float] = mapped_column(Numeric(5,2), default=0)
+    tax_amount: Mapped[float] = mapped_column(Numeric(12,2), default=0)
+    discount_amount: Mapped[float] = mapped_column(Numeric(12,2), default=0)
+    pdf_key: Mapped[str | None] = mapped_column(String(512), nullable=True)
 
 class InvoiceLine(Base):
     __tablename__="invoice_lines"
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=uid)
     invoice_id: Mapped[str] = mapped_column(ForeignKey("invoices.id"), index=True)
     print_job_id: Mapped[str | None] = mapped_column(ForeignKey("print_jobs.id"), nullable=True)
+    shop_product_id: Mapped[str | None] = mapped_column(ForeignKey("shop_products.id"), nullable=True)
     description: Mapped[str] = mapped_column(String(255))
+    unit: Mapped[str] = mapped_column(String(20), default="piece")
     quantity: Mapped[int] = mapped_column(Integer, default=1)
     unit_amount: Mapped[float] = mapped_column(Numeric(12,2), default=0)
     total_amount: Mapped[float] = mapped_column(Numeric(12,2), default=0)
+
+class BillingProfile(Timestamped, Base):
+    __tablename__="billing_profiles"
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=uid)
+    organization_id: Mapped[str] = mapped_column(ForeignKey("organizations.id"), unique=True, index=True)
+    company_name: Mapped[str] = mapped_column(String(255), default="FUSAA INFORMATIQUE")
+    address: Mapped[str | None] = mapped_column(Text, nullable=True)
+    phone: Mapped[str | None] = mapped_column(String(50), nullable=True)
+    email: Mapped[str | None] = mapped_column(String(320), nullable=True)
+    nif: Mapped[str | None] = mapped_column(String(80), nullable=True)
+    rccm: Mapped[str | None] = mapped_column(String(80), nullable=True)
+    tax_enabled: Mapped[bool] = mapped_column(Boolean, default=False)
+    tax_rate: Mapped[float] = mapped_column(Numeric(5,2), default=0)
+    document_style: Mapped[str] = mapped_column(String(40), default="moderne")
 
 class Payment(Timestamped, Base):
     __tablename__="payments"

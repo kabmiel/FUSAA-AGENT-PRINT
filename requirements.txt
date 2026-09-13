@@ -13,3 +13,4 @@ email-validator>=2.2
 alembic>=1.13
 pywebpush>=2.0
 cloudinary>=1.41
+reportlab>=4.4

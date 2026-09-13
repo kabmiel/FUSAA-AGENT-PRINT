@@ -14,7 +14,7 @@ from sqlalchemy.orm import Session
 ROOT=Path(__file__).parents[1]
 sys.path[:0]=[str(ROOT/"backend"),str(ROOT/"local-agent")]
 from app.database import Base
-from app.models import User,Organization,OrganizationMember,Workshop,WorkshopMember,Document,PrintJob,ComputerAgent,Printer,JobStatus,LocalActivity,BrowserLink,GuestOrder,ShopCategory,ShopProduct,AnonymousVisit
+from app.models import User,Organization,OrganizationMember,Workshop,WorkshopMember,Document,PrintJob,ComputerAgent,Printer,JobStatus,LocalActivity,BrowserLink,GuestOrder,ShopCategory,ShopProduct,AnonymousVisit,Invoice
 from app.main import cancel_job,confirm_job,prepare_job,central_supervision,list_jobs,list_documents,audit_history,list_workshop_members,update_workshop_member,remove_workshop_member,assign_workshop_member,register,create_guest_order,guest_order_status,verify_guest_payment,list_guest_orders,export_guest_orders,archive_guest_order,restore_guest_order,set_public_pricing,get_public_pricing,refresh_guest_quote,create_guest_receipt,production_dashboard,index,impression_index,admin_index,public_tracking_page,delete_job,archive_public_job,create_shop_order,shop_public_products,shop_public_products_page,shop_admin_products_page,record_public_visit,visitor_analytics
 from app.connectors import IncomingDocument, ingest_incoming_document
 from app.config import settings
@@ -261,7 +261,7 @@ def test_public_home_and_admin_have_separate_shells():
     assert "app.js" in admin and "guestPhone" not in admin
     assert "fontScale" in (ROOT/"backend"/"app"/"web"/"app.js").read_text(encoding="utf-8")
 
-def test_shop_order_uses_fcfa_stock_and_public_workshop(setup_db,monkeypatch):
+def test_shop_order_uses_fcfa_stock_and_public_workshop(setup_db,monkeypatch,tmp_path):
     db,_,admin=setup_db;monkeypatch.setattr(settings,"single_workshop_id","a")
     category=ShopCategory(organization_id="o",name="PC",slug="pc");db.add(category);db.flush()
     product=ShopProduct(organization_id="o",category_id=category.id,name="Portable",slug="portable",description="Test",price_xof=250000,stock_quantity=2);db.add(product);db.commit()
@@ -274,6 +274,11 @@ def test_shop_order_uses_fcfa_stock_and_public_workshop(setup_db,monkeypatch):
     order=asyncio.run(create_shop_order(ShopPublicOrderIn(customer_name="Client Test",customer_phone="90000000",items=[{"product_id":product.id,"quantity":2}]),db))
     db.refresh(product)
     assert order["currency"]=="XOF" and order["total_xof"]==500000 and product.stock_quantity==0
+    invoice=db.query(Invoice).filter_by(source_shop_order_id=order["id"]).one()
+    assert invoice.number==order["invoice_number"] and float(invoice.total_amount)==500000
+    from app.billing import generate_invoice_pdf
+    monkeypatch.setattr(settings,"storage_dir",tmp_path)
+    assert generate_invoice_pdf(db,invoice).read_bytes().startswith(b"%PDF")
 
 def test_printer_must_match_job_workshop(setup_db):
     db,_,admin=setup_db
