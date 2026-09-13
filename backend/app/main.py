@@ -538,12 +538,13 @@ def create_billing_document(data:BillingDocumentIn,user:User=Depends(current_use
         customer=Customer(organization_id=data.organization_id,name=data.customer_name.strip(),phone=(data.customer_phone or "").strip() or None,email=(data.customer_email or "").strip() or None);db.add(customer);db.flush()
     if not customer:raise HTTPException(422,"Sélectionnez ou renseignez un client")
     profile=billing_profile(db,data.organization_id);product_ids=[line.product_id for line in data.lines if line.product_id]
-    products={item.id:item for item in db.query(ShopProduct).filter(ShopProduct.organization_id==data.organization_id,ShopProduct.id.in_(product_ids)).all()}
-    if len(products)!=len(set(product_ids)):raise HTTPException(422,"Produit de facturation introuvable")
+    shop_products={item.id:item for item in db.query(ShopProduct).filter(ShopProduct.organization_id==data.organization_id,ShopProduct.id.in_(product_ids)).all()}
+    billing_products={item.id:item for item in db.query(Product).filter(Product.organization_id==data.organization_id,Product.id.in_(product_ids),Product.enabled.is_(True)).all()}
+    if len(shop_products)+len(billing_products)!=len(set(product_ids)):raise HTTPException(422,"Produit de facturation introuvable")
     subtotal=sum(line.quantity*line.unit_amount for line in data.lines);discount=min(data.discount_amount,subtotal);tax_rate=float(profile.tax_rate or 0) if profile.tax_enabled else 0;tax_amount=round((subtotal-discount)*tax_rate/100,2)
     invoice=Invoice(organization_id=data.organization_id,customer_id=customer.id,number=f"{data.document_type[:3]}-{datetime.now(timezone.utc):%Y%m%d}-{secrets.token_hex(3).upper()}",status="DRAFT" if data.document_type!="INVOICE" else "PENDING_PAYMENT",currency="XOF",document_type=data.document_type,subject=data.subject,notes=data.notes,subtotal_amount=subtotal,discount_amount=discount,tax_rate=tax_rate,tax_amount=tax_amount,total_amount=subtotal-discount+tax_amount);db.add(invoice);db.flush()
     for line in data.lines:
-        product=products.get(line.product_id) if line.product_id else None
+        product=shop_products.get(line.product_id) if line.product_id else None
         db.add(InvoiceLine(invoice_id=invoice.id,shop_product_id=product.id if product else None,description=line.description,unit=line.unit,quantity=line.quantity,unit_amount=line.unit_amount,total_amount=line.quantity*line.unit_amount))
     audit(db,user.id,"BILLING_DOCUMENT_CREATED","Invoice",invoice.id,parameters={"document_type":data.document_type,"total":invoice.total_amount},result="SUCCESS");db.commit()
     return {"id":invoice.id,"number":invoice.number,"document_type":invoice.document_type,"total_amount":float(invoice.total_amount),"status":invoice.status}
@@ -555,6 +556,38 @@ def duplicate_billing_invoice(invoice_id:str,document_type:str="QUOTE",user:User
     for line in db.query(InvoiceLine).filter_by(invoice_id=original.id).all():db.add(InvoiceLine(invoice_id=copy.id,shop_product_id=line.shop_product_id,description=line.description,unit=line.unit,quantity=line.quantity,unit_amount=line.unit_amount,total_amount=line.total_amount))
     audit(db,user.id,"BILLING_DOCUMENT_DUPLICATED","Invoice",copy.id,parameters={"source":original.id,"document_type":document_type},result="SUCCESS");db.commit()
     return {"id":copy.id,"number":copy.number,"document_type":copy.document_type}
+@app.get("/api/v1/billing/products")
+def list_billing_products(organization_id:str,q:str|None=None,user:User=Depends(current_user),db:Session=Depends(get_db)):
+    require_member(db,user,organization_id);needle=f"%{q.strip()}%" if q and q.strip() else None
+    shop_query=db.query(ShopProduct).filter_by(organization_id=organization_id,enabled=True)
+    own_query=db.query(Product).filter_by(organization_id=organization_id,enabled=True)
+    if needle:
+        shop_query=shop_query.filter(ShopProduct.name.ilike(needle));own_query=own_query.filter(Product.name.ilike(needle))
+    shop=[{"id":item.id,"name":item.name,"price_xof":float(item.price_xof),"sku":item.sku,"unit":item.unit,"source":"BOUTIQUE","stock_quantity":item.stock_quantity} for item in shop_query.order_by(ShopProduct.name).all()]
+    own=[{"id":item.id,"name":item.name,"price_xof":float(item.unit_price),"sku":item.sku,"unit":"piece","source":"FACTURATION","stock_quantity":None} for item in own_query.order_by(Product.name).all()]
+    return {"items":shop+own,"shop_products":len(shop),"billing_products":len(own)}
+@app.post("/api/v1/billing/products",status_code=201)
+def create_billing_product(data:CatalogIn,user:User=Depends(current_user),db:Session=Depends(get_db)):
+    require_org_admin(db,user,data.organization_id);product=Product(**data.model_dump());db.add(product);db.flush();audit(db,user.id,"BILLING_PRODUCT_CREATED","Product",product.id,result="SUCCESS");db.commit()
+    return {"id":product.id,"name":product.name,"source":"FACTURATION"}
+@app.post("/api/v1/billing/products/import")
+async def import_billing_products(organization_id:str,file:UploadFile=File(...),user:User=Depends(current_user),db:Session=Depends(get_db)):
+    require_org_admin(db,user,organization_id)
+    if not (file.filename or "").lower().endswith(".csv"):raise HTTPException(422,"Importez une liste CSV")
+    raw=await file.read()
+    try:rows=list(csv.DictReader(io.StringIO(raw.decode("utf-8-sig"))))
+    except UnicodeDecodeError:raise HTTPException(422,"Le CSV doit être encodé en UTF-8")
+    created=0;errors=[]
+    for index,row in enumerate(rows,2):
+        name=(row.get("nom") or row.get("name") or row.get("designation") or "").strip();price=(row.get("prix") or row.get("price") or row.get("prix_unitaire") or "").replace(" ","").replace(",",".")
+        if not name or not price:errors.append({"line":index,"error":"nom ou prix manquant"});continue
+        try:amount=float(price)
+        except ValueError:errors.append({"line":index,"error":"prix invalide"});continue
+        sku=(row.get("sku") or row.get("code") or row.get("code_produit") or "").strip() or None
+        if sku and db.query(Product).filter_by(organization_id=organization_id,sku=sku).first():errors.append({"line":index,"error":"code déjà utilisé"});continue
+        db.add(Product(organization_id=organization_id,name=name,unit_price=amount,sku=sku));created+=1
+    audit(db,user.id,"BILLING_PRODUCTS_IMPORTED","Product","csv",parameters={"created":created,"errors":len(errors)},result="SUCCESS");db.commit()
+    return {"created":created,"errors":errors[:30],"message":"Les produits importés sont réservés à la facturation et ne sont pas visibles dans la Boutique."}
 @app.get("/api/v1/billing/invoices/{invoice_id}/pdf")
 def download_billing_invoice(invoice_id:str,user:User=Depends(current_user),db:Session=Depends(get_db)):
     invoice=one(db,Invoice,invoice_id);require_member(db,user,invoice.organization_id);path=generate_invoice_pdf(db,invoice);db.commit()
