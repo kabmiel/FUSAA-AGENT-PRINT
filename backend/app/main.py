@@ -772,6 +772,21 @@ def create_stock_movement(organization_id:str,data:StockMovementIn,user:User=Dep
 def list_stock_movements(organization_id:str,limit:int=50,user:User=Depends(current_user),db:Session=Depends(get_db)):
     require_member(db,user,organization_id);items=db.query(StockMovement).filter_by(organization_id=organization_id).order_by(StockMovement.created_at.desc()).limit(min(max(limit,1),100)).all()
     return [{"id":item.id,"catalogue":item.catalogue,"product_id":item.product_id,"movement_type":item.movement_type,"quantity":item.quantity,"previous_quantity":item.previous_quantity,"resulting_quantity":item.resulting_quantity,"reason":item.reason,"reference":item.reference,"created_at":item.created_at} for item in items]
+@app.get("/api/v1/billing/customers/credits")
+def billing_customer_credits(organization_id:str,user:User=Depends(current_user),db:Session=Depends(get_db)):
+    require_member(db,user,organization_id);customers=db.query(Customer).filter_by(organization_id=organization_id).order_by(Customer.name).all();invoices=db.query(Invoice).filter_by(organization_id=organization_id).all()
+    payments=db.query(Payment).join(Invoice,Payment.invoice_id==Invoice.id).filter(Invoice.organization_id==organization_id,Payment.status=="CONFIRMED").all();paid={}
+    for payment in payments:paid[payment.invoice_id]=paid.get(payment.invoice_id,0)+float(payment.amount)
+    rows=[]
+    for customer in customers:
+        items=[item for item in invoices if item.customer_id==customer.id and item.document_type=="INVOICE" and item.status not in {"DRAFT","CANCELLED"}];total=sum(float(item.total_amount) for item in items);settled=sum(paid.get(item.id,0) for item in items);balance=max(0,total-settled)
+        if items:rows.append({"customer_id":customer.id,"name":customer.name,"phone":customer.phone,"invoiced":total,"paid":settled,"balance":balance,"invoices":len(items)})
+    return {"items":sorted(rows,key=lambda item:item["balance"],reverse=True),"total_credit":sum(item["balance"] for item in rows)}
+@app.get("/api/v1/billing/reports/summary")
+def billing_report_summary(organization_id:str,days:int=30,user:User=Depends(current_user),db:Session=Depends(get_db)):
+    require_member(db,user,organization_id);days=min(max(days,1),365);start=datetime.now(timezone.utc)-timedelta(days=days-1);invoices=db.query(Invoice).filter(Invoice.organization_id==organization_id,Invoice.created_at>=start).all();payments=db.query(Payment).join(Invoice,Payment.invoice_id==Invoice.id).filter(Invoice.organization_id==organization_id,Payment.status=="CONFIRMED",Payment.created_at>=start).all()
+    invoiced=sum(float(item.total_amount) for item in invoices if item.document_type=="INVOICE");paid=sum(float(item.amount) for item in payments);by_type={kind:sum(1 for item in invoices if item.document_type==kind) for kind in ("QUOTE","PROFORMA","INVOICE","DELIVERY_NOTE","RECEIPT")}
+    return {"period_days":days,"invoiced":invoiced,"paid":paid,"outstanding":max(0,invoiced-paid),"documents":len(invoices),"by_type":by_type,"payments":len(payments)}
 @app.post("/api/v1/connectors",response_model=ConnectorSecretOut,status_code=201)
 def create_connector(data:ConnectorCreate,user:User=Depends(current_user),db:Session=Depends(get_db)):
     require_org_admin(db,user,data.organization_id);workshop=one(db,Workshop,data.workshop_id)
