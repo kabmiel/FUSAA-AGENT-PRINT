@@ -19,7 +19,7 @@ from sqlalchemy import text, or_, JSON, func
 from .config import settings
 from .database import Base, SessionLocal, engine, get_db
 from .events import agent_hub, hub
-from .models import AgentCommand, AnonymousVisit, AuditLog, BillingProfile, CommandStatus, ComputerAgent, Connector, ConnectorEvent, Customer, Document, GuestOrder, Invoice, InvoiceLine, JobStatus, Organization, OrganizationMember, Payment, PriceRule, PrintCost, PrintJob, Printer, Product, PushSubscription, Service, ShopCategory, ShopOrder, ShopOrderLine, ShopProduct, User, Workshop, WorkshopMember, WorkshopSettings as WorkshopSettingsModel
+from .models import AgentCommand, AnonymousVisit, AuditLog, BillingProfile, CommandStatus, ComputerAgent, Connector, ConnectorEvent, Customer, Document, GuestOrder, Invoice, InvoiceLine, JobStatus, Organization, OrganizationMember, Payment, PriceRule, PrintCost, PrintJob, Printer, Product, PushSubscription, Service, ShopCategory, ShopOrder, ShopOrderLine, ShopProduct, StockMovement, User, Workshop, WorkshopMember, WorkshopSettings as WorkshopSettingsModel
 from .schemas import *
 from .security import create_access_token, current_user, hash_password, verify_password
 from .services import DIRECT_PRINT_MIMES, audit, build_command, create_preview, inspect_file, issue_agent_key, storage_path, transition
@@ -30,7 +30,7 @@ from .document_processing import DocumentProcessor, LayoutEngine
 from .processing_schemas import LayoutRequest, ProcessRequest
 from .connector_schemas import ConnectorCreate, ConnectorOut, ConnectorSecretOut
 from .connectors import IncomingDocument, ingest_incoming_document, verify_meta_signature, whatsapp_media_message_ids
-from .business_schemas import BillingDocumentIn, BillingProfileIn, CatalogIn, CustomerIn, CustomerOut, FinalCostIn, InvoiceCreate, InvoiceOut, PaymentIn, PriceRuleIn, PriceRuleOut, PrintCostOut, ServiceIn
+from .business_schemas import BillingDocumentIn, BillingProfileIn, CatalogIn, CustomerIn, CustomerOut, FinalCostIn, InvoiceCreate, InvoiceOut, PaymentIn, PriceRuleIn, PriceRuleOut, PrintCostOut, ServiceIn, StockMovementIn
 from .shop_schemas import ShopCategoryIn, ShopCloudinaryImageIn, ShopOrderStatusIn, ShopProductIn, ShopPublicOrderIn
 from .business import estimate_print_cost
 from .billing import billing_profile, ensure_shop_invoice, generate_invoice_pdf
@@ -240,7 +240,8 @@ async def create_shop_order(data:ShopPublicOrderIn,db:Session=Depends(get_db)):
     order=ShopOrder(organization_id=organization_id,order_number=shop_order_number(db),customer_name=data.customer_name.strip(),customer_phone=data.customer_phone.strip(),delivery_address=(data.delivery_address or "").strip() or None,notes=(data.notes or "").strip() or None,payment_method=(data.payment_method or "").strip() or None,total_xof=total,access_token_hash=hashlib.sha256(token.encode()).hexdigest())
     db.add(order);db.flush()
     for product in products:
-        quantity=requested[product.id];product.stock_quantity-=quantity
+        quantity=requested[product.id];previous=product.stock_quantity;product.stock_quantity-=quantity
+        db.add(StockMovement(organization_id=organization_id,catalogue="SHOP",product_id=product.id,movement_type="OUT",quantity=quantity,previous_quantity=previous,resulting_quantity=product.stock_quantity,reason="Commande Boutique",reference=order.order_number))
         db.add(ShopOrderLine(order_id=order.id,product_id=product.id,product_name=product.name,unit_price_xof=float(product.price_xof),quantity=quantity))
     db.flush();invoice=ensure_shop_invoice(db,order)
     audit(db,f"shop:{order.order_number}","SHOP_ORDER_CREATED","ShopOrder",order.id,parameters={"total_xof":total,"invoice_number":invoice.number},result="SUCCESS");db.commit()
@@ -751,6 +752,26 @@ async def update_shop_order(order_id:str,data:ShopOrderStatusIn,user:User=Depend
     if data.payment_status is not None:order.payment_status=data.payment_status
     audit(db,user.id,"SHOP_ORDER_UPDATED","ShopOrder",order.id,parameters=data.model_dump(exclude_none=True),result="SUCCESS");db.commit();await hub.publish("SHOP_ORDER_UPDATED",{"order_number":order.order_number,"status":order.status},order.organization_id);return shop_order_out(db,order)
 
+@app.get("/api/v1/billing/stock/alerts")
+def billing_stock_alerts(organization_id:str,user:User=Depends(current_user),db:Session=Depends(get_db)):
+    require_member(db,user,organization_id)
+    shop=db.query(ShopProduct).filter_by(organization_id=organization_id,enabled=True).all();own=db.query(Product).filter_by(organization_id=organization_id,enabled=True).all()
+    items=[{"catalogue":"SHOP","product_id":item.id,"name":item.name,"stock":item.stock_quantity,"minimum":item.stock_minimum} for item in shop if item.stock_quantity<=item.stock_minimum]
+    items += [{"catalogue":"BILLING","product_id":item.id,"name":item.name,"stock":item.stock_quantity,"minimum":item.stock_minimum} for item in own if item.stock_quantity<=item.stock_minimum]
+    return {"items":items,"count":len(items)}
+@app.post("/api/v1/billing/stock/movements",status_code=201)
+def create_stock_movement(organization_id:str,data:StockMovementIn,user:User=Depends(current_user),db:Session=Depends(get_db)):
+    require_org_admin(db,user,organization_id);model=ShopProduct if data.catalogue=="SHOP" else Product;product=db.get(model,data.product_id)
+    if not product or product.organization_id!=organization_id:raise HTTPException(404,"Produit introuvable")
+    previous=product.stock_quantity;result=data.quantity if data.movement_type=="ADJUSTMENT" else previous+data.quantity if data.movement_type=="IN" else previous-data.quantity
+    if result<0:raise HTTPException(409,"Stock insuffisant")
+    product.stock_quantity=result;movement=StockMovement(organization_id=organization_id,catalogue=data.catalogue,product_id=product.id,movement_type=data.movement_type,quantity=data.quantity,previous_quantity=previous,resulting_quantity=result,reason=data.reason)
+    db.add(movement);audit(db,user.id,"STOCK_MOVEMENT_CREATED","StockMovement",movement.id,parameters={"catalogue":data.catalogue,"product_id":product.id,"result":result},result="SUCCESS");db.commit()
+    return {"id":movement.id,"resulting_quantity":result}
+@app.get("/api/v1/billing/stock/movements")
+def list_stock_movements(organization_id:str,limit:int=50,user:User=Depends(current_user),db:Session=Depends(get_db)):
+    require_member(db,user,organization_id);items=db.query(StockMovement).filter_by(organization_id=organization_id).order_by(StockMovement.created_at.desc()).limit(min(max(limit,1),100)).all()
+    return [{"id":item.id,"catalogue":item.catalogue,"product_id":item.product_id,"movement_type":item.movement_type,"quantity":item.quantity,"previous_quantity":item.previous_quantity,"resulting_quantity":item.resulting_quantity,"reason":item.reason,"reference":item.reference,"created_at":item.created_at} for item in items]
 @app.post("/api/v1/connectors",response_model=ConnectorSecretOut,status_code=201)
 def create_connector(data:ConnectorCreate,user:User=Depends(current_user),db:Session=Depends(get_db)):
     require_org_admin(db,user,data.organization_id);workshop=one(db,Workshop,data.workshop_id)

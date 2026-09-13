@@ -90,7 +90,24 @@ class Product(Timestamped, Base):
     name: Mapped[str] = mapped_column(String(160))
     sku: Mapped[str | None] = mapped_column(String(80), nullable=True)
     unit_price: Mapped[float] = mapped_column(Numeric(12,2), default=0)
+    unit: Mapped[str] = mapped_column(String(20), default="piece")
+    cost_xof: Mapped[float] = mapped_column(Numeric(12,2), default=0)
+    stock_quantity: Mapped[int] = mapped_column(Integer, default=0)
+    stock_minimum: Mapped[int] = mapped_column(Integer, default=3)
     enabled: Mapped[bool] = mapped_column(Boolean, default=True)
+
+class StockMovement(Timestamped, Base):
+    __tablename__="stock_movements"
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=uid)
+    organization_id: Mapped[str] = mapped_column(ForeignKey("organizations.id"), index=True)
+    catalogue: Mapped[str] = mapped_column(String(16), index=True) # SHOP or BILLING
+    product_id: Mapped[str] = mapped_column(String(36), index=True)
+    movement_type: Mapped[str] = mapped_column(String(16)) # IN, OUT, ADJUSTMENT
+    quantity: Mapped[int] = mapped_column(Integer)
+    previous_quantity: Mapped[int] = mapped_column(Integer)
+    resulting_quantity: Mapped[int] = mapped_column(Integer)
+    reason: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    reference: Mapped[str | None] = mapped_column(String(80), nullable=True)
 
 class AnonymousVisit(Timestamped, Base):
     """Anonymous public traffic, stored as a one-way browser identifier hash."""

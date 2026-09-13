@@ -38,3 +38,9 @@ class BillingDocumentIn(BaseModel):
     notes:str|None=Field(default=None,max_length=2000)
     discount_amount:float=Field(default=0,ge=0)
     lines:list[BillingLineIn]=Field(min_length=1,max_length=100)
+class StockMovementIn(BaseModel):
+    catalogue:str=Field(pattern="^(SHOP|BILLING)$")
+    product_id:str
+    movement_type:str=Field(pattern="^(IN|OUT|ADJUSTMENT)$")
+    quantity:int=Field(ge=0,le=999999)
+    reason:str|None=Field(default=None,max_length=255)
