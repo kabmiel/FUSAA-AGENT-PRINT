@@ -30,7 +30,7 @@ from .document_processing import DocumentProcessor, LayoutEngine
 from .processing_schemas import LayoutRequest, ProcessRequest
 from .connector_schemas import ConnectorCreate, ConnectorOut, ConnectorSecretOut
 from .connectors import IncomingDocument, ingest_incoming_document, verify_meta_signature, whatsapp_media_message_ids
-from .business_schemas import BillingProfileIn, CatalogIn, CustomerIn, CustomerOut, FinalCostIn, InvoiceCreate, InvoiceOut, PaymentIn, PriceRuleIn, PriceRuleOut, PrintCostOut, ServiceIn
+from .business_schemas import BillingDocumentIn, BillingProfileIn, CatalogIn, CustomerIn, CustomerOut, FinalCostIn, InvoiceCreate, InvoiceOut, PaymentIn, PriceRuleIn, PriceRuleOut, PrintCostOut, ServiceIn
 from .shop_schemas import ShopCategoryIn, ShopCloudinaryImageIn, ShopOrderStatusIn, ShopProductIn, ShopPublicOrderIn
 from .business import estimate_print_cost
 from .billing import billing_profile, ensure_shop_invoice, generate_invoice_pdf
@@ -529,6 +529,32 @@ def update_billing_profile(organization_id:str,data:BillingProfileIn,user:User=D
 def list_billing_invoices(organization_id:str,user:User=Depends(current_user),db:Session=Depends(get_db)):
     require_member(db,user,organization_id);items=db.query(Invoice).filter_by(organization_id=organization_id).order_by(Invoice.created_at.desc()).all()
     return [{"id":item.id,"number":item.number,"status":item.status,"document_type":item.document_type,"subject":item.subject,"total_amount":float(item.total_amount),"currency":item.currency,"created_at":item.created_at,"source_shop_order_id":item.source_shop_order_id} for item in items]
+@app.post("/api/v1/billing/documents",status_code=201)
+def create_billing_document(data:BillingDocumentIn,user:User=Depends(current_user),db:Session=Depends(get_db)):
+    require_member(db,user,data.organization_id)
+    customer=one(db,Customer,data.customer_id) if data.customer_id else None
+    if customer and customer.organization_id!=data.organization_id:raise HTTPException(422,"Client d’une autre organisation")
+    if not customer and data.customer_name:
+        customer=Customer(organization_id=data.organization_id,name=data.customer_name.strip(),phone=(data.customer_phone or "").strip() or None,email=(data.customer_email or "").strip() or None);db.add(customer);db.flush()
+    if not customer:raise HTTPException(422,"Sélectionnez ou renseignez un client")
+    profile=billing_profile(db,data.organization_id);product_ids=[line.product_id for line in data.lines if line.product_id]
+    products={item.id:item for item in db.query(ShopProduct).filter(ShopProduct.organization_id==data.organization_id,ShopProduct.id.in_(product_ids)).all()}
+    if len(products)!=len(set(product_ids)):raise HTTPException(422,"Produit de facturation introuvable")
+    subtotal=sum(line.quantity*line.unit_amount for line in data.lines);discount=min(data.discount_amount,subtotal);tax_rate=float(profile.tax_rate or 0) if profile.tax_enabled else 0;tax_amount=round((subtotal-discount)*tax_rate/100,2)
+    invoice=Invoice(organization_id=data.organization_id,customer_id=customer.id,number=f"{data.document_type[:3]}-{datetime.now(timezone.utc):%Y%m%d}-{secrets.token_hex(3).upper()}",status="DRAFT" if data.document_type!="INVOICE" else "PENDING_PAYMENT",currency="XOF",document_type=data.document_type,subject=data.subject,notes=data.notes,subtotal_amount=subtotal,discount_amount=discount,tax_rate=tax_rate,tax_amount=tax_amount,total_amount=subtotal-discount+tax_amount);db.add(invoice);db.flush()
+    for line in data.lines:
+        product=products.get(line.product_id) if line.product_id else None
+        db.add(InvoiceLine(invoice_id=invoice.id,shop_product_id=product.id if product else None,description=line.description,unit=line.unit,quantity=line.quantity,unit_amount=line.unit_amount,total_amount=line.quantity*line.unit_amount))
+    audit(db,user.id,"BILLING_DOCUMENT_CREATED","Invoice",invoice.id,parameters={"document_type":data.document_type,"total":invoice.total_amount},result="SUCCESS");db.commit()
+    return {"id":invoice.id,"number":invoice.number,"document_type":invoice.document_type,"total_amount":float(invoice.total_amount),"status":invoice.status}
+@app.post("/api/v1/billing/invoices/{invoice_id}/duplicate",status_code=201)
+def duplicate_billing_invoice(invoice_id:str,document_type:str="QUOTE",user:User=Depends(current_user),db:Session=Depends(get_db)):
+    original=one(db,Invoice,invoice_id);require_member(db,user,original.organization_id)
+    if document_type not in {"QUOTE","PROFORMA","INVOICE","DELIVERY_NOTE","RECEIPT"}:raise HTTPException(422,"Type de document invalide")
+    copy=Invoice(organization_id=original.organization_id,customer_id=original.customer_id,number=f"{document_type[:3]}-{datetime.now(timezone.utc):%Y%m%d}-{secrets.token_hex(3).upper()}",status="DRAFT",currency=original.currency,document_type=document_type,subject=original.subject,notes=original.notes,subtotal_amount=original.subtotal_amount,discount_amount=original.discount_amount,tax_rate=original.tax_rate,tax_amount=original.tax_amount,total_amount=original.total_amount);db.add(copy);db.flush()
+    for line in db.query(InvoiceLine).filter_by(invoice_id=original.id).all():db.add(InvoiceLine(invoice_id=copy.id,shop_product_id=line.shop_product_id,description=line.description,unit=line.unit,quantity=line.quantity,unit_amount=line.unit_amount,total_amount=line.total_amount))
+    audit(db,user.id,"BILLING_DOCUMENT_DUPLICATED","Invoice",copy.id,parameters={"source":original.id,"document_type":document_type},result="SUCCESS");db.commit()
+    return {"id":copy.id,"number":copy.number,"document_type":copy.document_type}
 @app.get("/api/v1/billing/invoices/{invoice_id}/pdf")
 def download_billing_invoice(invoice_id:str,user:User=Depends(current_user),db:Session=Depends(get_db)):
     invoice=one(db,Invoice,invoice_id);require_member(db,user,invoice.organization_id);path=generate_invoice_pdf(db,invoice);db.commit()

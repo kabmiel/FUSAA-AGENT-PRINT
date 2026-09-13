@@ -21,3 +21,20 @@ class BillingProfileIn(BaseModel):
     tax_enabled:bool=False
     tax_rate:float=Field(default=0,ge=0,le=100)
     document_style:str=Field(default="moderne",max_length=40)
+class BillingLineIn(BaseModel):
+    product_id:str|None=None
+    description:str=Field(min_length=1,max_length=255)
+    quantity:int=Field(default=1,ge=1,le=9999)
+    unit_amount:float=Field(ge=0)
+    unit:str=Field(default="piece",max_length=20)
+class BillingDocumentIn(BaseModel):
+    organization_id:str
+    document_type:str=Field(default="INVOICE",pattern="^(QUOTE|PROFORMA|INVOICE|DELIVERY_NOTE|RECEIPT)$")
+    customer_id:str|None=None
+    customer_name:str|None=Field(default=None,max_length=160)
+    customer_phone:str|None=Field(default=None,max_length=50)
+    customer_email:str|None=Field(default=None,max_length=320)
+    subject:str|None=Field(default=None,max_length=255)
+    notes:str|None=Field(default=None,max_length=2000)
+    discount_amount:float=Field(default=0,ge=0)
+    lines:list[BillingLineIn]=Field(min_length=1,max_length=100)
