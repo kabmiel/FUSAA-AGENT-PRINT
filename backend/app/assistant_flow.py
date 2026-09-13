@@ -5,7 +5,26 @@ import unicodedata
 from .access import accessible_workshop_ids
 from .ai import SafetyLevel, TOOL_SAFETY, resolve_job
 from .assistant_schemas import AssistantResponse, ToolCall
-from .models import Document, JobStatus, PriceRule, Printer, Workshop
+from .models import Customer, Document, Invoice, JobStatus, OrganizationMember, Payment, PriceRule, Printer, Workshop
+
+def billing_response(data, db, user):
+    """Read-only secondary billing agent; it never creates or edits documents."""
+    text="".join(c for c in unicodedata.normalize("NFD", data.message.lower()) if not unicodedata.combining(c))
+    if not re.search(r"\b(factur|devis|proforma|bon de livraison|recu|paiement|encaissement|client|tva|taxe)\b",text):return None
+    org_ids=[item.organization_id for item in db.query(OrganizationMember).filter_by(user_id=user.id).all()]
+    if not org_ids:return AssistantResponse(title="Assistant Facturation",answer="Aucune organisation de facturation n’est accessible avec ce compte.",tool_calls=[],requires_confirmation=False)
+    invoices=db.query(Invoice).filter(Invoice.organization_id.in_(org_ids)).order_by(Invoice.created_at.desc()).all()
+    customers=db.query(Customer).filter(Customer.organization_id.in_(org_ids)).count()
+    paid=[invoice for invoice in invoices if invoice.status=="PAID"]
+    pending=[invoice for invoice in invoices if invoice.status!="PAID"]
+    revenue=sum(float(invoice.total_amount or 0) for invoice in paid)
+    if any(word in text for word in ("paiement","encaissement","impaye","a confirmer")):
+        return AssistantResponse(title="Assistant Facturation · paiements",answer=f"{len(pending)} facture(s) à confirmer et {len(paid)} payée(s). Encaissement confirmé : {revenue:,.0f} FCFA.",steps=[f"À confirmer : {item.number} · {float(item.total_amount):,.0f} FCFA" for item in pending[:8]],next_view="billing",next_label="Ouvrir les factures",tool_calls=[],requires_confirmation=False)
+    if any(word in text for word in ("client","clients")):
+        return AssistantResponse(title="Assistant Facturation · clients",answer=f"{customers} client(s) sont enregistrés à partir des commandes et des factures.",steps=["Chaque commande Boutique crée ou retrouve le client par son numéro de téléphone.","Les détails des factures restent disponibles dans Facturation."],next_view="billing",next_label="Ouvrir la facturation",tool_calls=[],requires_confirmation=False)
+    if any(word in text for word in ("tva","taxe","isb")):
+        return AssistantResponse(title="Assistant Facturation · taxes",answer="La taxe est configurée dans la page Facturation. Elle est appliquée uniquement aux nouvelles factures après activation.",steps=["Vérifiez le taux avant de le modifier.","Une facture déjà générée conserve son total pour sa traçabilité."],next_view="billing",next_label="Configurer l’entreprise",tool_calls=[],requires_confirmation=False)
+    return AssistantResponse(title="Assistant Facturation FUSAA",answer=f"{len(invoices)} facture(s), {customers} client(s), {len(pending)} paiement(s) à confirmer et {revenue:,.0f} FCFA encaissés.",steps=[f"Dernière facture : {invoices[0].number} · {float(invoices[0].total_amount):,.0f} FCFA" if invoices else "Aucune facture n’a encore été générée.","Je peux répondre sur les paiements, clients, taxes et documents."],next_view="billing",next_label="Ouvrir la facturation",tool_calls=[],requires_confirmation=False)
 
 
 def safe_result_response(calls: list[ToolCall]):
@@ -33,6 +52,8 @@ def safe_result_response(calls: list[ToolCall]):
 
 
 def workflow_response(data, db, user):
+    billing=billing_response(data,db,user)
+    if billing:return billing
     text = "".join(c for c in unicodedata.normalize("NFD", data.message.lower()) if not unicodedata.combining(c))
     if re.search(r"\b(prix|tarifs?|cout|devis|combien)\b", text):
         ids = accessible_workshop_ids(db, user, write=True)
