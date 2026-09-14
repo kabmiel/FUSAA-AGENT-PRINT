@@ -63,8 +63,12 @@ async function billingOpen(tab){
     if(tab==="reports")await billingReports();
     if(tab==="maintenance")await billingMaintenance();
     if(tab==="settings")await billingSettings();
+    billingEnsureExport(tab);
   }catch(error){billingSet(billingHero(billingMenuLabels[tab],"Une erreur empêche le chargement.")+'<div class="billing-panel billing-note">'+esc(error.message)+'</div>');tell(error.message)}
 }
+function billingExport(kind){const url="/api/v1/billing/export/"+kind+".csv?organization_id="+encodeURIComponent(org);fetch(url,{headers:{Authorization:"Bearer "+token}}).then(response=>{if(!response.ok)throw Error("Export impossible");return response.blob()}).then(blob=>{const link=document.createElement("a");link.href=URL.createObjectURL(blob);link.download="fusaa-"+kind+".csv";link.click();URL.revokeObjectURL(link.href)}).catch(error=>tell(error.message))}
+function billingEnsureExport(tab){const kinds={documents:"documents",clients:"clients",products:"products",headers:"headers"};const kind=kinds[tab];if(!kind)return;const host=document.getElementById("billingGlassContent");const action=host?.querySelector(".billing-hero .billing-actions");if(action&&!action.querySelector("[data-billing-export]")){action.insertAdjacentHTML("beforeend",'<button class="secondary" type="button" data-billing-export onclick="billingExport(\''+kind+'\')">Exporter CSV</button>');if(tab==="clients")action.insertAdjacentHTML("beforeend",'<input id="billingClientsCsv" class="hidden" type="file" accept=".csv,text/csv" onchange="billingImportClients()"><button class="secondary" type="button" onclick="document.getElementById(\'billingClientsCsv\').click()">Importer Boulangerie</button>')}}
+async function billingImportClients(){const file=document.getElementById("billingClientsCsv")?.files[0];if(!file)return;const body=new FormData();body.append("file",file);try{const result=await api("/api/v1/customers/import?organization_id="+encodeURIComponent(org),{method:"POST",body});tell(result.created+" client(s) importé(s)"+(result.errors?.length?" · "+result.errors.length+" ligne(s) ignorée(s)":""));billingClients()}catch(error){tell(error.message)}}
 
 async function billingDashboard(){
   const data=await api("/api/v1/billing/dashboard?organization_id="+encodeURIComponent(org));

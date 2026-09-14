@@ -479,6 +479,35 @@ def create_customer(data:CustomerIn,user:User=Depends(current_user),db:Session=D
 @app.get("/api/v1/customers",response_model=list[CustomerOut])
 def list_customers(organization_id:str,user:User=Depends(current_user),db:Session=Depends(get_db)):
     require_member(db,user,organization_id);return db.query(Customer).filter_by(organization_id=organization_id).order_by(Customer.name).all()
+
+@app.post("/api/v1/customers/import",status_code=201)
+async def import_customers(organization_id:str,file:UploadFile=File(...),user:User=Depends(current_user),db:Session=Depends(get_db)):
+    require_org_admin(db,user,organization_id);raw=await file.read()
+    try: rows=csv.DictReader(io.StringIO(raw.decode("utf-8-sig")))
+    except Exception: raise HTTPException(422,"Fichier CSV clients invalide")
+    created=0;errors=[]
+    for number,row in enumerate(rows,start=2):
+        name=(row.get("name") or row.get("nom") or row.get("client") or "").strip()
+        if not name: errors.append(f"Ligne {number}: nom manquant");continue
+        db.add(Customer(organization_id=organization_id,name=name,phone=(row.get("phone") or row.get("telephone") or None),email=row.get("email") or None,address=(row.get("address") or row.get("adresse") or None),notes=row.get("notes") or None));created+=1
+    db.commit();return {"created":created,"errors":errors[:30]}
+
+def _billing_csv(filename,headers,rows):
+    output=io.StringIO();writer=csv.writer(output);writer.writerow(headers);writer.writerows(rows)
+    return PlainTextResponse("\ufeff"+output.getvalue(),media_type="text/csv; charset=utf-8",headers={"Content-Disposition":f"attachment; filename={filename}"})
+
+@app.get("/api/v1/billing/export/{kind}.csv")
+def export_billing_csv(kind:str,organization_id:str,user:User=Depends(current_user),db:Session=Depends(get_db)):
+    require_member(db,user,organization_id)
+    if kind=="clients":
+        items=db.query(Customer).filter_by(organization_id=organization_id).order_by(Customer.name).all();return _billing_csv("fusaa-clients.csv",["name","phone","email","address","notes"],[(x.name,x.phone or "",x.email or "",x.address or "",x.notes or "") for x in items])
+    if kind=="headers":
+        items=db.query(BillingHeader).filter_by(organization_id=organization_id).order_by(BillingHeader.company_name).all();return _billing_csv("fusaa-entetes.csv",["company_name","address","phone","email","nif","rccm","document_style"],[(x.company_name,x.address or "",x.phone or "",x.email or "",x.nif or "",x.rccm or "",x.document_style) for x in items])
+    if kind=="products":
+        items=db.query(Product).filter_by(organization_id=organization_id).order_by(Product.name).all();return _billing_csv("fusaa-produits-facturation.csv",["name","unit_price","sku","unit","stock","seuil_stock","cout"],[(x.name,x.unit_price,x.sku or "",x.unit,x.stock_quantity,x.stock_minimum,x.cost_xof) for x in items])
+    if kind=="documents":
+        items=db.query(Invoice).filter_by(organization_id=organization_id).order_by(Invoice.created_at.desc()).all();return _billing_csv("fusaa-documents.csv",["number","document_type","customer_id","total_amount","status","created_at"],[(x.number,x.document_type,x.customer_id or "",x.total_amount,x.status,x.created_at.isoformat() if x.created_at else "") for x in items])
+    raise HTTPException(404,"Type d’export inconnu")
 @app.put("/api/v1/billing/customers/{customer_id}",response_model=CustomerOut)
 def update_billing_customer(customer_id:str,data:CustomerIn,user:User=Depends(current_user),db:Session=Depends(get_db)):
     customer=one(db,Customer,customer_id)
