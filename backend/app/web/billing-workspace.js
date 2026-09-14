@@ -42,6 +42,8 @@ function billingNavigate(tab){billingPopupTabs.has(tab)?billingPopup(tab):billin
 async function billingPopup(tab){
   let dialog=document.getElementById("billingGlassDialog");
   if(!dialog){document.body.insertAdjacentHTML("beforeend",'<dialog id="billingGlassDialog" class="billing-glass-dialog"><div class="billing-glass-head"><span class="billing-eyebrow">FACTURATION FUSAA</span><button class="secondary" type="button" aria-label="Fermer" onclick="billingClosePopup()">×</button></div><div id="billingGlassContent"></div></dialog>');dialog=document.getElementById("billingGlassDialog")}
+  const billingRoot=document.getElementById("billing");
+  if(billingRoot&&dialog.parentElement!==billingRoot)billingRoot.appendChild(dialog);
   billingState.popupTarget="billingGlassContent";dialog.showModal();
   try{await billingOpen(tab)}finally{billingState.popupTarget=null}
 }
