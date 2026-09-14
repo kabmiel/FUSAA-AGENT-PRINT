@@ -12,15 +12,15 @@ from reportlab.pdfgen import canvas
 
 
 STYLE_OPTIONS = {
-    "standard": ("#17324b", "#edf5fa", "left", False),
-    "scan_gauche": ("#17324b", "#ffffff", "left", False),
-    "scan_alasko": ("#16547a", "#e8f5fa", "left", True),
-    "scan_centre": ("#17324b", "#ffffff", "center", False),
-    "scan_compact": ("#17324b", "#f2f5f7", "left", True),
-    "scan_facture_simple": ("#101d2a", "#ffffff", "left", True),
-    "moderne_clair": ("#137b8a", "#effafb", "left", False),
-    "moderne_bandeau": ("#0e4f82", "#eaf6fc", "left", False),
-    "moderne_minimal": ("#263b4d", "#ffffff", "left", True),
+    "standard": ("#17324b", "#edf5fa", "left", False, "Helvetica", 9, None),
+    "scan_gauche": ("#17324b", "#ffffff", "left", False, "Times-Roman", 14, "FACTURE PRO-FORMA"),
+    "scan_alasko": ("#16547a", "#e8f5fa", "left", False, "Helvetica", 13.5, "FACTURE PRO FORMA"),
+    "scan_centre": ("#17324b", "#ffffff", "center", False, "Times-Roman", 14, "FACTURE PRO FORMA"),
+    "scan_compact": ("#17324b", "#f2f5f7", "left", True, "Times-Roman", 11.5, "FACTURE PRO-FORMA"),
+    "scan_facture_simple": ("#101d2a", "#ffffff", "left", True, "Helvetica", 11.5, "FACTURE PROFORMA"),
+    "moderne_clair": ("#137b8a", "#effafb", "left", False, "Helvetica", 9, None),
+    "moderne_bandeau": ("#0e4f82", "#eaf6fc", "left", False, "Helvetica", 9, None),
+    "moderne_minimal": ("#263b4d", "#ffffff", "left", True, "Helvetica", 9, None),
 }
 DOCUMENT_NAMES = {
     "INVOICE":"FACTURE", "QUOTE":"DEVIS", "PROFORMA":"FACTURE PROFORMA",
@@ -45,13 +45,14 @@ def render_invoice_pdf(path: Path, invoice, header, customer, lines):
     path.parent.mkdir(parents=True,exist_ok=True)
     pdf=canvas.Canvas(str(path),pagesize=A4)
     width,height=A4
-    accent,bg,alignment,compact=STYLE_OPTIONS.get(header.document_style,STYLE_OPTIONS["standard"])
+    accent,bg,alignment,compact,style_font,style_size,style_title=STYLE_OPTIONS.get(header.document_style,STYLE_OPTIONS["standard"])
     accent_color=colors.HexColor(accent)
     text_color=colors.HexColor("#142433")
-    base_font=FONT_NAMES.get(header.table_font_family or "","Helvetica")
-    base_size=float(header.table_font_size or 9)
+    base_font=FONT_NAMES.get(header.table_font_family or "",style_font)
+    base_size=float(header.table_font_size or style_size)
     logo=_logo_reader(header.logo_url)
     document_title=DOCUMENT_NAMES.get(invoice.document_type,"FACTURE")
+    if style_title and invoice.document_type in {"PROFORMA","QUOTE"}: document_title=style_title if invoice.document_type=="PROFORMA" else "DEVIS"
 
     def company_header():
         if header.document_style in {"moderne_bandeau","scan_alasko"}:
