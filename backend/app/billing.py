@@ -38,7 +38,8 @@ def default_billing_header(db, organization_id: str) -> BillingHeader:
         organization_id=organization_id,company_name="KABIROU ABDOU SALAM MAMAN",
         address="ZINDER, NIGER",phone="98313369",email="kabmiel43@gmail.com",
         nif="35252/P",rccm="NI-ZIN-2014-A-387",document_style="standard",
-        tax_enabled=False,tax_rate=19,isb_enabled=False,isb_rate=3,is_default=True,
+        # Même configuration fiscale que l’application Boulangerie.
+        tax_enabled=True,tax_rate=19,isb_enabled=False,isb_rate=3,is_default=True,
     )
     db.add(header);db.flush()
     return header

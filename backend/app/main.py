@@ -601,7 +601,9 @@ async def import_billing_headers(organization_id:str,file:UploadFile=File(...),u
         name=(row.get("company_name") or row.get("nom") or row.get("entreprise") or "").strip()
         if not name: errors.append(f"Ligne {number}: nom entreprise manquant");continue
         try:
-            item=BillingHeader(organization_id=organization_id,company_name=name,address=(row.get("address") or row.get("adresse") or None),phone=(row.get("phone") or row.get("telephone") or None),email=(row.get("email") or None),nif=(row.get("nif") or None),rccm=(row.get("rccm") or None),document_style=(row.get("document_style") or "standard"),is_default=created==0 and not db.query(BillingHeader).filter_by(organization_id=organization_id).first())
+            style=(row.get("document_style") or "standard").strip()
+            if style not in {"standard","scan_gauche","scan_alasko","scan_centre","scan_compact","scan_facture_simple","moderne_clair","moderne_bandeau","moderne_minimal"}: style="standard"
+            item=BillingHeader(organization_id=organization_id,company_name=name,address=(row.get("address") or row.get("adresse") or None),phone=(row.get("phone") or row.get("telephone") or None),email=(row.get("email") or None),nif=(row.get("nif") or None),rccm=(row.get("rccm") or None),document_style=style,is_default=created==0 and not db.query(BillingHeader).filter_by(organization_id=organization_id).first())
             db.add(item);created+=1
         except Exception as error: errors.append(f"Ligne {number}: {error}")
     db.commit();return {"created":created,"errors":errors[:30]}
