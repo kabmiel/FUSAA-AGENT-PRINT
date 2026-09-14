@@ -110,8 +110,9 @@ billingInvoiceTable=function(items){
   if(!items.length)return '<p class="billing-empty">Aucun document enregistre.</p>';
   return '<div class="billing-table-wrap"><table class="billing-table"><thead><tr><th>Numero</th><th>Client</th><th>Type</th><th>Date</th><th>Montant</th><th>Actions</th></tr></thead><tbody>'+items.map(item=>{
     const typeId="billingDocumentType-"+item.id,itemId=esc(item.id),number=esc(item.number),selected=item.document_type||"INVOICE",locked=Boolean(item.source_shop_order_id)||Number(item.paid_amount||0)>0;
+    const competition=item.competition_source_invoice_id?'<small class="billing-competition-mark">Concurrence +'+Number(item.competition_margin_percent||0).toLocaleString("fr-FR",{maximumFractionDigits:2})+' %</small>':"";
     const edit=locked?'<span class="muted billing-document-locked" title="Commande Boutique ou document deja paye">Verrouille</span>':'<button class="secondary" type="button" onclick="billingEditDocument(\''+itemId+'\')">Modifier</button>';
-    return '<tr><td><b>'+number+'</b></td><td>'+esc(item.customer_name||item.customer||"Client comptant")+'</td><td><div class="billing-row-type"><span class="billing-type-badge">'+esc(billingDocumentLabel(item.document_type))+'</span><select id="'+typeId+'" aria-label="Type a generer pour '+number+'">'+billingDocumentTypeOptions(selected)+'</select></div></td><td>'+billingDate(item.created_at)+'</td><td>'+billingCurrency(item.total_amount)+'</td><td><button class="secondary billing-icon-button" type="button" title="Visualiser le type selectionne" aria-label="Visualiser le PDF '+number+'" onclick="previewBillingInvoice(\''+itemId+'\',\''+number+'\',document.getElementById(\''+typeId+'\').value)">'+billingEyeIcon+'<span>Visualiser</span></button>'+edit+'<button class="secondary" type="button" onclick="billingDuplicate(\''+itemId+'\',document.getElementById(\''+typeId+'\').value)">Dupliquer</button><button class="secondary" type="button" onclick="billingCompetition(\''+itemId+'\')">Concurrence</button></td></tr>'
+    return '<tr><td><b>'+number+'</b>'+competition+'</td><td>'+esc(item.customer_name||item.customer||"Client comptant")+'</td><td><div class="billing-row-type"><span class="billing-type-badge">'+esc(billingDocumentLabel(item.document_type))+'</span><select id="'+typeId+'" aria-label="Type a generer pour '+number+'">'+billingDocumentTypeOptions(selected)+'</select></div></td><td>'+billingDate(item.created_at)+'</td><td>'+billingCurrency(item.total_amount)+'</td><td><button class="secondary billing-icon-button" type="button" title="Visualiser le type selectionne" aria-label="Visualiser le PDF '+number+'" onclick="previewBillingInvoice(\''+itemId+'\',\''+number+'\',document.getElementById(\''+typeId+'\').value)">'+billingEyeIcon+'<span>Visualiser</span></button>'+edit+'<button class="secondary" type="button" onclick="billingDuplicate(\''+itemId+'\',document.getElementById(\''+typeId+'\').value)">Dupliquer</button><button class="secondary" type="button" onclick="billingCompetition(\''+itemId+'\')">Concurrence</button></td></tr>'
   }).join("")+'</tbody></table></div>';
 };
 async function billingEditDocument(id){
@@ -136,7 +137,61 @@ async function previewBillingInvoice(id,number,documentType="INVOICE"){
   }catch(error){tell(error.message)}finally{await hideFusaaOperation(started)}
 }
 async function billingDuplicate(id,documentType=null){const type=documentType||prompt("Type de copie : INVOICE, QUOTE, PROFORMA, DELIVERY_NOTE ou RECEIPT","QUOTE");if(type===null)return;try{const result=await api("/api/v1/billing/invoices/"+id+"/duplicate?document_type="+encodeURIComponent(type.trim().toUpperCase()),{method:"POST"});tell(result.number+" créé.");billingOpen("documents")}catch(error){tell(error.message)}}
-async function billingCompetition(id){try{const headers=await api("/api/v1/billing/headers?organization_id="+encodeURIComponent(org));const choices=headers.map((item,index)=>(index+1)+". "+item.company_name).join("\n");const selected=prompt("Choisissez le numéro de l’entête pour le devis concurrence :\n"+choices,"1");if(selected===null)return;const header=headers[Number(selected)-1];if(!header)throw Error("Entête invalide.");const margin=prompt("Marge en pourcentage","10");if(margin===null)return;const result=await api("/api/v1/billing/invoices/"+id+"/competition",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({billing_header_id:header.id,margin_percent:Number(margin)})});tell(result.number+" créé.");billingOpen("documents")}catch(error){tell(error.message)}}
+async function billingCompetitionLegacy(id){try{const headers=await api("/api/v1/billing/headers?organization_id="+encodeURIComponent(org));const choices=headers.map((item,index)=>(index+1)+". "+item.company_name).join("\n");const selected=prompt("Choisissez le numéro de l’entête pour le devis concurrence :\n"+choices,"1");if(selected===null)return;const header=headers[Number(selected)-1];if(!header)throw Error("Entête invalide.");const margin=prompt("Marge en pourcentage","10");if(margin===null)return;const result=await api("/api/v1/billing/invoices/"+id+"/competition",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({billing_header_id:header.id,margin_percent:Number(margin)})});tell(result.number+" créé.");billingOpen("documents")}catch(error){tell(error.message)}}
+
+function billingCompetitionDialog(){
+  let dialog=document.getElementById("billingCompetitionDialog");
+  if(dialog)return dialog;
+  const host=document.getElementById("billing");if(!host)throw Error("Espace de facturation indisponible.");
+  host.insertAdjacentHTML("beforeend",`<dialog id="billingCompetitionDialog" class="billing-quick-dialog billing-competition-dialog"><form id="billingCompetitionForm"><div class="billing-actions billing-lines-title"><div><span class="billing-eyebrow">FACTURATION FUSAA</span><h2>Cr\u00e9er une concurrence</h2></div><button class="secondary" type="button" aria-label="Fermer" onclick="billingCompetitionClose()">\u00d7</button></div><p class="billing-competition-description">Une copie en <b>devis brouillon</b> : les quantit\u00e9s, le client, l'objet et les notes sont conserv\u00e9s. Un autre ent\u00eate et une marge sont appliqu\u00e9s \u00e0 chaque prix unitaire.</p><label>Nouvel ent\u00eate \u00e9metteur<select id="billingCompetitionHeader" required onchange="billingCompetitionRefresh()"></select></label><div><span class="billing-competition-label">Marge automatique sur les prix</span><div class="billing-competition-margins"><button type="button" data-competition-margin="5" onclick="billingCompetitionSetMargin(5,this)">+5 %</button><button type="button" data-competition-margin="10" onclick="billingCompetitionSetMargin(10,this)">+10 %</button><button type="button" data-competition-margin="15" onclick="billingCompetitionSetMargin(15,this)">+15 %</button></div></div><label>Marge personnalis\u00e9e (%)<input id="billingCompetitionMargin" type="number" min="0" max="1000" step="0.01" value="5" inputmode="decimal" oninput="billingCompetitionUseCustomMargin()"></label><section id="billingCompetitionPreview" class="billing-competition-preview" aria-live="polite"></section><div class="billing-actions billing-competition-actions"><button class="secondary" type="button" onclick="billingCompetitionClose()">Annuler</button><button id="billingCompetitionSubmit" type="submit">G\u00e9n\u00e9rer la concurrence</button></div></form></dialog>`);
+  dialog=document.getElementById("billingCompetitionDialog");
+  dialog.querySelector("#billingCompetitionForm").onsubmit=billingSubmitCompetition;
+  dialog.addEventListener("close",()=>{billingState.competition=null});
+  return dialog;
+}
+function billingCompetitionClose(){const dialog=document.getElementById("billingCompetitionDialog");if(dialog?.open)dialog.close()}
+function billingCompetitionMargin(){const value=Number(document.getElementById("billingCompetitionMargin")?.value);return Number.isFinite(value)?value:NaN}
+function billingCompetitionSetMargin(value,button){const input=document.getElementById("billingCompetitionMargin");if(input)input.value=value;document.querySelectorAll("#billingCompetitionDialog [data-competition-margin]").forEach(item=>item.classList.toggle("active",item===button));billingCompetitionRefresh()}
+function billingCompetitionUseCustomMargin(){document.querySelectorAll("#billingCompetitionDialog [data-competition-margin]").forEach(item=>item.classList.remove("active"));billingCompetitionRefresh()}
+function billingCompetitionRefresh(){
+  const state=billingState.competition,preview=document.getElementById("billingCompetitionPreview"),select=document.getElementById("billingCompetitionHeader");if(!state||!preview||!select)return;
+  const header=state.headers.find(item=>item.id===select.value),margin=billingCompetitionMargin();
+  if(!header||!Number.isFinite(margin)||margin<0||margin>1000){preview.innerHTML='<p class="billing-competition-invalid">Choisissez un ent\u00eate et une marge entre 0 et 1 000 %.</p>';return}
+  const originalHt=state.invoice.lines.reduce((sum,line)=>sum+Number(line.quantity||0)*Number(line.unit_amount||0),0);
+  const newHt=state.invoice.lines.reduce((sum,line)=>sum+Number(line.quantity||0)*Math.round(Number(line.unit_amount||0)*(1+margin/100)*100)/100,0);
+  const tax=header.isb_enabled?0:(header.tax_enabled?Math.round(newHt*Number(header.tax_rate||0))/100:0);
+  const isb=header.isb_enabled?Math.round(newHt*Number(header.isb_rate||0))/100:0;
+  const total=newHt+tax-isb,customer=state.invoice.customer?.name||"Client comptant";
+  preview.innerHTML='<div><small>DOCUMENT ORIGINAL</small><b>'+esc(state.invoice.number)+'</b><span>'+esc(customer)+' \u00b7 '+billingCurrency(originalHt)+' HT</span></div><div><small>NOUVEL ENT\u00caTE</small><b>'+esc(header.company_name)+'</b><span>Marge appliqu\u00e9e : +'+margin.toLocaleString("fr-FR",{maximumFractionDigits:2})+' %</span></div><div class="billing-competition-total"><small>NOUVEAU TOTAL PR\u00c9VISIONNEL</small><b>'+billingCurrency(total)+'</b><span>'+billingCurrency(newHt)+' HT'+(tax?' + TVA '+billingCurrency(tax):isb?' - ISB '+billingCurrency(isb):'')+'</span></div>';
+}
+billingCompetition=async function(id){
+  const started=showFusaaOperation("Pr\u00e9paration de la concurrence...");
+  try{
+    const [invoice,allHeaders]=await Promise.all([api("/api/v1/billing/invoices/"+encodeURIComponent(id)),api("/api/v1/billing/headers?organization_id="+encodeURIComponent(org))]);
+    const headers=allHeaders.filter(item=>item.id!==invoice.billing_header_id);
+    if(!headers.length)throw Error("Ajoutez d'abord un autre ent\u00eate avant de cr\u00e9er une concurrence.");
+    billingState.competition={invoice,headers};
+    const dialog=billingCompetitionDialog(),select=dialog.querySelector("#billingCompetitionHeader");
+    select.innerHTML=headers.map(item=>'<option value="'+esc(item.id)+'">'+esc(item.company_name)+(item.is_default?" (par d\u00e9faut)":"")+'</option>').join("");
+    select.value=headers.find(item=>item.is_default)?.id||headers[0].id;
+    billingCompetitionSetMargin(5,dialog.querySelector('[data-competition-margin="5"]'));
+    if(!dialog.open)dialog.showModal();
+  }catch(error){tell(error.message)}finally{await hideFusaaOperation(started)}
+};
+async function billingSubmitCompetition(event){
+  event.preventDefault();const state=billingState.competition,headerId=document.getElementById("billingCompetitionHeader")?.value,margin=billingCompetitionMargin();
+  if(!state||!headerId)return;
+  if(!Number.isFinite(margin)||margin<0||margin>1000){tell("La marge doit \u00eatre comprise entre 0 et 1 000 %.");return}
+  const button=document.getElementById("billingCompetitionSubmit"),started=showFusaaOperation("G\u00e9n\u00e9ration du devis concurrence...");if(button)button.disabled=true;
+  try{
+    const result=await api("/api/v1/billing/invoices/"+encodeURIComponent(state.invoice.id)+"/competition",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({billing_header_id:headerId,margin_percent:margin})});
+    billingCompetitionClose();billingClosePopup();
+    const created=await api("/api/v1/billing/invoices/"+encodeURIComponent(result.id));
+    billingState.editingInvoice=created;billingState.documentType=created.document_type||"QUOTE";
+    tell(result.number+" cr\u00e9\u00e9 : vous pouvez maintenant le relire avant impression.");
+    await billingOpen("new");
+  }catch(error){tell(error.message)}finally{if(button)button.disabled=false;await hideFusaaOperation(started)}
+}
 
 async function billingLoadReference(){
   const [headers,customers]=await Promise.all([api("/api/v1/billing/headers?organization_id="+encodeURIComponent(org)),api("/api/v1/customers?organization_id="+encodeURIComponent(org))]);
@@ -181,7 +236,7 @@ async function billingNew(){
   billingMoveCustomerFields();
   const selectedCustomer=Boolean(document.getElementById("billingNewCustomer").value);["billingNewCustomerName","billingNewCustomerPhone","billingNewCustomerAddress"].forEach(id=>document.getElementById(id).disabled=selectedCustomer);
   if(editing){document.querySelector(".billing-selected-type")?.insertAdjacentHTML("beforeend",'<button class="secondary" type="button" onclick="billingCancelDocumentEdit()">Annuler</button>')}
-  if(editing?.lines?.length)editing.lines.forEach(line=>billingAddLine({id:line.shop_product_id||"",name:line.description,quantity:line.quantity,price_xof:line.unit_amount,unit:line.unit||"piece"}));else billingAddLine();await billingProductSearch(true);
+  if(editing?.lines?.length)editing.lines.forEach(line=>billingAddLine({id:line.product_id||line.shop_product_id||line.billing_product_id||"",name:line.description,quantity:line.quantity,price_xof:line.unit_amount,unit:line.unit||"piece"}));else billingAddLine();await billingProductSearch(true);
 }
 function billingMoveCustomerFields(){const target=document.querySelector("#billingWorkspaceContent .billing-ai-fields");if(!target)return;["billingNewCustomerName","billingNewCustomerPhone","billingNewCustomerAddress"].forEach(id=>{const input=document.getElementById(id),label=input?.closest("label");if(label){label.style.display="none";document.getElementById("billingNewForm")?.appendChild(label)}});const header=document.getElementById("billingNewHeader"),customer=document.getElementById("billingNewCustomer");if(header&&!document.getElementById("billingAddHeader")){header.insertAdjacentHTML("afterend",'<button id="billingAddHeader" class="secondary" type="button" onclick="billingPopup(\'headers\')">＋ Entête</button>')}if(customer&&!document.getElementById("billingAddCustomer")){customer.insertAdjacentHTML("afterend",'<button id="billingAddCustomer" class="secondary" type="button" onclick="billingCustomerPopup()">＋ Client</button>')}}
 function billingChooseDocumentType(){billingPopup("documents")}

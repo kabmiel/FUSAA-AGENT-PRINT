@@ -228,6 +228,10 @@ class Invoice(Timestamped, Base):
     total_amount: Mapped[float] = mapped_column(Numeric(12,2), default=0)
     due_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     source_shop_order_id: Mapped[str | None] = mapped_column(ForeignKey("shop_orders.id"), nullable=True, unique=True, index=True)
+    # A competition document stays linked to its source invoice, as in the
+    # Boulangerie billing module, without altering the original document.
+    competition_source_invoice_id: Mapped[str | None] = mapped_column(ForeignKey("invoices.id"), nullable=True, index=True)
+    competition_margin_percent: Mapped[float | None] = mapped_column(Numeric(6,2), nullable=True)
     document_type: Mapped[str] = mapped_column(String(24), default="INVOICE")
     subject: Mapped[str | None] = mapped_column(String(255), nullable=True)
     notes: Mapped[str | None] = mapped_column(Text, nullable=True)
@@ -246,6 +250,7 @@ class InvoiceLine(Base):
     invoice_id: Mapped[str] = mapped_column(ForeignKey("invoices.id"), index=True)
     print_job_id: Mapped[str | None] = mapped_column(ForeignKey("print_jobs.id"), nullable=True)
     shop_product_id: Mapped[str | None] = mapped_column(ForeignKey("shop_products.id"), nullable=True)
+    billing_product_id: Mapped[str | None] = mapped_column(ForeignKey("products.id"), nullable=True, index=True)
     description: Mapped[str] = mapped_column(String(255))
     unit: Mapped[str] = mapped_column(String(20), default="piece")
     quantity: Mapped[float] = mapped_column(Numeric(10,2), default=1)

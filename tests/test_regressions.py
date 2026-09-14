@@ -15,11 +15,11 @@ ROOT=Path(__file__).parents[1]
 sys.path[:0]=[str(ROOT/"backend"),str(ROOT/"local-agent")]
 from app.database import Base
 from app.models import User,Organization,OrganizationMember,Workshop,WorkshopMember,Document,PrintJob,ComputerAgent,Printer,JobStatus,LocalActivity,BrowserLink,GuestOrder,ShopCategory,ShopProduct,AnonymousVisit,Invoice,BillingHeader
-from app.main import cancel_job,confirm_job,prepare_job,central_supervision,list_jobs,list_documents,audit_history,list_workshop_members,update_workshop_member,remove_workshop_member,assign_workshop_member,register,create_guest_order,guest_order_status,verify_guest_payment,list_guest_orders,export_guest_orders,archive_guest_order,restore_guest_order,set_public_pricing,get_public_pricing,refresh_guest_quote,create_guest_receipt,production_dashboard,index,impression_index,admin_index,public_tracking_page,delete_job,archive_public_job,create_shop_order,shop_public_products,shop_public_products_page,shop_admin_products_page,record_public_visit,visitor_analytics,create_billing_document,update_billing_invoice,duplicate_billing_invoice,create_stock_movement,billing_stock_alerts,create_billing_category,create_billing_product,list_billing_products,create_customer,update_billing_customer,delete_billing_customer,get_billing_invoice,record_billing_payment,list_billing_headers,create_billing_header,billing_dashboard,billing_catalog_page,upload_billing_header_logo,import_billing_headers
+from app.main import cancel_job,confirm_job,prepare_job,central_supervision,list_jobs,list_documents,audit_history,list_workshop_members,update_workshop_member,remove_workshop_member,assign_workshop_member,register,create_guest_order,guest_order_status,verify_guest_payment,list_guest_orders,export_guest_orders,archive_guest_order,restore_guest_order,set_public_pricing,get_public_pricing,refresh_guest_quote,create_guest_receipt,production_dashboard,index,impression_index,admin_index,public_tracking_page,delete_job,archive_public_job,create_shop_order,shop_public_products,shop_public_products_page,shop_admin_products_page,record_public_visit,visitor_analytics,create_billing_document,update_billing_invoice,duplicate_billing_invoice,create_billing_competition,create_stock_movement,billing_stock_alerts,create_billing_category,create_billing_product,list_billing_products,create_customer,update_billing_customer,delete_billing_customer,get_billing_invoice,record_billing_payment,list_billing_headers,create_billing_header,billing_dashboard,billing_catalog_page,upload_billing_header_logo,import_billing_headers
 from app.connectors import IncomingDocument, ingest_incoming_document
 from app.config import settings
 from app.schemas import JobOptions,GuestPaymentIn,PublicPricingIn,PublicVisitIn,RegisterIn
-from app.business_schemas import BillingCategoryIn,BillingDocumentIn,BillingHeaderIn,BillingProductIn,CustomerIn,PaymentIn
+from app.business_schemas import BillingCategoryIn,BillingCompetitionIn,BillingDocumentIn,BillingHeaderIn,BillingProductIn,CustomerIn,PaymentIn
 from app.business_schemas import StockMovementIn
 from app.shop_schemas import ShopPublicOrderIn
 from app.multisite_schemas import WorkshopMemberIn,WorkshopMemberRoleIn
@@ -294,6 +294,24 @@ def test_billing_documents_support_quote_and_duplication(setup_db):
     assert details["customer"]["name"]=="Client devis" and len(details["lines"])==1
     payment=record_billing_payment(document["id"],PaymentIn(amount=3000,method="CASH"),admin,db)
     assert payment["invoice_status"]=="PAID"
+
+def test_billing_competition_matches_boulangerie_copy_rules(setup_db):
+    db,_,admin=setup_db
+    product=create_billing_product(BillingProductIn(organization_id="o",name="Ramette A4",unit_price=1500),admin,db)
+    original=create_billing_document(BillingDocumentIn(organization_id="o",document_type="INVOICE",customer_name="Client concurrence",subject="Fournitures",notes="A livrer",lines=[{"product_id":product["id"],"description":"Ramette A4","quantity":2,"unit_amount":1500}]),admin,db)
+    source=get_billing_invoice(original["id"],admin,db)
+    other_header=create_billing_header("o",BillingHeaderIn(company_name="Entete concurrence",tax_enabled=True,tax_rate=19),admin,db)
+    competition=create_billing_competition(original["id"],BillingCompetitionIn(billing_header_id=other_header["id"],margin_percent=10),admin,db)
+    copied=get_billing_invoice(competition["id"],admin,db)
+    assert competition["document_type"]=="QUOTE" and competition["status"]=="DRAFT"
+    assert copied["billing_header_id"]==other_header["id"] and copied["customer"]["id"]==source["customer"]["id"]
+    assert copied["subject"]==source["subject"] and copied["notes"]==source["notes"]
+    assert copied["competition_source_invoice_id"]==original["id"] and copied["competition_margin_percent"]==10
+    assert copied["lines"][0]["quantity"]==2 and copied["lines"][0]["unit_amount"]==1650 and copied["lines"][0]["billing_product_id"]==product["id"]
+    assert copied["subtotal_amount"]==3300 and copied["tax_amount"]==627 and copied["total_amount"]==3927
+    with pytest.raises(HTTPException) as error:
+        create_billing_competition(original["id"],BillingCompetitionIn(billing_header_id=source["billing_header_id"],margin_percent=5),admin,db)
+    assert error.value.status_code==422
 
 def test_manual_unpaid_billing_document_can_be_updated_but_paid_document_is_protected(setup_db):
     db,_,admin=setup_db
