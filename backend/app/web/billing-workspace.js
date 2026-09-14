@@ -17,14 +17,19 @@ const billingIcons={
 const billingCurrency=value=>money(Number(value||0));
 const billingDate=value=>value?new Date(value).toLocaleDateString("fr-FR"):"—";
 const billingSelect=(items,placeholder)=>'<option value="">'+esc(placeholder)+'</option>'+items.map(item=>'<option value="'+esc(item.id)+'">'+esc(item.company_name||item.name)+'</option>').join("");
-const billingView=document.getElementById("billing");
-if(billingView){
+function mountBillingWorkspace(){
+  const billingView=document.getElementById("billing");
+  if(!billingView||document.getElementById("billingWorkspace"))return false;
   Array.from(billingView.children).forEach(item=>item.style.display="none");
   billingView.insertAdjacentHTML("beforeend",'<div id="billingWorkspace" class="billing-workspace"><aside class="billing-menu"><a class="billing-back" href="#dashboard" onclick="selectView(\'dashboard\');return false">← Accueil FUSAA</a><h2>Gestion Factures</h2><div class="billing-menu-grid">'+Object.entries(billingLabels).map(([key,label])=>'<button type="button" data-billtab="'+key+'" aria-label="'+esc(label)+'"><i>'+billingIcons[key]+'</i><span>'+esc(label)+'</span></button>').join("")+'</div></aside><div class="billing-main"><div id="billingWorkspaceContent"></div></div></div>');
   document.getElementById("billingWorkspace").addEventListener("click",event=>{const button=event.target.closest("[data-billtab]");if(button)billingNavigate(button.dataset.billtab)});
   loadBilling=()=>billingOpen("dashboard");
+  return true;
 }
-document.querySelector("#dashboard .view-head")?.insertAdjacentHTML("afterend",'<button id="billingHomeBadge" type="button" onclick="selectView(\'billing\')"><span class="billing-home-icon">'+billingIcons.documents+'</span><span><strong>Facturation FUSAA</strong><small>Factures, devis, entêtes et rapports</small></span><b>Ouvrir la facturation →</b></button>');
+window.mountBillingWorkspace=mountBillingWorkspace;
+mountBillingWorkspace();
+function mountBillingHomeBadge(){const head=document.querySelector("#dashboard .view-head");if(head&&!document.getElementById("billingHomeBadge"))head.insertAdjacentHTML("afterend",'<button id="billingHomeBadge" type="button" onclick="selectView(\'billing\')"><span class="billing-home-icon">'+billingIcons.documents+'</span><span><strong>Facturation FUSAA</strong><small>Factures, devis, entêtes et rapports</small></span><b>Ouvrir la facturation →</b></button>')}
+mountBillingHomeBadge();
 
 function billingHero(title,subtitle,action=""){
   return '<div class="billing-hero"><div><span class="billing-eyebrow">BOUTIQUE & SERVICE · FCFA</span><h1>'+esc(title)+'</h1><p>'+esc(subtitle)+'</p></div><div class="billing-actions">'+action+'</div></div>';
