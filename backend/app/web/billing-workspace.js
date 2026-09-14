@@ -21,7 +21,7 @@ const billingView=document.getElementById("billing");
 if(billingView){
   Array.from(billingView.children).forEach(item=>item.style.display="none");
   billingView.insertAdjacentHTML("beforeend",'<div id="billingWorkspace" class="billing-workspace"><aside class="billing-menu"><a class="billing-back" href="#dashboard" onclick="selectView(\'dashboard\');return false">← Accueil FUSAA</a><h2>Gestion Factures</h2><div class="billing-menu-grid">'+Object.entries(billingLabels).map(([key,label])=>'<button type="button" data-billtab="'+key+'" aria-label="'+esc(label)+'"><i>'+billingIcons[key]+'</i><span>'+esc(label)+'</span></button>').join("")+'</div></aside><div class="billing-main"><div id="billingWorkspaceContent"></div></div></div>');
-  document.getElementById("billingWorkspace").addEventListener("click",event=>{const button=event.target.closest("[data-billtab]");if(button)billingOpen(button.dataset.billtab)});
+  document.getElementById("billingWorkspace").addEventListener("click",event=>{const button=event.target.closest("[data-billtab]");if(button)billingNavigate(button.dataset.billtab)});
   loadBilling=()=>billingOpen("dashboard");
 }
 document.querySelector("#dashboard .view-head")?.insertAdjacentHTML("afterend",'<button id="billingHomeBadge" type="button" onclick="selectView(\'billing\')"><span class="billing-home-icon">'+billingIcons.documents+'</span><span><strong>Facturation FUSAA</strong><small>Factures, devis, entêtes et rapports</small></span><b>Ouvrir la facturation →</b></button>');
@@ -29,8 +29,17 @@ document.querySelector("#dashboard .view-head")?.insertAdjacentHTML("afterend",'
 function billingHero(title,subtitle,action=""){
   return '<div class="billing-hero"><div><span class="billing-eyebrow">BOUTIQUE & SERVICE · FCFA</span><h1>'+esc(title)+'</h1><p>'+esc(subtitle)+'</p></div><div class="billing-actions">'+action+'</div></div>';
 }
-function billingSet(html){const target=document.getElementById("billingWorkspaceContent");if(target)target.innerHTML=html}
+function billingSet(html){const target=document.getElementById(billingState.popupTarget||"billingWorkspaceContent");if(target)target.innerHTML=html}
 function billingActive(tab){document.querySelectorAll("#billing .billing-menu button").forEach(button=>{const active=button.dataset.billtab===tab;button.classList.toggle("active",active);button.setAttribute("aria-pressed",active?"true":"false")})}
+const billingPopupTabs=new Set(["documents","clients","products","headers","categories","reports","maintenance","settings"]);
+function billingNavigate(tab){billingPopupTabs.has(tab)?billingPopup(tab):billingOpen(tab)}
+async function billingPopup(tab){
+  let dialog=document.getElementById("billingGlassDialog");
+  if(!dialog){document.body.insertAdjacentHTML("beforeend",'<dialog id="billingGlassDialog" class="billing-glass-dialog"><div class="billing-glass-head"><span class="billing-eyebrow">FACTURATION FUSAA</span><button class="secondary" type="button" aria-label="Fermer" onclick="billingClosePopup()">×</button></div><div id="billingGlassContent"></div></dialog>');dialog=document.getElementById("billingGlassDialog")}
+  billingState.popupTarget="billingGlassContent";dialog.showModal();
+  try{await billingOpen(tab)}finally{billingState.popupTarget=null}
+}
+function billingClosePopup(){const dialog=document.getElementById("billingGlassDialog");if(dialog?.open)dialog.close();billingState.popupTarget=null}
 async function billingOpen(tab){
   if(!billingLabels[tab])tab="dashboard";
   billingState.tab=tab;billingActive(tab);
@@ -51,13 +60,11 @@ async function billingOpen(tab){
 
 async function billingDashboard(){
   const data=await api("/api/v1/billing/dashboard?organization_id="+encodeURIComponent(org));
-  const kpis=[
-    ["▤","Factures",data.invoices,"documents"],["◈","Chiffre d’affaires",billingCurrency(data.invoiced_xof),"reports"],
-    ["▣","Produits",data.billing_products+data.shop_products,"products"],["♧","Clients",data.customers,"clients"]
+  const cards=[
+    ["new","Nouvelle facture","Créer une facture, un devis ou un reçu"],["headers","Entêtes","Nom, logo, adresse et modèle PDF"],["clients","Clients","Coordonnées et comptes clients"],["products","Produits","Catalogue partagé et import CSV"],["documents","Documents","Factures, devis et bons archivés"],["categories","Catégories","Classer les produits de facturation"],["settings","Paramètres facture","TVA, ISB, devise et préférences"],["reports","Rapports","Encaissements et soldes clients"],["maintenance","Maintenance","Contrôler et régénérer les documents"]
   ];
-  billingSet(billingHero("Tableau de bord","Vue rapide de l’activité, des documents et de la facturation.",'<button type="button" onclick="billingOpen(\'new\')">+ Nouvelle facture</button>')+
-    '<div class="billing-kpis">'+kpis.map(item=>'<button class="billing-kpi" type="button" onclick="billingOpen(\''+item[3]+'\')"><i>'+item[0]+'</i><b>'+esc(item[2])+'</b><small>'+esc(item[1])+'</small></button>').join("")+'</div>'+
-    '<div class="billing-split"><section class="billing-panel"><div class="billing-actions" style="justify-content:space-between"><h2>Dernières factures</h2><button class="secondary" type="button" onclick="billingOpen(\'documents\')">Ouvrir →</button></div>'+billingInvoiceTable(data.recent)+'</section><section class="billing-panel"><h2>Actions rapides</h2><div class="billing-kpis" style="grid-template-columns:repeat(2,minmax(0,1fr))">'+[["Nouvelle facture","new"],["Catalogue produits","products"],["Comptes clients","clients"],["Configurer les entêtes","headers"]].map(item=>'<button class="billing-kpi" type="button" onclick="billingOpen(\''+item[1]+'\')"><b style="font-size:.95rem">'+item[0]+'</b><small>Accès direct →</small></button>').join("")+'</div><h3>À encaisser</h3><p class="billing-total" style="text-align:left">'+billingCurrency(data.outstanding_xof)+'</p><p>'+data.headers+' entête(s) configuré(s)</p></section></div>');
+  billingSet(billingHero("Facturation FUSAA","Choisissez une action. Les outils s’ouvrent dans des cartes liquid glass.",'<span class="billing-total">'+billingCurrency(data.invoiced_xof)+'</span>')+
+    '<section class="billing-landing"><div class="billing-landing-intro"><div><span class="billing-eyebrow">ESPACE DE GESTION</span><h2>Tout votre atelier de facturation</h2><p>Les données Boutique et Facturation restent réunies dans le même compte FUSAA.</p></div><div class="billing-mini-stats"><span><b>'+data.invoices+'</b>Documents</span><span><b>'+data.customers+'</b>Clients</span><span><b>'+data.headers+'</b>Entêtes</span></div></div><div class="billing-card-grid">'+cards.map(([key,title,subtitle])=>'<button type="button" class="billing-glass-card '+(key==="new"?"primary":"")+'" onclick="'+(key==="new"?'billingOpen':'billingPopup')+'(\''+key+'\')"><i>'+billingIcons[key]+'</i><strong>'+title+'</strong><small>'+subtitle+'</small><em>Ouvrir <span>→</span></em></button>').join("")+'</div></section>');
 }
 function billingInvoiceTable(items){
   if(!items.length)return '<p class="billing-empty">Aucun document enregistré.</p>';

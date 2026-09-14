@@ -63,6 +63,10 @@ def test_billing_badges_and_invoice_editor_are_visible_on_desktop_and_mobile():
         page.locator("#billingHomeBadge").click()
         assert page.locator("#billing .billing-menu [data-billtab]").count() == 10
         assert not page.locator(".workspace > .sidebar").is_visible()
+        page.locator('[data-billtab="headers"]').click()
+        assert page.locator("#billingGlassDialog").is_visible()
+        assert page.locator("#billingGlassContent h2").first.inner_text() == "Entêtes disponibles"
+        page.locator("#billingGlassDialog button[aria-label='Fermer']").click()
         page.locator('[data-billtab="new"]').click()
         assert page.locator("#billing .billing-hero h1").inner_text() == "Nouvelle facture"
         assert page.locator("#billingNewHeader").input_value() == "h"
