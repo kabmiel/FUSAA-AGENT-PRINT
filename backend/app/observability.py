@@ -11,6 +11,15 @@ class JsonFormatter(logging.Formatter):
 
 class RedactSessionSecrets(logging.Filter):
     def filter(self,record):
+        # Uvicorn's access formatter expects its original five positional
+        # arguments.  Redact only the URL argument while preserving that
+        # shape; replacing ``record.args`` with an empty tuple makes the
+        # formatter raise ``not enough values to unpack`` for every request.
+        if record.name == "uvicorn.access" and isinstance(record.args, tuple) and len(record.args) >= 3:
+            args=list(record.args)
+            args[2]=re.sub(r'([?&](?:token|key|hub\.verify_token)=)[^&\s"\x27]+',r'\1[REDACTED]',str(args[2]))
+            record.args=tuple(args)
+            return True
         record.msg=re.sub(r'([?&](?:token|key|hub\.verify_token)=)[^&\s"\x27]+',r'\1[REDACTED]',record.getMessage())
         record.args=()
         return True

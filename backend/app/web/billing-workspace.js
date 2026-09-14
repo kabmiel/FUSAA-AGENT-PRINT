@@ -1,6 +1,7 @@
 /* Facturation FUSAA : espace de gestion inspiré des parcours Boulangerie. */
 var billingState={tab:"dashboard",page:1,productPage:1,productSearch:"",products:[],headers:[],customers:[],categories:[],selectedHeader:null};
-var billingLabels={dashboard:"Tableau de bord",new:"Nouvelle facture",documents:"Documents",clients:"Clients",products:"Produits",headers:"Entêtes",categories:"Catégories",reports:"Rapports",maintenance:"Maintenance",settings:"Paramètres"};
+const billingMenuLabels={dashboard:"Tableau de bord",new:"Nouvelle facture",documents:"Documents",clients:"Clients",products:"Produits",headers:"Entêtes",categories:"Catégories",reports:"Rapports",maintenance:"Maintenance",settings:"Paramètres"};
+var billingLabels=billingMenuLabels;
 const billingIcon=paths=>'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">'+paths+'</svg>';
 const billingIcons={
   dashboard:billingIcon('<rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/>'),
@@ -46,9 +47,9 @@ async function billingPopup(tab){
 }
 function billingClosePopup(){const dialog=document.getElementById("billingGlassDialog");if(dialog?.open)dialog.close();billingState.popupTarget=null}
 async function billingOpen(tab){
-  if(!billingLabels[tab])tab="dashboard";
+  if(!billingMenuLabels[tab])tab="dashboard";
   billingState.tab=tab;billingActive(tab);
-  billingSet(billingHero(billingLabels[tab],"Chargement de votre espace de facturation…")+'<div class="billing-panel billing-empty">Chargement…</div>');
+  billingSet(billingHero(billingMenuLabels[tab],"Chargement de votre espace de facturation…")+'<div class="billing-panel billing-empty">Chargement…</div>');
   try{
     if(tab==="dashboard")await billingDashboard();
     if(tab==="new")await billingNew();
@@ -60,7 +61,7 @@ async function billingOpen(tab){
     if(tab==="reports")await billingReports();
     if(tab==="maintenance")await billingMaintenance();
     if(tab==="settings")await billingSettings();
-  }catch(error){billingSet(billingHero(billingLabels[tab],"Une erreur empêche le chargement.")+'<div class="billing-panel billing-note">'+esc(error.message)+'</div>');tell(error.message)}
+  }catch(error){billingSet(billingHero(billingMenuLabels[tab],"Une erreur empêche le chargement.")+'<div class="billing-panel billing-note">'+esc(error.message)+'</div>');tell(error.message)}
 }
 
 async function billingDashboard(){
