@@ -14,8 +14,8 @@ from sqlalchemy.orm import Session
 ROOT=Path(__file__).parents[1]
 sys.path[:0]=[str(ROOT/"backend"),str(ROOT/"local-agent")]
 from app.database import Base
-from app.models import User,Organization,OrganizationMember,Workshop,WorkshopMember,Document,PrintJob,ComputerAgent,Printer,JobStatus,LocalActivity,BrowserLink,GuestOrder,ShopCategory,ShopProduct,AnonymousVisit,Invoice
-from app.main import cancel_job,confirm_job,prepare_job,central_supervision,list_jobs,list_documents,audit_history,list_workshop_members,update_workshop_member,remove_workshop_member,assign_workshop_member,register,create_guest_order,guest_order_status,verify_guest_payment,list_guest_orders,export_guest_orders,archive_guest_order,restore_guest_order,set_public_pricing,get_public_pricing,refresh_guest_quote,create_guest_receipt,production_dashboard,index,impression_index,admin_index,public_tracking_page,delete_job,archive_public_job,create_shop_order,shop_public_products,shop_public_products_page,shop_admin_products_page,record_public_visit,visitor_analytics,create_billing_document,duplicate_billing_invoice,create_stock_movement,billing_stock_alerts,create_billing_category,create_billing_product,list_billing_products,create_customer,update_billing_customer,delete_billing_customer,get_billing_invoice,record_billing_payment,list_billing_headers,create_billing_header,billing_dashboard,billing_catalog_page,upload_billing_header_logo
+from app.models import User,Organization,OrganizationMember,Workshop,WorkshopMember,Document,PrintJob,ComputerAgent,Printer,JobStatus,LocalActivity,BrowserLink,GuestOrder,ShopCategory,ShopProduct,AnonymousVisit,Invoice,BillingHeader
+from app.main import cancel_job,confirm_job,prepare_job,central_supervision,list_jobs,list_documents,audit_history,list_workshop_members,update_workshop_member,remove_workshop_member,assign_workshop_member,register,create_guest_order,guest_order_status,verify_guest_payment,list_guest_orders,export_guest_orders,archive_guest_order,restore_guest_order,set_public_pricing,get_public_pricing,refresh_guest_quote,create_guest_receipt,production_dashboard,index,impression_index,admin_index,public_tracking_page,delete_job,archive_public_job,create_shop_order,shop_public_products,shop_public_products_page,shop_admin_products_page,record_public_visit,visitor_analytics,create_billing_document,duplicate_billing_invoice,create_stock_movement,billing_stock_alerts,create_billing_category,create_billing_product,list_billing_products,create_customer,update_billing_customer,delete_billing_customer,get_billing_invoice,record_billing_payment,list_billing_headers,create_billing_header,billing_dashboard,billing_catalog_page,upload_billing_header_logo,import_billing_headers
 from app.connectors import IncomingDocument, ingest_incoming_document
 from app.config import settings
 from app.schemas import JobOptions,GuestPaymentIn,PublicPricingIn,PublicVisitIn,RegisterIn
@@ -295,6 +295,18 @@ def test_billing_documents_support_quote_and_duplication(setup_db):
     payment=record_billing_payment(document["id"],PaymentIn(amount=3000,method="CASH"),admin,db)
     assert payment["invoice_status"]=="PAID"
 
+def test_billing_preview_uses_selected_type_without_changing_saved_document(setup_db,tmp_path,monkeypatch):
+    from app.billing import generate_invoice_preview_pdf
+    from pypdf import PdfReader
+    db,_,admin=setup_db
+    document=create_billing_document(BillingDocumentIn(organization_id="o",document_type="INVOICE",customer_name="Client aperçu",lines=[{"description":"Service FUSAA","quantity":1,"unit_amount":2500}]),admin,db)
+    invoice=db.get(Invoice,document["id"])
+    monkeypatch.setattr(settings,"storage_dir",tmp_path)
+    preview=generate_invoice_preview_pdf(db,invoice,"PROFORMA")
+    assert invoice.document_type=="INVOICE"
+    assert preview.name.endswith("-proforma-preview.pdf") and preview.read_bytes().startswith(b"%PDF")
+    assert "FACTURE PROFORMA" in "\n".join(page.extract_text() for page in PdfReader(preview).pages)
+
 def test_boulangerie_headers_apply_to_multiline_invoices_and_pdf(setup_db,tmp_path,monkeypatch):
     from app.billing import generate_invoice_pdf
     from pypdf import PdfReader
@@ -313,6 +325,39 @@ def test_boulangerie_headers_apply_to_multiline_invoices_and_pdf(setup_db,tmp_pa
     assert "Atelier test" in text and "Service" in text and "ISB" in text
     assert billing_dashboard("o",admin,db)["headers"]==2
     assert billing_catalog_page("o",page=1,page_size=10,user=admin,db=db)["total"]==0
+
+def test_boulangerie_header_import_keeps_pdf_style_and_tax_configuration(setup_db):
+    db,_,admin=setup_db
+    csv_content=(
+        "nom,adresse,telephone,email,nif,rccm,style_document,tva_applicable,taux_tva,"
+        "isb_applicable,taux_isb,table_font_family,table_font_size\n"
+        "FUSAA INFORMATIQUE,\"Zinder\\nRoute de Tanout\",98313369,contact@fusaa.ne,NIF-9,"
+        "RCCM-9,scan_facture_simple,oui,19,non,3,trebuchet,12.5\n"
+        "Entreprise ISB,Zinder,90531465,isb@fusaa.ne,NIF-10,RCCM-10,moderne_bandeau,"
+        "oui,19,oui,3,calibri,11\n"
+    ).encode()
+    upload=UploadFile(file=BytesIO(csv_content),filename="entetes-boulangerie.csv",headers=Headers({"content-type":"text/csv"}))
+    result=asyncio.run(import_billing_headers("o",upload,admin,db))
+    assert result["created"]==2 and not result["errors"]
+    scan=db.query(BillingHeader).filter_by(organization_id="o",company_name="FUSAA INFORMATIQUE").one()
+    assert scan.document_style=="scan_facture_simple"
+    assert scan.tax_enabled and float(scan.tax_rate)==19
+    assert not scan.isb_enabled and scan.table_font_family=="trebuchet" and float(scan.table_font_size)==12.5
+    isb=db.query(BillingHeader).filter_by(organization_id="o",company_name="Entreprise ISB").one()
+    assert isb.document_style=="moderne_bandeau"
+    assert isb.isb_enabled and not isb.tax_enabled and float(isb.isb_rate)==3
+
+def test_boulangerie_pdf_layout_catalogue_keeps_all_distinct_templates():
+    from app.billing_pdf import MODERN_STYLES,REFERENCE_STYLES,_amount_words,_reference_amount_words
+    assert set(REFERENCE_STYLES)=={"scan_gauche","scan_alasko","scan_centre","scan_compact","scan_facture_simple"}
+    assert set(MODERN_STYLES)=={"moderne_clair","moderne_bandeau","moderne_minimal"}
+    assert REFERENCE_STYLES["scan_facture_simple"]["simple"]
+    assert REFERENCE_STYLES["scan_gauche"]["widths"]!=REFERENCE_STYLES["scan_alasko"]["widths"]
+    assert REFERENCE_STYLES["scan_alasko"]["client_label"]=="Doit"
+    assert not REFERENCE_STYLES["scan_alasko"]["client_label_underline"]
+    assert MODERN_STYLES["moderne_clair"]["watermark"]=="DOCUMENT"
+    assert "Onze mille soixante-sept francs CFA"==_amount_words(11067)
+    assert _reference_amount_words(11067)=="Onze mille soixante-sept"
 
 def test_billing_header_logo_requires_cloudinary_configuration(setup_db,monkeypatch):
     db,_,admin=setup_db

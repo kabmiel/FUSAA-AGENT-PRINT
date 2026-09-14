@@ -34,7 +34,7 @@ from .connectors import IncomingDocument, ingest_incoming_document, verify_meta_
 from .business_schemas import BillingCategoryIn, BillingCompetitionIn, BillingDocumentIn, BillingHeaderIn, BillingProductIn, BillingProfileIn, CatalogIn, CustomerIn, CustomerOut, FinalCostIn, InvoiceCreate, InvoiceOut, PaymentIn, PriceRuleIn, PriceRuleOut, PrintCostOut, ServiceIn, StockMovementIn
 from .shop_schemas import ShopCategoryIn, ShopCloudinaryImageIn, ShopOrderStatusIn, ShopProductIn, ShopPublicOrderIn
 from .business import estimate_print_cost
-from .billing import billing_profile, default_billing_header, header_tax, ensure_shop_invoice, generate_invoice_pdf
+from .billing import BILLING_DOCUMENT_TYPES, billing_profile, default_billing_header, header_tax, ensure_shop_invoice, generate_invoice_pdf, generate_invoice_preview_pdf
 from .multisite_schemas import RouteJobIn, WorkshopMemberIn, WorkshopMemberRoleIn
 from .observability import RequestAuditMiddleware, configure_logging
 from .local_monitor import router as local_monitor_router
@@ -502,7 +502,16 @@ def export_billing_csv(kind:str,organization_id:str,user:User=Depends(current_us
     if kind=="clients":
         items=db.query(Customer).filter_by(organization_id=organization_id).order_by(Customer.name).all();return _billing_csv("fusaa-clients.csv",["name","phone","email","address","notes"],[(x.name,x.phone or "",x.email or "",x.address or "",x.notes or "") for x in items])
     if kind=="headers":
-        items=db.query(BillingHeader).filter_by(organization_id=organization_id).order_by(BillingHeader.company_name).all();return _billing_csv("fusaa-entetes.csv",["company_name","address","phone","email","nif","rccm","document_style"],[(x.company_name,x.address or "",x.phone or "",x.email or "",x.nif or "",x.rccm or "",x.document_style) for x in items])
+        items=db.query(BillingHeader).filter_by(organization_id=organization_id).order_by(BillingHeader.company_name).all()
+        return _billing_csv(
+            "fusaa-entetes.csv",
+            ["company_name","address","phone","email","nif","rccm","logo_url","document_style","tax_enabled","tax_rate","isb_enabled","isb_rate","table_font_family","table_font_size","is_default"],
+            [(
+                x.company_name,x.address or "",x.phone or "",x.email or "",x.nif or "",x.rccm or "",x.logo_url or "",
+                x.document_style,x.tax_enabled,float(x.tax_rate or 0),x.isb_enabled,float(x.isb_rate or 0),
+                x.table_font_family or "",float(x.table_font_size) if x.table_font_size is not None else "",x.is_default,
+            ) for x in items],
+        )
     if kind=="products":
         items=db.query(Product).filter_by(organization_id=organization_id).order_by(Product.name).all();return _billing_csv("fusaa-produits-facturation.csv",["name","unit_price","sku","unit","stock","seuil_stock","cout"],[(x.name,x.unit_price,x.sku or "",x.unit,x.stock_quantity,x.stock_minimum,x.cost_xof) for x in items])
     if kind=="documents":
@@ -597,13 +606,38 @@ async def import_billing_headers(organization_id:str,file:UploadFile=File(...),u
     try: rows=csv.DictReader(io.StringIO(raw.decode("utf-8-sig")))
     except Exception: raise HTTPException(422,"Fichier CSV d’entêtes invalide")
     created=0;errors=[]
+    allowed_styles={"standard","scan_gauche","scan_alasko","scan_centre","scan_compact","scan_facture_simple","moderne_clair","moderne_bandeau","moderne_minimal"}
+    allowed_fonts={"","times","arial","calibri","segoe","courier","trebuchet"}
+    def csv_bool(*keys,default=False):
+        value=next((row.get(key) for key in keys if row.get(key) not in (None,"")),None)
+        if value is None:return default
+        return str(value).strip().lower() in {"1","true","yes","oui","vrai","on"}
+    def csv_number(*keys,default=0):
+        value=next((row.get(key) for key in keys if row.get(key) not in (None,"")),None)
+        try:return float(str(value).replace(" ","").replace(",","."))
+        except (TypeError,ValueError):return default
     for number,row in enumerate(rows,start=2):
         name=(row.get("company_name") or row.get("nom") or row.get("entreprise") or "").strip()
         if not name: errors.append(f"Ligne {number}: nom entreprise manquant");continue
         try:
-            style=(row.get("document_style") or "standard").strip()
-            if style not in {"standard","scan_gauche","scan_alasko","scan_centre","scan_compact","scan_facture_simple","moderne_clair","moderne_bandeau","moderne_minimal"}: style="standard"
-            item=BillingHeader(organization_id=organization_id,company_name=name,address=(row.get("address") or row.get("adresse") or None),phone=(row.get("phone") or row.get("telephone") or None),email=(row.get("email") or None),nif=(row.get("nif") or None),rccm=(row.get("rccm") or None),document_style=style,is_default=created==0 and not db.query(BillingHeader).filter_by(organization_id=organization_id).first())
+            style=(row.get("document_style") or row.get("style_document") or "standard").strip()
+            if style not in allowed_styles: style="standard"
+            isb_enabled=csv_bool("isb_enabled","isb_applicable")
+            table_font=(row.get("table_font_family") or "").strip().lower()
+            if table_font not in allowed_fonts: table_font=""
+            table_size=csv_number("table_font_size",default=0)
+            item=BillingHeader(
+                organization_id=organization_id,company_name=name,
+                address=(row.get("address") or row.get("adresse") or None),
+                phone=(row.get("phone") or row.get("telephone") or None),email=(row.get("email") or None),
+                nif=(row.get("nif") or None),rccm=(row.get("rccm") or None),
+                logo_url=(row.get("logo_url") or row.get("logo") or None),document_style=style,
+                tax_enabled=False if isb_enabled else csv_bool("tax_enabled","tva_applicable"),
+                tax_rate=max(0,min(100,csv_number("tax_rate","taux_tva",default=19))),
+                isb_enabled=isb_enabled,isb_rate=max(0,min(100,csv_number("isb_rate","taux_isb",default=3))),
+                table_font_family=table_font or None,table_font_size=table_size if 8<=table_size<=14 else None,
+                is_default=created==0 and not db.query(BillingHeader).filter_by(organization_id=organization_id).first(),
+            )
             db.add(item);created+=1
         except Exception as error: errors.append(f"Ligne {number}: {error}")
     db.commit();return {"created":created,"errors":errors[:30]}
@@ -811,9 +845,16 @@ async def import_billing_products(organization_id:str,file:UploadFile=File(...),
     audit(db,user.id,"BILLING_PRODUCTS_IMPORTED","Product","csv",parameters={"created":created,"errors":len(errors)},result="SUCCESS");db.commit()
     return {"created":created,"errors":errors[:30],"message":"Les produits importés sont réservés à la facturation et ne sont pas visibles dans la Boutique."}
 @app.get("/api/v1/billing/invoices/{invoice_id}/pdf")
-def download_billing_invoice(invoice_id:str,user:User=Depends(current_user),db:Session=Depends(get_db)):
-    invoice=one(db,Invoice,invoice_id);require_member(db,user,invoice.organization_id);path=generate_invoice_pdf(db,invoice);db.commit()
-    return FileResponse(path,media_type="application/pdf",filename=f"{invoice.number}.pdf")
+def download_billing_invoice(invoice_id:str,document_type:str|None=None,user:User=Depends(current_user),db:Session=Depends(get_db)):
+    invoice=one(db,Invoice,invoice_id);require_member(db,user,invoice.organization_id)
+    selected=str(document_type or "").strip().upper()
+    if selected:
+        if selected not in BILLING_DOCUMENT_TYPES:raise HTTPException(422,"Type de document invalide")
+        path=generate_invoice_preview_pdf(db,invoice,selected)
+        filename=f"{invoice.number}-{selected.lower()}.pdf"
+    else:
+        path=generate_invoice_pdf(db,invoice);db.commit();filename=f"{invoice.number}.pdf"
+    return FileResponse(path,media_type="application/pdf",filename=filename)
 @app.get("/api/v1/business/stats")
 def business_stats(organization_id:str,user:User=Depends(current_user),db:Session=Depends(get_db)):
     require_member(db,user,organization_id);invoices=db.query(Invoice).filter_by(organization_id=organization_id).all();jobs=db.query(PrintJob).filter_by(organization_id=organization_id).all();return {"customers":db.query(Customer).filter_by(organization_id=organization_id).count(),"invoices":len(invoices),"paid_revenue":sum(float(i.total_amount) for i in invoices if i.status=="PAID"),"estimated_print_revenue":sum(float(j.estimated_cost or 0) for j in jobs),"completed_jobs":sum(j.status==JobStatus.COMPLETED for j in jobs)}

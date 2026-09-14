@@ -2,6 +2,7 @@
 from datetime import datetime, timezone
 from pathlib import Path
 import secrets
+from types import SimpleNamespace
 from reportlab.lib import colors
 from reportlab.lib.pagesizes import A4
 from reportlab.lib.units import mm
@@ -9,6 +10,8 @@ from reportlab.pdfgen import canvas
 from .config import settings
 from .billing_pdf import render_invoice_pdf
 from .models import BillingHeader, BillingProfile, Customer, Invoice, InvoiceLine, ShopOrder, ShopOrderLine
+
+BILLING_DOCUMENT_TYPES=frozenset({"INVOICE","QUOTE","PROFORMA","DELIVERY_NOTE","RECEIPT"})
 
 def money(value: float) -> str:
     return f"{float(value or 0):,.0f} FCFA".replace(",", " ")
@@ -106,4 +109,28 @@ def generate_invoice_pdf(db, invoice: Invoice) -> Path:
     path=settings.storage_dir / "invoices" / f"{invoice.number}.pdf"
     render_invoice_pdf(path,invoice,header,customer,lines)
     invoice.pdf_key=str(path.relative_to(settings.storage_dir))
+    return path
+
+
+def generate_invoice_preview_pdf(db, invoice: Invoice, document_type: str) -> Path:
+    """Render a selected document type without changing the saved invoice.
+
+    A user can preview an invoice as a quote, receipt or proforma before
+    duplicating it.  The SQLAlchemy invoice is intentionally never mutated:
+    its recorded type, number, payments and canonical PDF stay untouched.
+    """
+    selected=str(document_type or "").strip().upper()
+    if selected not in BILLING_DOCUMENT_TYPES:
+        raise ValueError("Type de document invalide")
+    header=db.get(BillingHeader,invoice.billing_header_id) if invoice.billing_header_id else default_billing_header(db,invoice.organization_id)
+    customer=db.get(Customer,invoice.customer_id) if invoice.customer_id else None
+    lines=db.query(InvoiceLine).filter_by(invoice_id=invoice.id).order_by(InvoiceLine.id).all()
+    preview=SimpleNamespace(
+        number=invoice.number,document_type=selected,issued_on=invoice.issued_on,
+        subject=invoice.subject,notes=invoice.notes,subtotal_amount=invoice.subtotal_amount,
+        discount_amount=invoice.discount_amount,tax_rate=invoice.tax_rate,
+        tax_amount=invoice.tax_amount,isb_amount=invoice.isb_amount,total_amount=invoice.total_amount,
+    )
+    path=settings.storage_dir / "invoices" / "previews" / f"{invoice.number}-{selected.lower()}-preview.pdf"
+    render_invoice_pdf(path,preview,header,customer,lines)
     return path

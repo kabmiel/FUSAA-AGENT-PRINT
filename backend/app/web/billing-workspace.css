@@ -42,6 +42,11 @@ body:has(#billing.active) .workspace main{max-width:none;min-width:0;width:100%;
 #billing .billing-hero h1{margin:2px 0;font-size:clamp(1.55rem,2.4vw,2rem);color:var(--bill-text)}
 #billing .billing-hero p{margin:0;color:var(--bill-muted)}
 #billing .billing-hero button,#billing .billing-actions button{width:auto;white-space:nowrap}
+#billing .billing-document-picker{display:grid;gap:4px;min-width:200px;color:var(--bill-muted);font-size:.7rem;font-weight:850;letter-spacing:.06em;text-transform:uppercase}
+#billing .billing-document-picker select{min-width:200px;margin:0;font-size:.84rem;letter-spacing:normal;text-transform:none}
+#billing .billing-selected-type{display:flex;align-items:center;gap:8px;flex-wrap:wrap;padding:8px 10px;border:1px solid var(--bill-border);border-radius:14px;background:#ffffff0b;color:var(--bill-muted);font-size:.76rem}
+#billing .billing-selected-type b{color:var(--bill-text);font-size:.84rem}
+#billing .billing-selected-type button{padding:7px 9px;font-size:.72rem}
 #billing .billing-eyebrow{color:var(--bill-accent);font-size:.68rem;font-weight:900;letter-spacing:.14em;text-transform:uppercase}
 #billing .billing-panel{padding:20px;border:1px solid var(--bill-border);border-radius:24px;background:linear-gradient(145deg,#121f31,#0d1828);margin-bottom:17px;box-shadow:0 15px 40px #0002}
 #billing .billing-panel h2,#billing .billing-panel h3{color:var(--bill-text);margin:0 0 12px}
@@ -62,6 +67,11 @@ body:has(#billing.active) .workspace main{max-width:none;min-width:0;width:100%;
 #billing .billing-table td,#billing .billing-table th{padding:12px;border-bottom:1px solid #ffffff12;vertical-align:middle}
 #billing .billing-table tr:last-child td{border-bottom:0}
 #billing .billing-table td button{width:auto;padding:7px 10px;margin:0 3px 0 0;font-size:.78rem}
+#billing .billing-type-badge{display:inline-flex;align-items:center;padding:5px 8px;border:1px solid #54dfd35b;border-radius:999px;background:#54dfd314;color:var(--bill-accent);font-size:.69rem;font-weight:850;white-space:nowrap}
+#billing .billing-row-type{display:grid;gap:6px;min-width:150px}
+#billing .billing-row-type select{width:100%;min-width:150px;margin:0;padding:7px 9px;font-size:.76rem}
+#billing .billing-icon-button{display:inline-flex;align-items:center;gap:6px}
+#billing .billing-icon-button svg{width:16px;height:16px}
 #billing .billing-form-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px}
 #billing .billing-form-grid label,#billing .billing-field{display:block;color:var(--bill-muted);font-size:.77rem;font-weight:750}
 #billing .billing-form-grid label input,#billing .billing-form-grid label select,#billing .billing-form-grid label textarea{margin-top:5px}
@@ -145,7 +155,7 @@ body:has(#billing.active) .workspace main{max-width:none;min-width:0;width:100%;
 @media(max-width:1100px){#billing .billing-kpis{grid-template-columns:repeat(2,minmax(0,1fr))}#billing .billing-composer,#billing .billing-split{grid-template-columns:minmax(0,1fr)}}
 @media(max-width:700px){#billing .billing-landing{padding:14px;border-radius:20px}#billing .billing-landing-intro{display:block}.billing-mini-stats{margin-top:14px}#billing .billing-card-grid{grid-template-columns:repeat(2,minmax(0,1fr));gap:9px}#billing .billing-glass-card{min-height:140px;padding:13px}#billing .billing-glass-card strong{font-size:.9rem}}
 @media(max-width:420px){#billing .billing-card-grid{grid-template-columns:1fr}#billing .billing-glass-card{min-height:112px}}
-@media(max-width:800px){#billing .billing-workspace{display:block}#billing .billing-menu{position:static;padding:12px;margin-bottom:16px;border-radius:17px}#billing .billing-menu h2{margin-bottom:9px;font-size:1rem}#billing .billing-menu-grid{grid-template-columns:repeat(5,minmax(0,1fr));gap:5px}#billing .billing-menu button{display:grid;justify-items:center;min-height:70px;padding:7px 4px;text-align:center;font-size:.66rem}#billing .billing-menu button i{width:25px;height:25px;margin:0 0 3px}#billing .billing-hero{align-items:flex-start;flex-direction:column}#billing .billing-form-grid{grid-template-columns:1fr}#billing .billing-line{grid-template-columns:minmax(120px,2fr) 58px 78px 36px;gap:4px}#billing .billing-line input{padding:7px}}
+@media(max-width:800px){#billing .billing-workspace{display:block}#billing .billing-menu{position:static;padding:12px;margin-bottom:16px;border-radius:17px}#billing .billing-menu h2{margin-bottom:9px;font-size:1rem}#billing .billing-menu-grid{grid-template-columns:repeat(5,minmax(0,1fr));gap:5px}#billing .billing-menu button{display:grid;justify-items:center;min-height:70px;padding:7px 4px;text-align:center;font-size:.66rem}#billing .billing-menu button i{width:25px;height:25px;margin:0 0 3px}#billing .billing-hero{align-items:flex-start;flex-direction:column}#billing .billing-document-picker,#billing .billing-document-picker select{width:100%;min-width:0}#billing .billing-form-grid{grid-template-columns:1fr}#billing .billing-line{grid-template-columns:minmax(120px,2fr) 58px 78px 36px;gap:4px}#billing .billing-line input{padding:7px}}
 @media(max-width:500px){#billing .billing-menu-grid{grid-template-columns:repeat(3,minmax(0,1fr))}#billingHomeBadge b{display:none}}
 @media(max-width:800px){#billing .billing-ai-fields{grid-template-columns:1fr}#billing .billing-ai-fields button{width:100%}#billing .billing-catalog-tools input{flex:1;min-width:145px}#billing .billing-lines-panel{overflow-x:auto}#billing .billing-line-head,#billing .billing-line{grid-template-columns:30px minmax(150px,2fr) 75px 90px 35px 35px;min-width:500px}#billing .billing-submit-row button{width:100%}}
 @media(max-width:800px){body:has(#billing.active) .workspace main{padding:12px}}
