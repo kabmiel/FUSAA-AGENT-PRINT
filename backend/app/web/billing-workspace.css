@@ -1,14 +1,17 @@
-body:has(#billing.active) .workspace{max-width:none}
-body:has(#billing.active) .workspace main{max-width:none;min-width:0}
-#billing .billing-workspace{--bill-bg:#0b1727;--bill-panel:#111d30;--bill-border:#294055;--bill-text:#eef6ff;--bill-muted:#a5b8c9;--bill-accent:#54dfd3;display:grid;grid-template-columns:250px minmax(0,1fr);gap:20px;min-height:calc(100vh - 130px);color:var(--bill-text)}
+body:has(#billing.active) .workspace{max-width:none;grid-template-columns:minmax(0,1fr)}
+body:has(#billing.active) .workspace>.sidebar{display:none}
+body:has(#billing.active) .workspace main{max-width:none;min-width:0;width:100%;padding:24px}
+#billing .billing-workspace{--bill-bg:#0b1727;--bill-panel:#111d30;--bill-border:#294055;--bill-text:#eef6ff;--bill-muted:#a5b8c9;--bill-accent:#54dfd3;display:grid;grid-template-columns:235px minmax(0,1fr);gap:24px;min-height:calc(100vh - 130px);color:var(--bill-text)}
 #billing .billing-workspace *{box-sizing:border-box}
 #billing .billing-menu{position:sticky;top:92px;align-self:start;padding:20px;border:1px solid var(--bill-border);border-radius:25px;background:linear-gradient(155deg,#102235,#0b1727);box-shadow:0 20px 55px #0003}
 #billing .billing-menu h2{font-size:1.3rem;margin:0 0 17px;color:var(--bill-text)}
-#billing .billing-menu-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:9px}
-#billing .billing-menu button{width:100%;min-height:82px;margin:0;padding:10px;text-align:center;border:1px solid var(--bill-border);border-radius:15px;background:#ffffff09;color:var(--bill-muted);box-shadow:none;font-size:.75rem}
-#billing .billing-menu button i{display:grid;place-items:center;width:31px;height:31px;margin:0 auto 6px;border:1px solid #50e0d06b;border-radius:10px;background:#4bdfd123;color:var(--bill-accent);font-style:normal;font-size:1.15rem}
+#billing .billing-back{display:inline-block;margin-bottom:15px;color:var(--bill-accent);text-decoration:none;font-size:.78rem;font-weight:850}
+#billing .billing-back:hover{text-decoration:underline}
+#billing .billing-menu-grid{display:grid;grid-template-columns:1fr;gap:8px}
+#billing .billing-menu button{display:flex;align-items:center;gap:11px;width:100%;min-height:55px;margin:0;padding:9px 12px;text-align:left;border:1px solid transparent;border-radius:16px;background:#ffffff0a;color:var(--bill-muted);box-shadow:none;font-size:.84rem}
+#billing .billing-menu button i{display:grid;place-items:center;flex:none;width:29px;height:29px;border:1px solid #50e0d06b;border-radius:9px;background:#4bdfd123;color:var(--bill-accent);font-style:normal}
 #billing .billing-menu button i svg{width:18px;height:18px}
-#billing .billing-menu button span{display:block;line-height:1.1}
+#billing .billing-menu button span{display:block;line-height:1.2}
 #billing .billing-menu button:hover,#billing .billing-menu button.active{border-color:#54dfd35b;background:linear-gradient(100deg,#22c9b82a,#2385e917);color:var(--bill-text)}
 #billing .billing-menu button:focus-visible,#billingHomeBadge:focus-visible{outline:3px solid #54dfd3;outline-offset:3px}
 #billing .billing-main{min-width:0}
@@ -41,10 +44,43 @@ body:has(#billing.active) .workspace main{max-width:none;min-width:0}
 #billing .billing-form-grid label input,#billing .billing-form-grid label select,#billing .billing-form-grid label textarea{margin-top:5px}
 #billing .billing-form-grid .wide{grid-column:1/-1}
 #billing .billing-composer{display:grid;grid-template-columns:minmax(260px,.85fr) minmax(0,1.3fr);gap:17px}
+#billing .billing-composer{grid-template-columns:minmax(350px,.84fr) minmax(0,1.16fr)}
+#billing .billing-composer>section{min-width:0}
 #billing .billing-composer .billing-table{min-width:400px}
-#billing .billing-line{display:grid;grid-template-columns:minmax(150px,2.3fr) 85px 112px 42px;gap:8px;align-items:center;margin:8px 0}
+#billing .billing-ai-title{justify-content:space-between;align-items:center;margin-bottom:14px;padding-bottom:10px;border-bottom:1px solid var(--bill-border)}
+#billing .billing-ai-title h2{margin:0}
+#billing .billing-ai-fields{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr) minmax(0,1.2fr) auto;gap:10px;align-items:end}
+#billing .billing-ai-fields label{display:block;color:var(--bill-muted);font-size:.78rem;font-weight:750}
+#billing .billing-ai-fields label input,#billing .billing-ai-fields label select{margin:5px 0 0}
+#billing .billing-ai-fields button{min-width:170px;width:auto;margin:0 0 1px}
+#billing .billing-catalog-heading{display:flex;gap:12px;align-items:flex-start;justify-content:space-between;margin-bottom:12px}
+#billing .billing-catalog-heading h2{flex:none;line-height:1.15;margin-top:10px}
+#billing .billing-catalog-tools{display:flex;gap:7px;flex-wrap:wrap;justify-content:flex-end;align-items:center;min-width:0}
+#billing .billing-catalog-tools button{width:auto;margin:0;padding:9px 11px;white-space:nowrap;font-size:.75rem}
+#billing .billing-catalog-tools input{width:150px;max-width:100%;margin:0;padding:9px 10px;font-size:.75rem}
+#billing .billing-catalog-table{max-height:360px;overflow:auto}
+#billing .billing-catalog-table .billing-table{min-width:530px}
+#billing .billing-catalog-table td,#billing .billing-catalog-table th{padding:9px 6px}
+#billing .billing-catalog-table td small{display:block;margin-top:3px;color:var(--bill-muted);font-size:.67rem}
+#billing .billing-catalog-table .billing-round-action{width:36px;height:36px;padding:0;margin:0;border-radius:50%;font-size:1rem}
+#billing .billing-lines-title{justify-content:space-between;margin-bottom:12px}
+#billing .billing-lines-title h2{margin:0}
+#billing .billing-lines-title button{width:auto;margin:0}
+#billing .billing-line-head,#billing .billing-line{display:grid;grid-template-columns:35px minmax(130px,2fr) 90px 110px 42px;gap:7px;align-items:center}
+#billing .billing-line-head{margin:0 -10px;padding:10px;background:#ffffff0a;color:var(--bill-muted);font-size:.65rem;font-weight:850;letter-spacing:.09em;text-transform:uppercase}
+#billing .billing-line{margin:0 -10px;padding:8px 10px;border-bottom:1px solid var(--bill-border)}
+#billing .billing-line-number{text-align:center;font-size:.78rem;font-weight:800}
 #billing .billing-line input{min-width:0}
-#billing .billing-line button{padding:9px 0}
+#billing .billing-line button{width:35px;height:35px;margin:0;padding:0;border-radius:50%}
+#billing .billing-submit-row{justify-content:flex-end;border-top:1px solid var(--bill-border);padding-top:12px}
+#billing .billing-submit-row button{width:auto;min-width:220px;margin:0}
+#billing .billing-quick-dialog{width:min(520px,calc(100vw - 30px));padding:23px;border:1px solid #58dbd386;border-radius:22px;background:#101d2e;color:#e9f4ff;box-shadow:0 30px 100px #0009}
+#billing .billing-quick-dialog::backdrop{background:#06101ac2;backdrop-filter:blur(5px)}
+#billing .billing-quick-dialog h2{margin:0}
+#billing .billing-quick-dialog button{width:auto}
+#billing .billing-header-logo{display:flex;align-items:center;gap:14px;padding:12px;border:1px solid var(--bill-border);border-radius:14px}
+#billing .billing-header-logo img{width:78px;height:78px;object-fit:contain;border-radius:10px;background:#fff}
+#billing .billing-header-logo button{width:auto;margin-top:7px}
 #billing .billing-total{font-size:1.25rem;font-weight:900;text-align:right;color:var(--bill-accent);margin:16px 0}
 #billing .billing-empty{padding:24px;text-align:center;color:var(--bill-muted)}
 #billing .billing-note{padding:12px;border:1px solid #56ddd04a;border-radius:13px;background:#4edbcb12;color:var(--bill-text)}
@@ -56,7 +92,7 @@ body:has(#billing.active) .workspace main{max-width:none;min-width:0}
 #billing .billing-report-bars{display:flex;align-items:end;gap:8px;min-height:150px}
 #billing .billing-report-bars i{flex:1;min-width:15px;border-radius:7px 7px 0 0;background:linear-gradient(#55e2d2,#2985ea)}
 #billing .billing-report-bars span{display:block;font-size:.7rem;color:var(--bill-muted)}
-#billingHomeBadge{display:flex;align-items:center;gap:14px;width:100%;max-width:540px;margin:14px 0 20px;padding:14px 17px;text-align:left;border:1px solid #54dfd399;border-radius:19px;background:linear-gradient(115deg,#173b4d,#14305a);box-shadow:0 14px 35px #19a9b81c}
+#billingHomeBadge{display:flex;align-items:center;gap:16px;width:100%;margin:0 0 20px;padding:19px 22px;text-align:left;border:1px solid #54dfd399;border-radius:20px;background:linear-gradient(115deg,#173b4d,#14305a);box-shadow:0 14px 35px #19a9b81c}
 #billingHomeBadge .billing-home-icon{display:grid;place-items:center;width:45px;height:45px;border-radius:13px;background:linear-gradient(135deg,#31d9c5,#287ee9);font-size:1.4rem}
 #billingHomeBadge .billing-home-icon svg{width:24px;height:24px}
 #billingHomeBadge strong,#billingHomeBadge small{display:block}
@@ -74,8 +110,13 @@ body:has(#billing.active) .workspace main{max-width:none;min-width:0}
 :root[data-theme="light"] #billing .billing-workspace input,:root[data-theme="light"] #billing .billing-workspace select,:root[data-theme="light"] #billing .billing-workspace textarea{background:#fff;color:#163148}
 :root[data-theme="light"] #billing .billing-workspace button.secondary{background:#f0f6fa;color:#163148}
 :root[data-theme="light"] #billing .billing-note{background:#e2f6f2;color:#163148}
+:root[data-theme="light"] #billing .billing-line-head{background:#eaf3f7}
+:root[data-theme="light"] #billing .billing-quick-dialog{background:#fff;color:#163148}
 :root[data-theme="light"] #billingHomeBadge{background:linear-gradient(115deg,#eefbf8,#e8f3ff);color:#17344c;box-shadow:0 12px 30px #4464771a}
 :root[data-theme="light"] #billingHomeBadge small{color:#507184}
-@media(max-width:1100px){#billing .billing-kpis{grid-template-columns:repeat(2,minmax(0,1fr))}#billing .billing-composer,#billing .billing-split{grid-template-columns:1fr}}
-@media(max-width:800px){#billing .billing-workspace{display:block}#billing .billing-menu{position:static;padding:12px;margin-bottom:16px;border-radius:17px}#billing .billing-menu h2{margin-bottom:9px;font-size:1rem}#billing .billing-menu-grid{grid-template-columns:repeat(5,minmax(0,1fr));gap:5px}#billing .billing-menu button{min-height:70px;padding:7px 4px;font-size:.66rem}#billing .billing-menu button i{width:25px;height:25px;margin-bottom:3px}#billing .billing-hero{align-items:flex-start;flex-direction:column}#billing .billing-form-grid{grid-template-columns:1fr}#billing .billing-line{grid-template-columns:minmax(120px,2fr) 58px 78px 36px;gap:4px}#billing .billing-line input{padding:7px}}
+@media(max-width:1250px){#billing .billing-ai-fields{grid-template-columns:repeat(2,minmax(0,1fr))}#billing .billing-catalog-heading{display:block}#billing .billing-catalog-tools{justify-content:flex-start}}
+@media(max-width:1100px){#billing .billing-kpis{grid-template-columns:repeat(2,minmax(0,1fr))}#billing .billing-composer,#billing .billing-split{grid-template-columns:minmax(0,1fr)}}
+@media(max-width:800px){#billing .billing-workspace{display:block}#billing .billing-menu{position:static;padding:12px;margin-bottom:16px;border-radius:17px}#billing .billing-menu h2{margin-bottom:9px;font-size:1rem}#billing .billing-menu-grid{grid-template-columns:repeat(5,minmax(0,1fr));gap:5px}#billing .billing-menu button{display:grid;justify-items:center;min-height:70px;padding:7px 4px;text-align:center;font-size:.66rem}#billing .billing-menu button i{width:25px;height:25px;margin:0 0 3px}#billing .billing-hero{align-items:flex-start;flex-direction:column}#billing .billing-form-grid{grid-template-columns:1fr}#billing .billing-line{grid-template-columns:minmax(120px,2fr) 58px 78px 36px;gap:4px}#billing .billing-line input{padding:7px}}
 @media(max-width:500px){#billing .billing-menu-grid{grid-template-columns:repeat(3,minmax(0,1fr))}#billingHomeBadge b{display:none}}
+@media(max-width:800px){#billing .billing-ai-fields{grid-template-columns:1fr}#billing .billing-ai-fields button{width:100%}#billing .billing-catalog-tools input{flex:1;min-width:145px}#billing .billing-lines-panel{overflow-x:auto}#billing .billing-line-head,#billing .billing-line{grid-template-columns:30px minmax(150px,2fr) 75px 90px 35px;min-width:455px}#billing .billing-submit-row button{width:100%}}
+@media(max-width:800px){body:has(#billing.active) .workspace main{padding:12px}}

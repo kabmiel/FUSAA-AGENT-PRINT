@@ -1,3 +1,4 @@
+import asyncio
 import secrets
 import jwt
 import hashlib
@@ -579,6 +580,23 @@ def delete_billing_header(header_id:str,user:User=Depends(current_user),db:Sessi
     was_default=item.is_default;organization_id=item.organization_id;db.delete(item);db.flush()
     if was_default:default_billing_header(db,organization_id)
     audit(db,user.id,"BILLING_HEADER_DELETED","BillingHeader",header_id,result="SUCCESS");db.commit();return {"ok":True}
+@app.post("/api/v1/billing/headers/{header_id}/logo")
+async def upload_billing_header_logo(header_id:str,file:UploadFile=File(...),user:User=Depends(current_user),db:Session=Depends(get_db)):
+    item=one(db,BillingHeader,header_id);require_org_admin(db,user,item.organization_id)
+    if not (settings.cloudinary_cloud_name and settings.cloudinary_api_key and settings.cloudinary_api_secret):
+        raise HTTPException(503,"Cloudinary n’est pas configuré pour les logos.")
+    if file.content_type not in {"image/png","image/jpeg","image/webp"}:
+        raise HTTPException(422,"Choisissez un logo PNG, JPEG ou WebP.")
+    content=await file.read(5*1024*1024+1)
+    if len(content)>5*1024*1024:raise HTTPException(413,"Le logo ne doit pas dépasser 5 Mo.")
+    try:
+        import cloudinary
+        import cloudinary.uploader
+        cloudinary.config(cloud_name=settings.cloudinary_cloud_name,api_key=settings.cloudinary_api_key,api_secret=settings.cloudinary_api_secret,secure=True)
+        result=await asyncio.to_thread(cloudinary.uploader.upload,content,folder="fusaa-shop/billing-headers",resource_type="image",public_id=f"{item.id}-{secrets.token_hex(4)}",overwrite=False)
+    except Exception:raise HTTPException(502,"Envoi du logo impossible. Vérifiez la configuration Cloudinary.")
+    item.logo_url=result.get("secure_url");audit(db,user.id,"BILLING_HEADER_LOGO_UPLOADED","BillingHeader",item.id,result="SUCCESS");db.commit()
+    return billing_header_out(item)
 @app.get("/api/v1/billing/invoices")
 def list_billing_invoices(organization_id:str,page:int=1,page_size:int=0,user:User=Depends(current_user),db:Session=Depends(get_db)):
     require_member(db,user,organization_id);query=db.query(Invoice).filter_by(organization_id=organization_id).order_by(Invoice.created_at.desc())
@@ -1551,7 +1569,7 @@ def impression_index():return HTMLResponse((Path(__file__).parent/"web"/"public.
 def shop_index(number:str|None=None,token:str|None=None):return HTMLResponse((Path(__file__).parent/"web"/"shop.html").read_text(encoding="utf-8"))
 
 @app.get("/admin",response_class=HTMLResponse)
-def admin_index():return HTMLResponse((Path(__file__).parent/"web"/"index.html").read_text(encoding="utf-8"))
+def admin_index():return HTMLResponse((Path(__file__).parent/"web"/"index.html").read_text(encoding="utf-8"),headers={"Cache-Control":"no-store, max-age=0"})
 
 @app.get("/inscription",response_class=HTMLResponse)
 def registration_index():return HTMLResponse((Path(__file__).parent/"web"/"register.html").read_text(encoding="utf-8"))
@@ -1575,7 +1593,7 @@ def browser_extension_download():
 def manifest(): return {"name":"FUSAA Service","short_name":"FUSAA","start_url":"/","display":"standalone","background_color":"#07111f","theme_color":"#07111f"}
 
 @app.get("/app.js",response_class=HTMLResponse)
-def app_js():return HTMLResponse((Path(__file__).parent/"web"/"app.js").read_text(encoding="utf-8"),media_type="application/javascript")
+def app_js():return HTMLResponse((Path(__file__).parent/"web"/"app.js").read_text(encoding="utf-8"),media_type="application/javascript",headers={"Cache-Control":"no-store, max-age=0"})
 @app.get("/billing-workspace.js",response_class=HTMLResponse)
 def billing_workspace_js():return HTMLResponse((Path(__file__).parent/"web"/"billing-workspace.js").read_text(encoding="utf-8"),media_type="application/javascript",headers={"Cache-Control":"no-store, max-age=0"})
 @app.get("/billing-workspace.css",response_class=HTMLResponse)

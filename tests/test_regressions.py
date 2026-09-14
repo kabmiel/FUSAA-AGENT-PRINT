@@ -15,7 +15,7 @@ ROOT=Path(__file__).parents[1]
 sys.path[:0]=[str(ROOT/"backend"),str(ROOT/"local-agent")]
 from app.database import Base
 from app.models import User,Organization,OrganizationMember,Workshop,WorkshopMember,Document,PrintJob,ComputerAgent,Printer,JobStatus,LocalActivity,BrowserLink,GuestOrder,ShopCategory,ShopProduct,AnonymousVisit,Invoice
-from app.main import cancel_job,confirm_job,prepare_job,central_supervision,list_jobs,list_documents,audit_history,list_workshop_members,update_workshop_member,remove_workshop_member,assign_workshop_member,register,create_guest_order,guest_order_status,verify_guest_payment,list_guest_orders,export_guest_orders,archive_guest_order,restore_guest_order,set_public_pricing,get_public_pricing,refresh_guest_quote,create_guest_receipt,production_dashboard,index,impression_index,admin_index,public_tracking_page,delete_job,archive_public_job,create_shop_order,shop_public_products,shop_public_products_page,shop_admin_products_page,record_public_visit,visitor_analytics,create_billing_document,duplicate_billing_invoice,create_stock_movement,billing_stock_alerts,create_billing_category,create_billing_product,list_billing_products,create_customer,update_billing_customer,delete_billing_customer,get_billing_invoice,record_billing_payment,list_billing_headers,create_billing_header,billing_dashboard,billing_catalog_page
+from app.main import cancel_job,confirm_job,prepare_job,central_supervision,list_jobs,list_documents,audit_history,list_workshop_members,update_workshop_member,remove_workshop_member,assign_workshop_member,register,create_guest_order,guest_order_status,verify_guest_payment,list_guest_orders,export_guest_orders,archive_guest_order,restore_guest_order,set_public_pricing,get_public_pricing,refresh_guest_quote,create_guest_receipt,production_dashboard,index,impression_index,admin_index,public_tracking_page,delete_job,archive_public_job,create_shop_order,shop_public_products,shop_public_products_page,shop_admin_products_page,record_public_visit,visitor_analytics,create_billing_document,duplicate_billing_invoice,create_stock_movement,billing_stock_alerts,create_billing_category,create_billing_product,list_billing_products,create_customer,update_billing_customer,delete_billing_customer,get_billing_invoice,record_billing_payment,list_billing_headers,create_billing_header,billing_dashboard,billing_catalog_page,upload_billing_header_logo
 from app.connectors import IncomingDocument, ingest_incoming_document
 from app.config import settings
 from app.schemas import JobOptions,GuestPaymentIn,PublicPricingIn,PublicVisitIn,RegisterIn
@@ -261,6 +261,8 @@ def test_public_home_and_admin_have_separate_shells():
     assert 'aria-live="polite"' in public and "prefers-reduced-motion" in public
     assert tracked==public
     assert "app.js" in admin and "guestPhone" not in admin
+    assert "billing-workspace.js?v=" in admin
+    assert admin_index().headers["cache-control"]=="no-store, max-age=0"
     assert "fontScale" in (ROOT/"backend"/"app"/"web"/"app.js").read_text(encoding="utf-8")
 
 def test_shop_order_uses_fcfa_stock_and_public_workshop(setup_db,monkeypatch,tmp_path):
@@ -311,6 +313,26 @@ def test_boulangerie_headers_apply_to_multiline_invoices_and_pdf(setup_db,tmp_pa
     assert "Atelier test" in text and "Service" in text and "ISB" in text
     assert billing_dashboard("o",admin,db)["headers"]==2
     assert billing_catalog_page("o",page=1,page_size=10,user=admin,db=db)["total"]==0
+
+def test_billing_header_logo_requires_cloudinary_configuration(setup_db,monkeypatch):
+    db,_,admin=setup_db
+    header=list_billing_headers("o",admin,db)[0]
+    monkeypatch.setattr(settings,"cloudinary_cloud_name","")
+    upload=UploadFile(file=BytesIO(b"image"),filename="logo.png",headers=Headers({"content-type":"image/png"}))
+    with pytest.raises(HTTPException) as error:
+        asyncio.run(upload_billing_header_logo(header["id"],upload,admin,db))
+    assert error.value.status_code==503
+
+def test_billing_header_logo_upload_updates_the_company_header(setup_db,monkeypatch):
+    import cloudinary.uploader
+    db,_,admin=setup_db
+    header=list_billing_headers("o",admin,db)[0]
+    for key,value in (("cloudinary_cloud_name","test-cloud"),("cloudinary_api_key","test-key"),("cloudinary_api_secret","test-secret")):
+        monkeypatch.setattr(settings,key,value)
+    monkeypatch.setattr(cloudinary.uploader,"upload",lambda content,**kwargs:{"secure_url":"https://res.cloudinary.com/test-cloud/image/upload/logo.png"})
+    upload=UploadFile(file=BytesIO(b"image"),filename="logo.png",headers=Headers({"content-type":"image/png"}))
+    updated=asyncio.run(upload_billing_header_logo(header["id"],upload,admin,db))
+    assert updated["logo_url"]=="https://res.cloudinary.com/test-cloud/image/upload/logo.png"
 
 def test_stock_movement_and_alerts_cover_both_catalogues(setup_db):
     db,_,admin=setup_db
