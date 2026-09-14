@@ -682,8 +682,10 @@ async def upload_billing_header_logo(header_id:str,file:UploadFile=File(...),use
 def list_billing_invoices(organization_id:str,page:int=1,page_size:int=0,user:User=Depends(current_user),db:Session=Depends(get_db)):
     require_member(db,user,organization_id);query=db.query(Invoice).filter_by(organization_id=organization_id).order_by(Invoice.created_at.desc())
     items=query.offset((max(1,page)-1)*min(page_size,100)).limit(min(page_size,100)).all() if page_size>0 else query.all()
-    customers={item.id:item for item in db.query(Customer).filter_by(organization_id=organization_id).all()}
-    payments=db.query(Payment).join(Invoice,Payment.invoice_id==Invoice.id).filter(Invoice.organization_id==organization_id,Payment.status=="CONFIRMED").all();settled={}
+    customer_ids={item.customer_id for item in items if item.customer_id}
+    customers={item.id:item for item in db.query(Customer).filter(Customer.id.in_(customer_ids)).all()} if customer_ids else {}
+    invoice_ids=[item.id for item in items]
+    payments=db.query(Payment).filter(Payment.invoice_id.in_(invoice_ids),Payment.status=="CONFIRMED").all() if invoice_ids else [];settled={}
     for payment in payments:settled[payment.invoice_id]=settled.get(payment.invoice_id,0)+float(payment.amount)
     return [{"id":item.id,"number":item.number,"status":item.status,"document_type":item.document_type,"subject":item.subject,"total_amount":float(item.total_amount),"paid_amount":settled.get(item.id,0),"balance_amount":max(0,float(item.total_amount)-settled.get(item.id,0)),"customer_name":customers.get(item.customer_id).name if item.customer_id in customers else None,"currency":item.currency,"created_at":item.created_at,"source_shop_order_id":item.source_shop_order_id} for item in items]
 @app.get("/api/v1/billing/dashboard")
@@ -716,7 +718,44 @@ def get_billing_invoice(invoice_id:str,user:User=Depends(current_user),db:Sessio
     invoice=one(db,Invoice,invoice_id);require_member(db,user,invoice.organization_id);customer=db.get(Customer,invoice.customer_id) if invoice.customer_id else None
     lines=db.query(InvoiceLine).filter_by(invoice_id=invoice.id).all();payments=db.query(Payment).filter_by(invoice_id=invoice.id).order_by(Payment.created_at.desc()).all();paid=sum(float(item.amount) for item in payments if item.status=="CONFIRMED")
     header=db.get(BillingHeader,invoice.billing_header_id) if invoice.billing_header_id else None
-    return {"id":invoice.id,"number":invoice.number,"document_type":invoice.document_type,"status":invoice.status,"subject":invoice.subject,"notes":invoice.notes,"currency":invoice.currency,"issued_on":invoice.issued_on,"billing_header_id":invoice.billing_header_id,"header_name":header.company_name if header else None,"subtotal_amount":float(invoice.subtotal_amount or 0),"discount_amount":float(invoice.discount_amount or 0),"tax_rate":float(invoice.tax_rate or 0),"tax_amount":float(invoice.tax_amount or 0),"isb_amount":float(invoice.isb_amount or 0),"total_amount":float(invoice.total_amount),"paid_amount":paid,"balance_amount":max(0,float(invoice.total_amount)-paid),"customer":{"id":customer.id,"name":customer.name,"phone":customer.phone,"email":customer.email,"address":customer.address} if customer else None,"lines":[{"id":line.id,"description":line.description,"unit":line.unit,"quantity":line.quantity,"unit_amount":float(line.unit_amount),"total_amount":float(line.total_amount)} for line in lines],"payments":[{"id":payment.id,"amount":float(payment.amount),"method":payment.method,"status":payment.status,"reference":payment.reference,"created_at":payment.created_at} for payment in payments]}
+    return {"id":invoice.id,"number":invoice.number,"document_type":invoice.document_type,"status":invoice.status,"subject":invoice.subject,"notes":invoice.notes,"currency":invoice.currency,"issued_on":invoice.issued_on,"billing_header_id":invoice.billing_header_id,"header_name":header.company_name if header else None,"source_shop_order_id":invoice.source_shop_order_id,"subtotal_amount":float(invoice.subtotal_amount or 0),"discount_amount":float(invoice.discount_amount or 0),"tax_rate":float(invoice.tax_rate or 0),"tax_amount":float(invoice.tax_amount or 0),"isb_amount":float(invoice.isb_amount or 0),"total_amount":float(invoice.total_amount),"paid_amount":paid,"balance_amount":max(0,float(invoice.total_amount)-paid),"customer":{"id":customer.id,"name":customer.name,"phone":customer.phone,"email":customer.email,"address":customer.address} if customer else None,"lines":[{"id":line.id,"shop_product_id":line.shop_product_id,"description":line.description,"unit":line.unit,"quantity":line.quantity,"unit_amount":float(line.unit_amount),"total_amount":float(line.total_amount)} for line in lines],"payments":[{"id":payment.id,"amount":float(payment.amount),"method":payment.method,"status":payment.status,"reference":payment.reference,"created_at":payment.created_at} for payment in payments]}
+@app.put("/api/v1/billing/invoices/{invoice_id}")
+def update_billing_invoice(invoice_id:str,data:BillingDocumentIn,user:User=Depends(current_user),db:Session=Depends(get_db)):
+    """Update a manual unpaid document and invalidate its cached PDF.
+
+    Boutique orders and documents with confirmed payments remain immutable so a
+    correction cannot alter a customer order or accounting history.
+    """
+    invoice=one(db,Invoice,invoice_id);require_member(db,user,invoice.organization_id)
+    if data.organization_id!=invoice.organization_id:raise HTTPException(422,"Organisation invalide")
+    if invoice.source_shop_order_id:raise HTTPException(409,"La facture d'une commande Boutique ne peut pas etre modifiee ici.")
+    if invoice.status not in {"DRAFT","PENDING_PAYMENT"}:raise HTTPException(409,"Seuls les documents en brouillon ou en attente peuvent etre modifies.")
+    if db.query(Payment).filter_by(invoice_id=invoice.id,status="CONFIRMED").first():raise HTTPException(409,"Un paiement est deja enregistre pour ce document. Creez un avoir ou un nouveau document.")
+    customer=one(db,Customer,data.customer_id) if data.customer_id else None
+    if customer and customer.organization_id!=invoice.organization_id:raise HTTPException(422,"Client d'une autre organisation")
+    if not customer and data.customer_name:
+        customer=Customer(organization_id=invoice.organization_id,name=data.customer_name.strip(),phone=(data.customer_phone or "").strip() or None,email=(data.customer_email or "").strip() or None,address=(data.customer_address or "").strip() or None)
+        db.add(customer);db.flush()
+    if not customer:
+        customer=db.query(Customer).filter_by(organization_id=invoice.organization_id,name="Client comptant").first()
+        if not customer:
+            customer=Customer(organization_id=invoice.organization_id,name="Client comptant");db.add(customer);db.flush()
+    header=db.get(BillingHeader,data.billing_header_id) if data.billing_header_id else default_billing_header(db,invoice.organization_id)
+    if not header or header.organization_id!=invoice.organization_id:raise HTTPException(422,"Entete de facturation introuvable")
+    product_ids=[line.product_id for line in data.lines if line.product_id]
+    shop_products={item.id:item for item in db.query(ShopProduct).filter(ShopProduct.organization_id==invoice.organization_id,ShopProduct.id.in_(product_ids)).all()}
+    billing_products={item.id:item for item in db.query(Product).filter(Product.organization_id==invoice.organization_id,Product.id.in_(product_ids),Product.enabled.is_(True)).all()}
+    if len(shop_products)+len(billing_products)!=len(set(product_ids)):raise HTTPException(422,"Produit de facturation introuvable")
+    subtotal=sum(line.quantity*line.unit_amount for line in data.lines);discount=min(data.discount_amount,subtotal);tax_amount,isb_amount,total=header_tax(header,subtotal,discount)
+    invoice.customer_id=customer.id;invoice.billing_header_id=header.id;invoice.issued_on=data.issued_on or invoice.issued_on or datetime.now(timezone.utc)
+    invoice.document_type=data.document_type;invoice.status="PENDING_PAYMENT" if data.document_type=="INVOICE" else "DRAFT";invoice.subject=data.subject;invoice.notes=data.notes
+    invoice.subtotal_amount=subtotal;invoice.discount_amount=discount;invoice.tax_rate=float(header.tax_rate or 0) if header.tax_enabled else 0;invoice.tax_amount=tax_amount;invoice.isb_amount=isb_amount;invoice.total_amount=total;invoice.pdf_key=None
+    db.query(InvoiceLine).filter_by(invoice_id=invoice.id).delete(synchronize_session=False);db.flush()
+    for line in data.lines:
+        product=shop_products.get(line.product_id) if line.product_id else None
+        db.add(InvoiceLine(invoice_id=invoice.id,shop_product_id=product.id if product else None,description=line.description,unit=line.unit,quantity=line.quantity,unit_amount=line.unit_amount,total_amount=line.quantity*line.unit_amount))
+    audit(db,user.id,"BILLING_DOCUMENT_UPDATED","Invoice",invoice.id,parameters={"document_type":invoice.document_type,"total":float(invoice.total_amount)},result="SUCCESS");db.commit()
+    return {"id":invoice.id,"number":invoice.number,"document_type":invoice.document_type,"total_amount":float(invoice.total_amount),"status":invoice.status}
 @app.post("/api/v1/billing/invoices/{invoice_id}/payments",status_code=201)
 def record_billing_payment(invoice_id:str,data:PaymentIn,user:User=Depends(current_user),db:Session=Depends(get_db)):
     return record_payment(invoice_id,data,user,db)

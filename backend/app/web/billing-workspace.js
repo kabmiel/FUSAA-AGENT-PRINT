@@ -1,5 +1,20 @@
 /* Facturation FUSAA : espace de gestion inspiré des parcours Boulangerie. */
-var billingState={tab:"dashboard",page:1,productPage:1,productSearch:"",products:[],headers:[],customers:[],categories:[],selectedHeader:null,documentType:"INVOICE"};
+const billingProductSearchBase=billingProductSearch;
+billingProductSearch=async function(...args){const started=showFusaaOperation("Mise a jour du catalogue…");try{return await billingProductSearchBase(...args)}finally{await hideFusaaOperation(started)}};
+async function billingLoading(label,work){const started=showFusaaOperation(label);try{return await work()}finally{await hideFusaaOperation(started)}}
+const billingClientsBase=billingClients;
+billingClients=async function(...args){return billingLoading("Chargement des clients…",()=>billingClientsBase(...args))};
+const billingHeadersBase=billingHeaders;
+billingHeaders=async function(...args){return billingLoading("Chargement des entetes…",()=>billingHeadersBase(...args))};
+const billingProductsBase=billingProducts;
+billingProducts=async function(...args){return billingLoading("Chargement des produits…",()=>billingProductsBase(...args))};
+const billingCategoriesBase=billingCategoryPage;
+billingCategoryPage=async function(...args){return billingLoading("Chargement des categories…",()=>billingCategoriesBase(...args))};
+const billingEditDocumentBase=billingEditDocument;
+billingEditDocument=async function(id){const started=showFusaaOperation("Ouverture de la facture…");try{return await billingEditDocumentBase(id)}finally{await hideFusaaOperation(started)}};
+const billingInvoiceDetailBase=window.openBillingInvoice;
+if(billingInvoiceDetailBase)openBillingInvoice=async function(id){const started=showFusaaOperation("Chargement du document…");try{return await billingInvoiceDetailBase(id)}finally{await hideFusaaOperation(started)}};
+var billingState={tab:"dashboard",page:1,productPage:1,productSearch:"",products:[],headers:[],customers:[],categories:[],selectedHeader:null,documentType:"INVOICE",editingInvoice:null};
 const billingMenuLabels={dashboard:"Tableau de bord",new:"Nouvelle facture",documents:"Documents",clients:"Clients",products:"Produits",headers:"Entêtes",categories:"Catégories",reports:"Rapports",maintenance:"Maintenance",settings:"Paramètres"};
 var billingLabels=billingMenuLabels;
 const billingDocumentTypes={INVOICE:"Facture",QUOTE:"Devis",PROFORMA:"Facture proforma",DELIVERY_NOTE:"Bon de livraison",RECEIPT:"Reçu"};
@@ -70,7 +85,9 @@ async function billingOpen(tab){
     billingEnsureExport(tab);
   }catch(error){billingSet(billingHero(billingMenuLabels[tab],"Une erreur empêche le chargement.")+'<div class="billing-panel billing-note">'+esc(error.message)+'</div>');tell(error.message)}
 }
-function billingExport(kind){const url="/api/v1/billing/export/"+kind+".csv?organization_id="+encodeURIComponent(org);fetch(url,{headers:{Authorization:"Bearer "+token}}).then(response=>{if(!response.ok)throw Error("Export impossible");return response.blob()}).then(blob=>{const link=document.createElement("a");link.href=URL.createObjectURL(blob);link.download="fusaa-"+kind+".csv";link.click();URL.revokeObjectURL(link.href)}).catch(error=>tell(error.message))}
+const billingOpenBase=billingOpen;
+billingOpen=async function(tab){const label=billingMenuLabels[tab]||"Facturation",started=showFusaaOperation("Chargement · "+label+"…");try{return await billingOpenBase(tab)}finally{await hideFusaaOperation(started)}};
+async function billingExport(kind){const started=showFusaaOperation("Preparation de l export…");try{const url="/api/v1/billing/export/"+kind+".csv?organization_id="+encodeURIComponent(org),response=await fetch(url,{headers:{Authorization:"Bearer "+token}});if(!response.ok)throw Error("Export impossible");const blob=await response.blob(),link=document.createElement("a");link.href=URL.createObjectURL(blob);link.download="fusaa-"+kind+".csv";link.click();setTimeout(()=>URL.revokeObjectURL(link.href),1000)}catch(error){tell(error.message)}finally{await hideFusaaOperation(started)}}
 function billingEnsureExport(tab){const kinds={documents:"documents",clients:"clients",products:"products",headers:"headers"};const kind=kinds[tab];if(!kind)return;const host=document.getElementById("billingGlassContent");const action=host?.querySelector(".billing-hero .billing-actions");if(action&&!action.querySelector("[data-billing-export]")){action.insertAdjacentHTML("beforeend",'<button class="secondary" type="button" data-billing-export onclick="billingExport(\''+kind+'\')">Exporter CSV</button>');if(tab==="clients")action.insertAdjacentHTML("beforeend",'<input id="billingClientsCsv" class="hidden" type="file" accept=".csv,text/csv" onchange="billingImportClients()"><button class="secondary" type="button" onclick="document.getElementById(\'billingClientsCsv\').click()">Importer Boulangerie</button>')}}
 async function billingImportClients(){const file=document.getElementById("billingClientsCsv")?.files[0];if(!file)return;const body=new FormData();body.append("file",file);try{const result=await api("/api/v1/customers/import?organization_id="+encodeURIComponent(org),{method:"POST",body});tell(result.created+" client(s) importé(s)"+(result.errors?.length?" · "+result.errors.length+" ligne(s) ignorée(s)":""));billingClients()}catch(error){tell(error.message)}}
 
@@ -89,6 +106,23 @@ function billingInvoiceTable(items){
     return '<tr><td><b>'+number+'</b></td><td>'+esc(item.customer_name||item.customer||"Client comptant")+'</td><td><div class="billing-row-type"><span class="billing-type-badge">'+esc(billingDocumentLabel(item.document_type))+'</span><select id="'+typeId+'" aria-label="Type à générer pour '+number+'">'+billingDocumentTypeOptions(selected)+'</select></div></td><td>'+billingDate(item.created_at)+'</td><td>'+billingCurrency(item.total_amount)+'</td><td><button class="secondary billing-icon-button" type="button" title="Visualiser le type sélectionné" aria-label="Visualiser le PDF '+number+'" onclick="previewBillingInvoice(\''+itemId+'\',\''+number+'\',document.getElementById(\''+typeId+'\').value)">'+billingEyeIcon+'<span>Visualiser</span></button><button class="secondary" type="button" onclick="downloadBillingInvoice(\''+itemId+'\',\''+number+'\',document.getElementById(\''+typeId+'\').value)">PDF</button><button class="secondary" type="button" onclick="billingDuplicate(\''+itemId+'\',document.getElementById(\''+typeId+'\').value)">Dupliquer</button><button class="secondary" type="button" onclick="billingCompetition(\''+itemId+'\')">Concurrence</button></td></tr>'
   }).join("")+'</tbody></table></div>';
 }
+billingInvoiceTable=function(items){
+  if(!items.length)return '<p class="billing-empty">Aucun document enregistre.</p>';
+  return '<div class="billing-table-wrap"><table class="billing-table"><thead><tr><th>Numero</th><th>Client</th><th>Type</th><th>Date</th><th>Montant</th><th>Actions</th></tr></thead><tbody>'+items.map(item=>{
+    const typeId="billingDocumentType-"+item.id,itemId=esc(item.id),number=esc(item.number),selected=item.document_type||"INVOICE",locked=Boolean(item.source_shop_order_id)||Number(item.paid_amount||0)>0;
+    const edit=locked?'<span class="muted billing-document-locked" title="Commande Boutique ou document deja paye">Verrouille</span>':'<button class="secondary" type="button" onclick="billingEditDocument(\''+itemId+'\')">Modifier</button>';
+    return '<tr><td><b>'+number+'</b></td><td>'+esc(item.customer_name||item.customer||"Client comptant")+'</td><td><div class="billing-row-type"><span class="billing-type-badge">'+esc(billingDocumentLabel(item.document_type))+'</span><select id="'+typeId+'" aria-label="Type a generer pour '+number+'">'+billingDocumentTypeOptions(selected)+'</select></div></td><td>'+billingDate(item.created_at)+'</td><td>'+billingCurrency(item.total_amount)+'</td><td><button class="secondary billing-icon-button" type="button" title="Visualiser le type selectionne" aria-label="Visualiser le PDF '+number+'" onclick="previewBillingInvoice(\''+itemId+'\',\''+number+'\',document.getElementById(\''+typeId+'\').value)">'+billingEyeIcon+'<span>Visualiser</span></button>'+edit+'<button class="secondary" type="button" onclick="billingDuplicate(\''+itemId+'\',document.getElementById(\''+typeId+'\').value)">Dupliquer</button><button class="secondary" type="button" onclick="billingCompetition(\''+itemId+'\')">Concurrence</button></td></tr>'
+  }).join("")+'</tbody></table></div>';
+};
+async function billingEditDocument(id){
+  try{
+    const invoice=await api("/api/v1/billing/invoices/"+encodeURIComponent(id));
+    if(invoice.source_shop_order_id)throw Error("La facture creee par une commande Boutique est protegee.");
+    if(Number(invoice.paid_amount||0)>0)throw Error("Cette facture a un paiement enregistre. Creez plutot un avoir ou un nouveau document.");
+    billingState.editingInvoice=invoice;billingState.documentType=invoice.document_type||"INVOICE";billingClosePopup();await billingOpen("new");
+  }catch(error){tell(error.message)}
+}
+function billingCancelDocumentEdit(){billingState.editingInvoice=null;billingOpen("documents")}
 async function previewBillingInvoice(id,number,documentType="INVOICE"){
   const selected=documentType||"INVOICE",started=showFusaaOperation("Génération de l’aperçu · "+billingDocumentLabel(selected)+"…");
   try{
@@ -109,7 +143,7 @@ async function billingLoadReference(){
   billingState.headers=headers;billingState.customers=customers;
 }
 async function billingNew(){
-  await billingLoadReference();billingState.productPage=1;billingState.productSearch="";
+  await billingLoadReference();billingState.productPage=1;billingState.productSearch="";const editing=billingState.editingInvoice;
   const documentType=billingState.documentType||"INVOICE",documentLabel=billingDocumentLabel(documentType);
   billingSet(billingHero("Nouveau "+documentLabel.toLowerCase(),"Créez un document avec l’entête et les produits de votre choix.",'<div class="billing-selected-type"><span>Type choisi</span><b>'+esc(documentLabel)+'</b><button class="secondary" type="button" onclick="billingChooseDocumentType()">Modifier</button></div>')+`
     <section class="billing-panel billing-ai">
@@ -136,19 +170,22 @@ async function billingNew(){
     </div>
     <form id="billingNewForm" class="billing-panel"><h2>Informations générales</h2><div class="billing-form-grid"><label>Nom du nouveau client<input id="billingNewCustomerName" placeholder="Nom et prénom"></label><label>Téléphone<input id="billingNewCustomerPhone" placeholder="Téléphone"></label><label>Adresse client<input id="billingNewCustomerAddress" placeholder="Adresse"></label><label>Date<input id="billingNewDate" type="date"></label><label>Remise FCFA<input id="billingNewDiscount" type="number" min="0" value="0"></label><label class="wide">Pour / objet<input id="billingNewSubject" placeholder="Objet du document"></label><label class="wide">Notes<textarea id="billingNewNotes" placeholder="Mentions complémentaires"></textarea></label></div></form>
     <dialog id="billingQuickProductDialog" class="billing-quick-dialog"><form method="dialog"><div class="billing-actions billing-lines-title"><h2>Ajouter un produit de facturation</h2><button class="secondary" type="submit" aria-label="Fermer">×</button></div></form><form id="billingQuickProductForm" class="billing-form-grid"><label>Désignation<input name="name" required></label><label>Prix FCFA<input name="unit_price" type="number" min="0" required></label><label>Unité<input name="unit" value="piece"></label><label>Code<input name="sku"></label><button type="submit">Enregistrer le produit</button></form></dialog>`);
-  document.getElementById("billingNewHeader").value=billingState.headers.find(item=>item.is_default)?.id||billingState.headers[0]?.id||"";
-  document.getElementById("billingNewDate").value=new Date().toISOString().slice(0,10);
+  document.getElementById("billingNewHeader").value=editing?.billing_header_id||billingState.headers.find(item=>item.is_default)?.id||billingState.headers[0]?.id||"";
+  document.getElementById("billingNewDate").value=editing?.issued_on?String(editing.issued_on).slice(0,10):new Date().toISOString().slice(0,10);
+  if(editing){document.querySelector("#billingWorkspaceContent .billing-hero h1").textContent="Modifier "+billingDocumentLabel(documentType).toLowerCase();document.querySelector("#billingWorkspaceContent .billing-hero p").textContent="Corrigez les informations puis enregistrez la facture mise a jour.";document.getElementById("billingNewCustomer").value=editing.customer?.id||"";document.getElementById("billingNewCustomerName").value=editing.customer?.name||"";document.getElementById("billingNewCustomerPhone").value=editing.customer?.phone||"";document.getElementById("billingNewCustomerAddress").value=editing.customer?.address||"";document.getElementById("billingNewSubject").value=editing.subject||"";document.getElementById("billingNewNotes").value=editing.notes||"";document.getElementById("billingNewDiscount").value=editing.discount_amount||0;const submit=document.querySelector("[form='billingNewForm']");if(submit)submit.textContent="Enregistrer les modifications"}
   document.getElementById("billingNewForm").onsubmit=billingSaveDocument;
   document.getElementById("billingNewCustomer").onchange=()=>{const has=Boolean(document.getElementById("billingNewCustomer").value);["billingNewCustomerName","billingNewCustomerPhone","billingNewCustomerAddress"].forEach(id=>document.getElementById(id).disabled=has)};
   document.getElementById("billingHeaderSearch").oninput=event=>billingFilterSelect("billingNewHeader",billingState.headers,event.target.value,"company_name");
   document.getElementById("billingCustomerSearch").oninput=event=>billingFilterSelect("billingNewCustomer",billingState.customers,event.target.value,"name");
   document.getElementById("billingQuickProductForm").onsubmit=billingSaveQuickProduct;
   billingMoveCustomerFields();
-  billingAddLine();await billingProductSearch(true);
+  const selectedCustomer=Boolean(document.getElementById("billingNewCustomer").value);["billingNewCustomerName","billingNewCustomerPhone","billingNewCustomerAddress"].forEach(id=>document.getElementById(id).disabled=selectedCustomer);
+  if(editing){document.querySelector(".billing-selected-type")?.insertAdjacentHTML("beforeend",'<button class="secondary" type="button" onclick="billingCancelDocumentEdit()">Annuler</button>')}
+  if(editing?.lines?.length)editing.lines.forEach(line=>billingAddLine({id:line.shop_product_id||"",name:line.description,quantity:line.quantity,price_xof:line.unit_amount,unit:line.unit||"piece"}));else billingAddLine();await billingProductSearch(true);
 }
 function billingMoveCustomerFields(){const target=document.querySelector("#billingWorkspaceContent .billing-ai-fields");if(!target)return;["billingNewCustomerName","billingNewCustomerPhone","billingNewCustomerAddress"].forEach(id=>{const input=document.getElementById(id),label=input?.closest("label");if(label){label.style.display="none";document.getElementById("billingNewForm")?.appendChild(label)}});const header=document.getElementById("billingNewHeader"),customer=document.getElementById("billingNewCustomer");if(header&&!document.getElementById("billingAddHeader")){header.insertAdjacentHTML("afterend",'<button id="billingAddHeader" class="secondary" type="button" onclick="billingPopup(\'headers\')">＋ Entête</button>')}if(customer&&!document.getElementById("billingAddCustomer")){customer.insertAdjacentHTML("afterend",'<button id="billingAddCustomer" class="secondary" type="button" onclick="billingCustomerPopup()">＋ Client</button>')}}
 function billingChooseDocumentType(){billingPopup("documents")}
-function billingStartDocument(){const select=document.getElementById("billingDocumentType");billingState.documentType=select?.value||"INVOICE";billingClosePopup();billingOpen("new")}
+function billingStartDocument(){const select=document.getElementById("billingDocumentType");billingState.editingInvoice=null;billingState.documentType=select?.value||"INVOICE";billingClosePopup();billingOpen("new")}
 function billingCustomerPopup(){let dialog=document.getElementById("billingCustomerDialog");if(!dialog){document.getElementById("billingNewForm")?.insertAdjacentHTML("afterend",'<dialog id="billingCustomerDialog" class="billing-quick-dialog"><form id="billingCustomerPopupForm" class="billing-form-grid"><h2 class="wide">Nouveau client</h2><label>Nom et prénom<input name="name" required></label><label>Téléphone<input name="phone"></label><label class="wide">Adresse<input name="address"></label><div class="billing-actions wide"><button type="submit">Ajouter le client</button><button class="secondary" type="button" onclick="billingCustomerDialog.close()">Annuler</button></div></form></dialog>');dialog=document.getElementById("billingCustomerDialog");document.getElementById("billingCustomerPopupForm").onsubmit=event=>{event.preventDefault();const f=new FormData(event.target);document.getElementById("billingNewCustomerName").value=f.get("name");document.getElementById("billingNewCustomerPhone").value=f.get("phone")||"";document.getElementById("billingNewCustomerAddress").value=f.get("address")||"";document.getElementById("billingNewCustomer").value="";dialog.close();tell("Nouveau client prêt pour la facture.")}}dialog.showModal()}
 function billingAskAi(){const prompt=document.getElementById("billingAiPrompt")?.value.trim();openBillingAssistant();if(prompt){document.getElementById("aiMessage").value=prompt;document.getElementById("aiMessage").focus()}}
 function billingFilterSelect(id,items,search,key){
@@ -174,7 +211,7 @@ async function billingQuickImportCsv(){
 function billingAddLine(item){
   const box=document.getElementById("billingLines");if(!box)return;
   const row=document.createElement("div");row.className="billing-line";row.dataset.productId=item?.id||"";row.dataset.unit=item?.unit||"piece";
-  row.innerHTML='<span class="billing-line-number"></span><input class="bill-designation" placeholder="Désignation" required value="'+esc(item?.name||"")+'"><input class="bill-quantity" type="number" min="0.01" step="0.01" value="1" aria-label="Quantité"><input class="bill-price" type="number" min="0" step="0.01" value="'+esc(item?.price_xof??"")+'" placeholder="Prix" aria-label="Prix unitaire"><button class="danger" type="button" aria-label="Supprimer la ligne">×</button>';
+  row.innerHTML='<span class="billing-line-number"></span><input class="bill-designation" placeholder="Désignation" required value="'+esc(item?.name||"")+'"><input class="bill-quantity" type="number" min="0.01" step="0.01" value="'+esc(item?.quantity??1)+'" aria-label="Quantité"><input class="bill-price" type="number" min="0" step="0.01" value="'+esc(item?.price_xof??"")+'" placeholder="Prix" aria-label="Prix unitaire"><button class="danger" type="button" aria-label="Supprimer la ligne">×</button>';
   const removeButton=row.querySelector("button");removeButton.onclick=()=>{row.remove();billingUpdateTotal()};removeButton.insertAdjacentHTML("beforebegin",'<button class="secondary" type="button" aria-label="Enregistrer ce produit">＋</button>');row.querySelector("button.secondary").onclick=()=>billingSaveLineProduct(row);row.querySelectorAll("input").forEach(input=>input.addEventListener("input",billingUpdateTotal));box.append(row);billingUpdateTotal();
 }
 function billingSaveLineProduct(row){const name=row.querySelector(".bill-designation")?.value.trim(),price=Number(row.querySelector(".bill-price")?.value);if(!name||!Number.isFinite(price)){tell("Renseignez la désignation et le prix du produit.");return}billingQuickProduct();const form=document.getElementById("billingQuickProductForm");form.querySelector('[name="name"]').value=name;form.querySelector('[name="unit_price"]').value=price;window.billingLineTarget=row}
@@ -206,12 +243,29 @@ async function billingSaveDocument(event){
   try{const result=await api("/api/v1/billing/documents",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(body)});tell(result.number+" enregistré.");await billingOpen("documents");openBillingInvoice(result.id)}catch(error){tell(error.message)}
 }
 
+billingSaveDocument=async function(event){
+  event.preventDefault();const rows=[...document.querySelectorAll("#billingLines .billing-line")];
+  const lines=rows.map(row=>({product_id:row.dataset.productId||null,description:row.querySelector(".bill-designation").value.trim(),quantity:Number(row.querySelector(".bill-quantity").value),unit_amount:Number(row.querySelector(".bill-price").value),unit:row.dataset.unit||"piece"})).filter(item=>item.description);
+  if(!lines.length){tell("Ajoutez au moins une ligne.");return}
+  const headerId=document.getElementById("billingNewHeader").value;if(!headerId){tell("Choisissez une entete d entreprise.");document.getElementById("billingNewHeader").focus();return}
+  const customerId=document.getElementById("billingNewCustomer").value,editing=billingState.editingInvoice;
+  const body={organization_id:org,billing_header_id:headerId,customer_id:customerId||null,customer_name:customerId?null:document.getElementById("billingNewCustomerName").value.trim(),customer_phone:document.getElementById("billingNewCustomerPhone").value.trim()||null,customer_address:document.getElementById("billingNewCustomerAddress").value.trim()||null,issued_on:document.getElementById("billingNewDate").value+"T12:00:00Z",document_type:billingState.documentType||"INVOICE",subject:document.getElementById("billingNewSubject").value.trim()||null,notes:document.getElementById("billingNewNotes").value.trim()||null,discount_amount:Number(document.getElementById("billingNewDiscount").value||0),lines};
+  const started=showFusaaOperation(editing?"Mise a jour de la facture...":"Enregistrement de la facture...");
+  try{
+    const result=await api(editing?"/api/v1/billing/invoices/"+encodeURIComponent(editing.id):"/api/v1/billing/documents",{method:editing?"PUT":"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(body)});
+    billingState.editingInvoice=null;tell(result.number+(editing?" modifiee.":" enregistre."));await billingOpen("documents");openBillingInvoice(result.id);
+  }catch(error){tell(error.message)}finally{await hideFusaaOperation(started)}
+};
 async function billingDocuments(){
-  const items=await api("/api/v1/billing/invoices?organization_id="+encodeURIComponent(org)+"&page="+billingState.page+"&page_size=25");
+  const documentPageSize=12,items=await api("/api/v1/billing/invoices?organization_id="+encodeURIComponent(org)+"&page="+billingState.page+"&page_size="+documentPageSize);
   billingSet(billingHero("Documents","Chaque ligne possède son type de génération. L’aperçu et le PDF utilisent ce choix sans modifier le document enregistré.",'<label class="billing-document-picker">Type du nouveau document<select id="billingDocumentType" onchange="billingState.documentType=this.value">'+billingDocumentTypeOptions(billingState.documentType||"INVOICE")+'</select></label><button type="button" onclick="billingStartDocument()">+ Créer le document</button>')+
     '<section class="billing-panel">'+billingInvoiceTable(items)+'<div class="billing-pagination"><button class="secondary" type="button" '+(billingState.page<=1?"disabled":"")+' onclick="billingState.page--;billingOpen(\'documents\')">← Précédent</button><span>Page '+billingState.page+'</span><button class="secondary" type="button" '+(items.length<25?"disabled":"")+' onclick="billingState.page++;billingOpen(\'documents\')">Suivant →</button></div></section>');
 }
 
+billingDocuments=async function(){
+  const pageSize=12,items=await api("/api/v1/billing/invoices?organization_id="+encodeURIComponent(org)+"&page="+billingState.page+"&page_size="+pageSize);
+  billingSet(billingHero("Documents","Liste allegee : seuls les documents de cette page sont charges. Le PDF est genere uniquement si vous le demandez.",'<label class="billing-document-picker">Type du nouveau document<select id="billingDocumentType" onchange="billingState.documentType=this.value">'+billingDocumentTypeOptions(billingState.documentType||"INVOICE")+'</select></label><button type="button" onclick="billingStartDocument()">+ Creer le document</button>')+'<section class="billing-panel">'+billingInvoiceTable(items)+'<div class="billing-pagination"><button class="secondary" type="button" '+(billingState.page<=1?"disabled":"")+' onclick="billingState.page--;billingOpen(\'documents\')">Precedent</button><span>Page '+billingState.page+'</span><button class="secondary" type="button" '+(items.length<pageSize?"disabled":"")+' onclick="billingState.page++;billingOpen(\'documents\')">Suivant</button></div></section>');
+};
 async function billingClients(){
   const items=await api("/api/v1/customers?organization_id="+encodeURIComponent(org));billingState.customers=items;
   billingSet(billingHero("Clients","Répertoire partagé par la Boutique et la facturation.")+'<section class="billing-panel"><h2>Ajouter un client</h2><form id="billClientForm" class="billing-form-grid"><label>Nom<input name="name" required></label><label>Téléphone<input name="phone"></label><label>E-mail<input name="email" type="email"></label><label>Adresse<input name="address"></label><button>Ajouter</button></form></section><section class="billing-panel"><h2>Comptes clients</h2><div class="billing-table-wrap"><table class="billing-table"><thead><tr><th>Nom</th><th>Téléphone</th><th>E-mail</th><th>Actions</th></tr></thead><tbody>'+items.map(item=>'<tr><td>'+esc(item.name)+'</td><td>'+esc(item.phone||"—")+'</td><td>'+esc(item.email||"—")+'</td><td><button class="secondary" type="button" onclick="billingEditClient(\''+esc(item.id)+'\')">Modifier</button><button class="danger" type="button" onclick="billingRemoveClient(\''+esc(item.id)+'\')">Supprimer</button></td></tr>').join("")+'</tbody></table></div></section>');

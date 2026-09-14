@@ -15,7 +15,7 @@ ROOT=Path(__file__).parents[1]
 sys.path[:0]=[str(ROOT/"backend"),str(ROOT/"local-agent")]
 from app.database import Base
 from app.models import User,Organization,OrganizationMember,Workshop,WorkshopMember,Document,PrintJob,ComputerAgent,Printer,JobStatus,LocalActivity,BrowserLink,GuestOrder,ShopCategory,ShopProduct,AnonymousVisit,Invoice,BillingHeader
-from app.main import cancel_job,confirm_job,prepare_job,central_supervision,list_jobs,list_documents,audit_history,list_workshop_members,update_workshop_member,remove_workshop_member,assign_workshop_member,register,create_guest_order,guest_order_status,verify_guest_payment,list_guest_orders,export_guest_orders,archive_guest_order,restore_guest_order,set_public_pricing,get_public_pricing,refresh_guest_quote,create_guest_receipt,production_dashboard,index,impression_index,admin_index,public_tracking_page,delete_job,archive_public_job,create_shop_order,shop_public_products,shop_public_products_page,shop_admin_products_page,record_public_visit,visitor_analytics,create_billing_document,duplicate_billing_invoice,create_stock_movement,billing_stock_alerts,create_billing_category,create_billing_product,list_billing_products,create_customer,update_billing_customer,delete_billing_customer,get_billing_invoice,record_billing_payment,list_billing_headers,create_billing_header,billing_dashboard,billing_catalog_page,upload_billing_header_logo,import_billing_headers
+from app.main import cancel_job,confirm_job,prepare_job,central_supervision,list_jobs,list_documents,audit_history,list_workshop_members,update_workshop_member,remove_workshop_member,assign_workshop_member,register,create_guest_order,guest_order_status,verify_guest_payment,list_guest_orders,export_guest_orders,archive_guest_order,restore_guest_order,set_public_pricing,get_public_pricing,refresh_guest_quote,create_guest_receipt,production_dashboard,index,impression_index,admin_index,public_tracking_page,delete_job,archive_public_job,create_shop_order,shop_public_products,shop_public_products_page,shop_admin_products_page,record_public_visit,visitor_analytics,create_billing_document,update_billing_invoice,duplicate_billing_invoice,create_stock_movement,billing_stock_alerts,create_billing_category,create_billing_product,list_billing_products,create_customer,update_billing_customer,delete_billing_customer,get_billing_invoice,record_billing_payment,list_billing_headers,create_billing_header,billing_dashboard,billing_catalog_page,upload_billing_header_logo,import_billing_headers
 from app.connectors import IncomingDocument, ingest_incoming_document
 from app.config import settings
 from app.schemas import JobOptions,GuestPaymentIn,PublicPricingIn,PublicVisitIn,RegisterIn
@@ -294,6 +294,19 @@ def test_billing_documents_support_quote_and_duplication(setup_db):
     assert details["customer"]["name"]=="Client devis" and len(details["lines"])==1
     payment=record_billing_payment(document["id"],PaymentIn(amount=3000,method="CASH"),admin,db)
     assert payment["invoice_status"]=="PAID"
+
+def test_manual_unpaid_billing_document_can_be_updated_but_paid_document_is_protected(setup_db):
+    db,_,admin=setup_db
+    document=create_billing_document(BillingDocumentIn(organization_id="o",document_type="QUOTE",customer_name="Client modification",subject="Ancien objet",lines=[{"description":"Ancienne ligne","quantity":2,"unit_amount":1500}]),admin,db)
+    updated=update_billing_invoice(document["id"],BillingDocumentIn(organization_id="o",document_type="PROFORMA",customer_name="Client modification",subject="Nouvel objet",discount_amount=100,lines=[{"description":"Nouvelle ligne","quantity":3,"unit_amount":2000}]),admin,db)
+    details=get_billing_invoice(document["id"],admin,db)
+    assert updated["document_type"]=="PROFORMA" and details["subject"]=="Nouvel objet"
+    assert details["subtotal_amount"]==6000 and details["discount_amount"]==100 and details["lines"][0]["description"]=="Nouvelle ligne"
+    invoice=create_billing_document(BillingDocumentIn(organization_id="o",document_type="INVOICE",customer_name="Client paye",lines=[{"description":"Service","quantity":1,"unit_amount":500}]),admin,db)
+    record_billing_payment(invoice["id"],PaymentIn(amount=500,method="CASH"),admin,db)
+    with pytest.raises(HTTPException) as error:
+        update_billing_invoice(invoice["id"],BillingDocumentIn(organization_id="o",document_type="INVOICE",customer_name="Client paye",lines=[{"description":"Service","quantity":1,"unit_amount":700}]),admin,db)
+    assert error.value.status_code==409
 
 def test_billing_preview_uses_selected_type_without_changing_saved_document(setup_db,tmp_path,monkeypatch):
     from app.billing import generate_invoice_preview_pdf
