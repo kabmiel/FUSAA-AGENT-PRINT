@@ -68,7 +68,7 @@ def test_billing_badges_and_invoice_editor_are_visible_on_desktop_and_mobile():
         assert page.locator("#billingGlassContent h2").first.inner_text() == "Entêtes disponibles"
         page.locator("#billingGlassDialog button[aria-label='Fermer']").click()
         page.locator('[data-billtab="new"]').click()
-            assert page.locator("#billing .billing-main > .billing-hero h1").inner_text() == "Nouvelle facture"
+        assert page.locator("#billing .billing-main > .billing-hero h1").inner_text() == "Nouvelle facture"
         assert page.locator("#billingNewHeader").input_value() == "h"
         assert page.locator("#billingNewCatalog table tbody tr").count() == 1
         assert page.locator("#billingLines .billing-line").count() == 1
