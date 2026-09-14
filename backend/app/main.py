@@ -561,6 +561,22 @@ def create_billing_header(organization_id:str,data:BillingHeaderIn,user:User=Dep
     if values["isb_enabled"]:values["tax_enabled"]=False
     item=BillingHeader(organization_id=organization_id,**values);db.add(item);db.flush();audit(db,user.id,"BILLING_HEADER_CREATED","BillingHeader",item.id,result="SUCCESS");db.commit();return billing_header_out(item)
 
+@app.post("/api/v1/billing/headers/import",status_code=201)
+async def import_billing_headers(organization_id:str,file:UploadFile=File(...),user:User=Depends(current_user),db:Session=Depends(get_db)):
+    require_org_admin(db,user,organization_id)
+    raw=await file.read()
+    try: rows=csv.DictReader(io.StringIO(raw.decode("utf-8-sig")))
+    except Exception: raise HTTPException(422,"Fichier CSV d’entêtes invalide")
+    created=0;errors=[]
+    for number,row in enumerate(rows,start=2):
+        name=(row.get("company_name") or row.get("nom") or row.get("entreprise") or "").strip()
+        if not name: errors.append(f"Ligne {number}: nom entreprise manquant");continue
+        try:
+            item=BillingHeader(organization_id=organization_id,company_name=name,address=(row.get("address") or row.get("adresse") or None),phone=(row.get("phone") or row.get("telephone") or None),email=(row.get("email") or None),nif=(row.get("nif") or None),rccm=(row.get("rccm") or None),document_style=(row.get("document_style") or "standard"),is_default=created==0 and not db.query(BillingHeader).filter_by(organization_id=organization_id).first())
+            db.add(item);created+=1
+        except Exception as error: errors.append(f"Ligne {number}: {error}")
+    db.commit();return {"created":created,"errors":errors[:30]}
+
 @app.put("/api/v1/billing/headers/{header_id}")
 def update_billing_header(header_id:str,data:BillingHeaderIn,user:User=Depends(current_user),db:Session=Depends(get_db)):
     item=one(db,BillingHeader,header_id);require_org_admin(db,user,item.organization_id)
@@ -646,7 +662,14 @@ def create_billing_document(data:BillingDocumentIn,user:User=Depends(current_use
     if customer and customer.organization_id!=data.organization_id:raise HTTPException(422,"Client d’une autre organisation")
     if not customer and data.customer_name:
         customer=Customer(organization_id=data.organization_id,name=data.customer_name.strip(),phone=(data.customer_phone or "").strip() or None,email=(data.customer_email or "").strip() or None,address=(data.customer_address or "").strip() or None);db.add(customer);db.flush()
-    if not customer:raise HTTPException(422,"Sélectionnez ou renseignez un client")
+    if not customer:
+        # Factures comptant : la fenêtre Boulangerie autorise une vente sans
+        # fiche client. Réutiliser un compte générique évite de bloquer
+        # l’enregistrement tout en conservant la traçabilité.
+        customer=db.query(Customer).filter_by(organization_id=data.organization_id,name="Client comptant").first()
+        if not customer:
+            customer=Customer(organization_id=data.organization_id,name="Client comptant")
+            db.add(customer);db.flush()
     header=db.get(BillingHeader,data.billing_header_id) if data.billing_header_id else default_billing_header(db,data.organization_id)
     if not header or header.organization_id!=data.organization_id:raise HTTPException(422,"Entête de facturation introuvable")
     product_ids=[line.product_id for line in data.lines if line.product_id]
