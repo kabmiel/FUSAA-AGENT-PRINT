@@ -123,8 +123,11 @@ async function billingNew(){
   document.getElementById("billingHeaderSearch").oninput=event=>billingFilterSelect("billingNewHeader",billingState.headers,event.target.value,"company_name");
   document.getElementById("billingCustomerSearch").oninput=event=>billingFilterSelect("billingNewCustomer",billingState.customers,event.target.value,"name");
   document.getElementById("billingQuickProductForm").onsubmit=billingSaveQuickProduct;
+  billingMoveCustomerFields();
   billingAddLine();await billingProductSearch(true);
 }
+function billingMoveCustomerFields(){const target=document.querySelector("#billingWorkspaceContent .billing-ai-fields");if(!target)return;["billingNewCustomerName","billingNewCustomerPhone","billingNewCustomerAddress"].forEach(id=>{const input=document.getElementById(id),label=input?.closest("label");if(label)target.appendChild(label)});const header=document.getElementById("billingNewHeader"),customer=document.getElementById("billingNewCustomer");if(header&&!document.getElementById("billingAddHeader")){header.insertAdjacentHTML("afterend",'<button id="billingAddHeader" class="secondary" type="button" onclick="billingPopup(\'headers\')">＋ Entête</button>')}if(customer&&!document.getElementById("billingAddCustomer")){customer.insertAdjacentHTML("afterend",'<button id="billingAddCustomer" class="secondary" type="button" onclick="billingCustomerPopup()">＋ Client</button>')}}
+function billingCustomerPopup(){const input=document.getElementById("billingNewCustomerName");input?.focus();tell("Saisissez le nouveau client dans les champs affichés à côté du client.")}
 function billingAskAi(){const prompt=document.getElementById("billingAiPrompt")?.value.trim();openBillingAssistant();if(prompt){document.getElementById("aiMessage").value=prompt;document.getElementById("aiMessage").focus()}}
 function billingFilterSelect(id,items,search,key){
   const select=document.getElementById(id),previous=select.value,needle=search.trim().toLocaleLowerCase("fr");
@@ -150,8 +153,9 @@ function billingAddLine(item){
   const box=document.getElementById("billingLines");if(!box)return;
   const row=document.createElement("div");row.className="billing-line";row.dataset.productId=item?.id||"";row.dataset.unit=item?.unit||"piece";
   row.innerHTML='<span class="billing-line-number"></span><input class="bill-designation" placeholder="Désignation" required value="'+esc(item?.name||"")+'"><input class="bill-quantity" type="number" min="0.01" step="0.01" value="1" aria-label="Quantité"><input class="bill-price" type="number" min="0" step="0.01" value="'+esc(item?.price_xof??"")+'" placeholder="Prix" aria-label="Prix unitaire"><button class="danger" type="button" aria-label="Supprimer la ligne">×</button>';
-  row.querySelector("button").onclick=()=>{row.remove();billingUpdateTotal()};row.querySelectorAll("input").forEach(input=>input.addEventListener("input",billingUpdateTotal));box.append(row);billingUpdateTotal();
+  const removeButton=row.querySelector("button");removeButton.onclick=()=>{row.remove();billingUpdateTotal()};removeButton.insertAdjacentHTML("beforebegin",'<button class="secondary" type="button" aria-label="Enregistrer ce produit">＋</button>');row.querySelector("button.secondary").onclick=()=>billingSaveLineProduct(row);row.querySelectorAll("input").forEach(input=>input.addEventListener("input",billingUpdateTotal));box.append(row);billingUpdateTotal();
 }
+function billingSaveLineProduct(row){const name=row.querySelector(".bill-designation")?.value.trim(),price=Number(row.querySelector(".bill-price")?.value);if(!name||!Number.isFinite(price)){tell("Renseignez la désignation et le prix du produit.");return}billingQuickProduct();const form=document.getElementById("billingQuickProductForm");form.querySelector('[name="name"]').value=name;form.querySelector('[name="unit_price"]').value=price;window.billingLineTarget=row}
 function billingUpdateTotal(){const rows=[...document.querySelectorAll("#billingLines .billing-line")];rows.forEach((row,index)=>row.querySelector(".billing-line-number").textContent=index+1);const sum=rows.reduce((value,row)=>value+Number(row.querySelector(".bill-quantity").value||0)*Number(row.querySelector(".bill-price").value||0),0);const target=document.getElementById("billingDraftTotal");if(target)target.textContent="Total HT : "+billingCurrency(sum)}
 async function billingProductSearch(reset=false){
   const target=document.getElementById("billingNewCatalog");if(!target)return;
