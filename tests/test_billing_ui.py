@@ -51,6 +51,8 @@ def test_billing_badges_and_invoice_editor_are_visible_on_desktop_and_mobile():
         except Exception as exc:
             pytest.skip(f"Chromium indisponible : {exc}")
         page = browser.new_page(viewport={"width": 1440, "height": 900})
+        page.set_default_timeout(5000)
+        page.set_default_navigation_timeout(5000)
 
         def serve(route):
             path = route.request.url.split("?", 1)[0]
@@ -69,6 +71,10 @@ def test_billing_badges_and_invoice_editor_are_visible_on_desktop_and_mobile():
         page.locator("#billingHomeBadge").click()
         assert page.locator("#billing .billing-menu [data-billtab]").count() == 10
         assert not page.locator(".workspace > .sidebar").is_visible()
+        page.locator('[data-billtab="clients"]').click()
+        assert page.locator("#billingGlassDialog").is_visible()
+        assert page.locator("#billingGlassContent .billing-hero h1").inner_text() == "Clients"
+        page.locator("#billingGlassDialog button[aria-label='Fermer']").click()
         page.locator('[data-billtab="headers"]').click()
         assert page.locator("#billingGlassDialog").is_visible()
         assert page.locator("#billingGlassContent h2").first.inner_text() == "Entêtes disponibles"
@@ -96,13 +102,16 @@ def test_billing_badges_and_invoice_editor_are_visible_on_desktop_and_mobile():
         assert page.locator("#billingFacturationAssistantDialog").is_visible()
         assert page.locator("#billingFacturationAssistantDialog").get_by_text("Appliquer au brouillon").is_visible()
         page.locator("#billingFacturationAssistantDialog button[aria-label='Fermer']").click()
+        page.locator('[data-billtab="dashboard"]').click()
+        assert page.locator("#billingWorkspaceContent .billing-hero h1").inner_text() == "Facturation FUSAA"
         page.locator("#billingWorkspaceContent").get_by_text("Assistant import CSV").click()
         assert page.locator("#billingImportAssistantDialog").is_visible()
         page.locator("#billingImportFile-categories").set_input_files({"name":"facturation_categories.csv","mimeType":"text/csv","buffer":b"Categorie;Description\nBureautique;Papier\n"})
         page.locator("#billingImportAssistantDialog").get_by_text("Analyser les CSV").click()
         assert page.locator("#billingImportResults").get_by_text("Bureautique").is_visible()
         page.locator("#billingImportExecute").click()
-        assert page.locator("#billingImportResults").get_by_text("Cr\u00e9\u00e9s").is_visible()
+        page.locator("#billingImportAssistantDialog").wait_for(state="hidden", timeout=5000)
+        assert page.locator("#billingWorkspaceContent .billing-hero h1").inner_text() == "Facturation FUSAA"
         page.set_viewport_size({"width": 390, "height": 844})
         assert page.locator('[data-billtab="new"]').is_visible()
         overflow = page.evaluate("""() => ({width:document.documentElement.scrollWidth, viewport:window.innerWidth, elements:[...document.querySelectorAll('#billing *')].filter(node=>node.getBoundingClientRect().right>window.innerWidth+1).slice(0,8).map(node=>({tag:node.tagName,className:node.className,right:Math.round(node.getBoundingClientRect().right)}))})""")
