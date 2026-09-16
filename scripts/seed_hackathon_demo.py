@@ -14,6 +14,7 @@ if str(BACKEND) not in sys.path:
     sys.path.insert(0, str(BACKEND))
 
 from app.business_schemas import BillingCompetitionIn, BillingDocumentIn
+from app.config import settings
 from app.database import SessionLocal
 from app.main import create_billing_competition, create_billing_document
 from app.models import (
@@ -68,11 +69,19 @@ def main():
             organization_id=organization.id,
             user_id=user.id,
         )
+        # FUSAA can be configured for one workshop in .env.  The demo must
+        # use that exact ID, otherwise the authenticated interface correctly
+        # hides the workspace and remains on its session loader.
+        workshop_filters = (
+            {"id": settings.single_workshop_id}
+            if settings.single_workshop_id
+            else {"organization_id": organization.id, "name": "Atelier principal"}
+        )
         workshop = first_or_create(
             db,
             Workshop,
-            defaults={"name": "Atelier principal"},
-            organization_id=organization.id,
+            defaults={"organization_id": organization.id, "name": "Atelier principal"},
+            **workshop_filters,
         )
         first_or_create(
             db,

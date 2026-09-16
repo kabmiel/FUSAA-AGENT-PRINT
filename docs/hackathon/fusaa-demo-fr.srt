@@ -1,0 +1,27 @@
+1
+00:00:00,000 --> 00:00:25,000
+Bienvenue dans FUSAA Agent : boutique, impression et facturation réunies.
+
+2
+00:00:25,000 --> 00:00:50,000
+Le module Facturation donne accès aux documents, clients, produits et entêtes.
+
+3
+00:00:50,000 --> 00:01:15,000
+Chaque facture, devis, proforma ou reçu reste prévisualisable et traçable.
+
+4
+00:01:15,000 --> 00:01:45,000
+La fonction Concurrence crée un devis depuis une facture avec un nouvel entête et une marge maîtrisée.
+
+5
+00:01:45,000 --> 00:01:53,000
+Une animation informe clairement l’utilisateur pendant la génération.
+
+6
+00:01:53,000 --> 00:02:35,000
+Le brouillon conserve le client, les lignes et la référence du document d’origine, sans modifier la facture source.
+
+7
+00:02:35,000 --> 00:03:00,000
+FUSAA Agent simplifie le pilotage quotidien de l’atelier, de la boutique et de la facturation.

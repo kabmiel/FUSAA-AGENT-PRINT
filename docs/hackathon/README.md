@@ -11,6 +11,18 @@ Ce dossier contient les visuels réels de démonstration de l’application.
 5. Génération animée, puis ouverture du brouillon devis pour vérification avant impression ou paiement.
 
 La vidéo enregistrée est `media/fusaa-hackathon-demo.webm`. Les captures `01` à `06` suivent exactement ce parcours.
+Le conducteur de la présentation de trois minutes se trouve dans
+[`VIDEO_3_MINUTES.md`](VIDEO_3_MINUTES.md).
+
+## Livrables attendus
+
+- `media/01-vue-ensemble.png` — vue générale de l’atelier.
+- `media/02-facturation-tableau-de-bord.png` — badges et compteurs Facturation.
+- `media/03-documents-facturation.png` — choix du type de document et liste des documents.
+- `media/04-concurrence-parametres.png` — nouvel entête et marge concurrence.
+- `media/05-generation-animee.png` — animation de traitement pendant la génération.
+- `media/06-brouillon-concurrence.png` — devis brouillon ouvert pour contrôle.
+- `media/fusaa-hackathon-demo.webm` — vidéo réelle du parcours ci-dessus.
 
 ## Produire les visuels en local
 
@@ -34,7 +46,20 @@ Dans un second terminal :
 python scripts/capture_hackathon_demo.py
 ```
 
+La capture ouvre automatiquement `http://127.0.0.1:8765/admin` : la boutique
+publique à la racine n’est pas utilisée pour la vidéo d’administration.
+
 Compte local de démonstration : `demo@fusaa-agent.com` / `FusaaDemo2026!`.
+
+Lancez la capture seulement après le message Uvicorn indiquant que le serveur
+est prêt. Les fichiers sont enregistrés dans `docs/hackathon/media/`. Le
+script ne publie rien sur Render et ne modifie pas la base principale.
+
+## Vérification avant dépôt
+
+1. Vérifier que les six PNG et la vidéo WebM existent dans `media/`.
+2. Ouvrir la vidéo : elle doit montrer la marge de concurrence à +10 % et le brouillon généré.
+3. Ne jamais déposer `runtime/hackathon-demo.db` ou les jetons de connexion : ce sont uniquement des données locales de démonstration.
 
 ## Texte de présentation (environ 60 secondes)
 

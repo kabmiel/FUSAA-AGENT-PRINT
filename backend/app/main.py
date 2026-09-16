@@ -31,7 +31,7 @@ from .document_processing import DocumentProcessor, LayoutEngine
 from .processing_schemas import LayoutRequest, ProcessRequest
 from .connector_schemas import ConnectorCreate, ConnectorOut, ConnectorSecretOut
 from .connectors import IncomingDocument, ingest_incoming_document, verify_meta_signature, whatsapp_media_message_ids
-from .business_schemas import BillingCategoryIn, BillingCompetitionIn, BillingDocumentIn, BillingHeaderIn, BillingProductIn, BillingProfileIn, CatalogIn, CustomerIn, CustomerOut, FinalCostIn, InvoiceCreate, InvoiceOut, PaymentIn, PriceRuleIn, PriceRuleOut, PrintCostOut, ServiceIn, StockMovementIn
+from .business_schemas import BillingAssistantIn, BillingCategoryIn, BillingCompetitionIn, BillingDocumentIn, BillingHeaderIn, BillingProductIn, BillingProfileIn, CatalogIn, CustomerIn, CustomerOut, FinalCostIn, InvoiceCreate, InvoiceOut, PaymentIn, PriceRuleIn, PriceRuleOut, PrintCostOut, ServiceIn, StockMovementIn
 from .shop_schemas import ShopCategoryIn, ShopCloudinaryImageIn, ShopOrderStatusIn, ShopProductIn, ShopPublicOrderIn
 from .business import estimate_print_cost
 from .billing import BILLING_DOCUMENT_TYPES, billing_profile, default_billing_header, header_tax, ensure_shop_invoice, generate_invoice_pdf, generate_invoice_preview_pdf
@@ -476,21 +476,232 @@ def public_tracking_stage(status:JobStatus,payment_status:str)->tuple[int,str,st
 @app.post("/api/v1/customers",response_model=CustomerOut,status_code=201)
 def create_customer(data:CustomerIn,user:User=Depends(current_user),db:Session=Depends(get_db)):
     require_member(db,user,data.organization_id);customer=Customer(**data.model_dump());db.add(customer);db.flush();audit(db,user.id,"CUSTOMER_CREATED","Customer",customer.id,result="SUCCESS");db.commit();db.refresh(customer);return customer
+
+# Boulangerie exports are semicolon-delimited while FUSAA exports use commas.
+# Keep this parser at the API boundary so every CSV entry point accepts both.
+def _billing_csv_key(value:str|None)->str:
+    normalized=unicodedata.normalize("NFD",str(value or "").lower())
+    normalized="".join(char for char in normalized if not unicodedata.combining(char))
+    return re.sub(r"[^a-z0-9]+","_",normalized).strip("_")
+
+def _billing_csv_records(raw:bytes)->tuple[list[dict],dict]:
+    if len(raw)>5*1024*1024:raise HTTPException(413,"Le fichier CSV ne doit pas dépasser 5 Mo.")
+    text_value=None
+    for encoding in ("utf-8-sig","utf-8","cp1252"):
+        try:
+            text_value=raw.decode(encoding);break
+        except UnicodeDecodeError:continue
+    if text_value is None:raise HTTPException(422,"Encodage CSV non reconnu : utilisez UTF-8.")
+    sample=text_value[:8192]
+    try:delimiter=csv.Sniffer().sniff(sample,delimiters=";,\t|").delimiter
+    except csv.Error:delimiter=";" if sample.splitlines() and sample.splitlines()[0].count(";")>sample.splitlines()[0].count(",") else ","
+    reader=csv.DictReader(io.StringIO(text_value),delimiter=delimiter)
+    if not reader.fieldnames:raise HTTPException(422,"La première ligne du CSV doit contenir les colonnes.")
+    headers=[_billing_csv_key(item) for item in reader.fieldnames]
+    records=[]
+    for row in reader:
+        records.append({_billing_csv_key(key):str(value or "").strip() for key,value in row.items() if key is not None})
+    return records,{"delimiter":delimiter,"headers":headers,"rows":len(records)}
+
+def _billing_csv_value(row:dict,*keys:str)->str:
+    return next((str(row.get(key) or "").strip() for key in keys if str(row.get(key) or "").strip()),"")
+
+def _billing_csv_name(value:str|None)->str:
+    name=" ".join(str(value or "").split()).strip(" _-./")
+    return name if re.search(r"[A-Za-zÀ-ÿ0-9]",name) else ""
+
+def _billing_csv_number(value:str|None,default:float=0)->float:
+    raw=re.sub(r"[^0-9,.-]","",str(value or "")).replace(" ","")
+    if not raw:return default
+    if raw.count(",")==1 and raw.count(".")==0:raw=raw.replace(",",".")
+    else:raw=raw.replace(",","")
+    try:return float(raw)
+    except ValueError:return default
+
+def _billing_csv_kind(headers:list[str],filename:str="",requested:str="auto")->str:
+    requested=_billing_csv_key(requested)
+    aliases={"categories":"categories","category":"categories","clients":"clients","client":"clients","produits":"products","products":"products","product":"products","entreprises":"headers","entreprise":"headers","entetes":"headers","headers":"headers","factures":"invoices","factures_historique":"invoices","invoices":"invoices","documents":"invoices"}
+    if requested in aliases:return aliases[requested]
+    fields=set(headers);name=_billing_csv_key(filename)
+    if "numero" in fields and ("total_ttc" in fields or "statut" in fields):return "invoices"
+    if "designation" in fields and ("prix_unitaire" in fields or "prix" in fields):return "products"
+    if "entreprise" in fields and ("nif" in fields or "rccm" in fields):return "headers"
+    if "client" in fields and ("telephone" in fields or "adresse" in fields):return "clients"
+    if "categorie" in fields:return "categories"
+    for kind,token in (("invoices","facture"),("products","produit"),("headers","entreprise"),("clients","client"),("categories","categorie")):
+        if token in name:return kind
+    raise HTTPException(422,"Type de CSV impossible à reconnaître. Choisissez le type dans l’assistant.")
+
+def _billing_import_document_type(status:str)->str:
+    value=_billing_csv_key(status)
+    if "proforma" in value:return "PROFORMA"
+    if "devis" in value:return "QUOTE"
+    if "livraison" in value:return "DELIVERY_NOTE"
+    if "recu" in value:return "RECEIPT"
+    return "INVOICE"
+
+def _billing_import_date(value:str|None)->datetime:
+    source=str(value or "").strip()
+    for pattern in ("%d/%m/%Y","%Y-%m-%d","%d-%m-%Y","%Y/%m/%d"):
+        try:return datetime.strptime(source,pattern).replace(tzinfo=timezone.utc)
+        except ValueError:continue
+    return datetime.now(timezone.utc)
+
+def _billing_import_category(db:Session,organization_id:str,name:str,description:str="",cache:dict|None=None)->BillingCategory|None:
+    name=_billing_csv_name(name)
+    if not name:return None
+    cache=cache if cache is not None else {}
+    key=_billing_assistant_normalize(name)
+    if key in cache:return cache[key]
+    item=next((entry for entry in db.query(BillingCategory).filter_by(organization_id=organization_id).all() if _billing_assistant_normalize(entry.name)==key),None)
+    if not item:
+        item=BillingCategory(organization_id=organization_id,name=name[:100],description=description or None);db.add(item);db.flush()
+    cache[key]=item
+    return item
+
+def _billing_import_execute(db:Session,organization_id:str,kind:str,rows:list[dict],user:User)->dict:
+    """Import one Boulangerie/FUSAA CSV type with duplicate protection.
+
+    Historical invoices only contain a total in the supplied Boulangerie export.
+    They are retained as one summary line; original product lines cannot be
+    reconstructed from a CSV that does not include them.
+    """
+    created=skipped=0;errors=[];warnings=[]
+    category_cache={}
+    if kind=="categories":
+        existing={_billing_assistant_normalize(item.name) for item in db.query(BillingCategory).filter_by(organization_id=organization_id).all()}
+        for line,row in enumerate(rows,2):
+            name=_billing_csv_name(_billing_csv_value(row,"categorie","category","name","nom"))
+            if not name:errors.append({"line":line,"error":"catégorie manquante"});continue
+            key=_billing_assistant_normalize(name)
+            if key in existing:skipped+=1;continue
+            db.add(BillingCategory(organization_id=organization_id,name=name[:100],description=_billing_csv_value(row,"description","details") or None));existing.add(key);created+=1
+    elif kind=="clients":
+        existing={_billing_assistant_normalize(item.name) for item in db.query(Customer).filter_by(organization_id=organization_id).all()}
+        for line,row in enumerate(rows,2):
+            name=_billing_csv_name(_billing_csv_value(row,"client","name","nom"))
+            if not name:errors.append({"line":line,"error":"nom client manquant"});continue
+            key=_billing_assistant_normalize(name)
+            if key in existing:skipped+=1;continue
+            db.add(Customer(organization_id=organization_id,name=name[:160],phone=_billing_csv_value(row,"telephone","phone") or None,email=_billing_csv_value(row,"email","e_mail") or None,address=_billing_csv_value(row,"adresse","address") or None,notes=_billing_csv_value(row,"notes","note") or None));existing.add(key);created+=1
+    elif kind=="headers":
+        existing={_billing_assistant_normalize(item.company_name) for item in db.query(BillingHeader).filter_by(organization_id=organization_id).all()}
+        allowed_styles={"standard","scan_gauche","scan_alasko","scan_centre","scan_compact","scan_facture_simple","moderne_clair","moderne_bandeau","moderne_minimal"}
+        for line,row in enumerate(rows,2):
+            name=_billing_csv_name(_billing_csv_value(row,"entreprise","company_name","nom","name"))
+            if not name:errors.append({"line":line,"error":"nom entreprise manquant"});continue
+            key=_billing_assistant_normalize(name)
+            if key in existing:skipped+=1;continue
+            style=_billing_csv_value(row,"style_document","document_style","style","modele") or "standard"
+            isb=str(_billing_csv_value(row,"isb_applicable","isb_enabled")).lower() in {"1","true","yes","oui","vrai","on"}
+            tax=str(_billing_csv_value(row,"tva_applicable","tax_enabled")).lower() in {"1","true","yes","oui","vrai","on"}
+            table_size=_billing_csv_number(_billing_csv_value(row,"table_font_size","taille_police_tableau","taille_police","font_size"),0)
+            db.add(BillingHeader(organization_id=organization_id,company_name=name[:255],address=_billing_csv_value(row,"adresse","address") or None,phone=_billing_csv_value(row,"telephone","phone") or None,email=_billing_csv_value(row,"email") or None,nif=_billing_csv_value(row,"nif") or None,rccm=_billing_csv_value(row,"rccm") or None,logo_url=_billing_csv_value(row,"logo","logo_url") or None,document_style=style if style in allowed_styles else "standard",tax_enabled=tax and not isb,tax_rate=max(0,min(100,_billing_csv_number(_billing_csv_value(row,"taux_tva","tax_rate"),19))),isb_enabled=isb,isb_rate=max(0,min(100,_billing_csv_number(_billing_csv_value(row,"taux_isb","isb_rate"),3))),table_font_family=_billing_csv_value(row,"table_font_family","police_tableau","police") or None,table_font_size=min(14,max(8,table_size)) if table_size else None,is_default=str(_billing_csv_value(row,"is_default","entete_par_defaut","par_defaut")).lower() in {"1","true","yes","oui","vrai","on"}));existing.add(key);created+=1
+    elif kind=="products":
+        existing={_billing_assistant_normalize(item.name) for item in db.query(Product).filter_by(organization_id=organization_id).all()}
+        for line,row in enumerate(rows,2):
+            name=_billing_csv_name(_billing_csv_value(row,"designation","name","nom","produit"));price_raw=_billing_csv_value(row,"prix_unitaire","prix","price","unit_price")
+            if not name or not price_raw:errors.append({"line":line,"error":"désignation ou prix manquant"});continue
+            amount=_billing_csv_number(price_raw,-1)
+            if amount<0:errors.append({"line":line,"error":"prix invalide"});continue
+            key=_billing_assistant_normalize(name)
+            if key in existing:skipped+=1;continue
+            category=_billing_import_category(db,organization_id,_billing_csv_value(row,"categorie","category"),cache=category_cache)
+            db.add(Product(organization_id=organization_id,name=name[:160],unit_price=amount,sku=_billing_csv_value(row,"sku","code","code_produit") or None,billing_category_id=category.id if category else None,unit=(_billing_csv_value(row,"unite","unit") or "piece")[:20],stock_quantity=max(0,int(_billing_csv_number(_billing_csv_value(row,"stock","quantite","quantity"),0))),stock_minimum=max(0,int(_billing_csv_number(_billing_csv_value(row,"seuil_stock","stock_minimum","minimum"),3))),cost_xof=max(0,_billing_csv_number(_billing_csv_value(row,"cout","cost","prix_achat"),0))));existing.add(key);created+=1
+    elif kind=="invoices":
+        customers={_billing_assistant_normalize(item.name):item for item in db.query(Customer).filter_by(organization_id=organization_id).all()}
+        headers={_billing_assistant_normalize(item.company_name):item for item in db.query(BillingHeader).filter_by(organization_id=organization_id).all()}
+        existing={item.number for item in db.query(Invoice.number).all()}
+        for line,row in enumerate(rows,2):
+            number=_billing_csv_name(_billing_csv_value(row,"numero","number","facture"))
+            total_raw=_billing_csv_value(row,"total_ttc","total","montant","total_amount")
+            if not number or not total_raw:errors.append({"line":line,"error":"numéro ou total manquant"});continue
+            if number in existing:skipped+=1;continue
+            total=_billing_csv_number(total_raw,-1)
+            if total<0:errors.append({"line":line,"error":"total invalide"});continue
+            customer_name=_billing_csv_name(_billing_csv_value(row,"client","customer")) or "Client historique"
+            customer_key=_billing_assistant_normalize(customer_name);customer=customers.get(customer_key)
+            if not customer:
+                customer=Customer(organization_id=organization_id,name=customer_name[:160],notes="Créé lors de l’import Boulangerie");db.add(customer);db.flush();customers[customer_key]=customer
+            header_name=_billing_csv_name(_billing_csv_value(row,"entreprise","company","entete"))
+            header=headers.get(_billing_assistant_normalize(header_name)) if header_name else None
+            if not header:
+                header=default_billing_header(db,organization_id)
+                warnings.append("Certaines factures utilisent l’entête par défaut car l’entête source n’est pas encore importée.")
+            document_type=_billing_import_document_type(_billing_csv_value(row,"statut","status"))
+            invoice=Invoice(organization_id=organization_id,customer_id=customer.id,number=number[:60],status="DRAFT",currency="XOF",total_amount=total,document_type=document_type,subject=_billing_csv_value(row,"objet","subject") or "Historique importé Boulangerie",notes="Import historique Boulangerie · statut source : "+(_billing_csv_value(row,"statut","status") or "non précisé"),subtotal_amount=total,tax_rate=0,tax_amount=0,isb_amount=0,discount_amount=0,billing_header_id=header.id if header else None,issued_on=_billing_import_date(_billing_csv_value(row,"date","issued_on")))
+            db.add(invoice);db.flush();db.add(InvoiceLine(invoice_id=invoice.id,description="Historique importé · "+number[:180],unit="forfait",quantity=1,unit_amount=total,total_amount=total));existing.add(number);created+=1
+        if created:warnings.append("Le CSV factures ne contient pas les lignes de produits : chaque facture historique est importée avec une ligne récapitulative et sans paiement automatique.")
+    else:raise HTTPException(422,"Type d’import inconnu")
+    audit(db,user.id,"BILLING_CSV_IMPORTED","BillingImport",kind,parameters={"created":created,"skipped":skipped,"errors":len(errors)},result="SUCCESS")
+    db.commit();return {"kind":kind,"created":created,"skipped":skipped,"errors":errors[:30],"warnings":list(dict.fromkeys(warnings))}
+
+def _billing_import_preflight(db:Session,organization_id:str,kind:str,rows:list[dict])->dict:
+    """Validate an import without writing; shown by the CSV assistant first."""
+    if kind=="categories":
+        existing={_billing_assistant_normalize(item.name) for item in db.query(BillingCategory).filter_by(organization_id=organization_id).all()}
+        value=lambda row:_billing_csv_name(_billing_csv_value(row,"categorie","category","name","nom"))
+    elif kind=="clients":
+        existing={_billing_assistant_normalize(item.name) for item in db.query(Customer).filter_by(organization_id=organization_id).all()}
+        value=lambda row:_billing_csv_name(_billing_csv_value(row,"client","name","nom"))
+    elif kind=="headers":
+        existing={_billing_assistant_normalize(item.company_name) for item in db.query(BillingHeader).filter_by(organization_id=organization_id).all()}
+        value=lambda row:_billing_csv_name(_billing_csv_value(row,"entreprise","company_name","nom","name"))
+    elif kind=="products":
+        existing={_billing_assistant_normalize(item.name) for item in db.query(Product).filter_by(organization_id=organization_id).all()}
+        value=lambda row:_billing_csv_name(_billing_csv_value(row,"designation","name","nom","produit"))
+    else:
+        existing={item.number for item in db.query(Invoice.number).all()}
+        value=lambda row:_billing_csv_name(_billing_csv_value(row,"numero","number","facture"))
+    errors=[];duplicates=0;seen=set()
+    for line,row in enumerate(rows,2):
+        identifier=value(row)
+        if not identifier:
+            errors.append({"line":line,"error":"identifiant obligatoire manquant"});continue
+        if kind=="products" and _billing_csv_number(_billing_csv_value(row,"prix_unitaire","prix","price","unit_price"),-1)<0:
+            errors.append({"line":line,"error":"prix produit invalide"});continue
+        if kind=="invoices" and _billing_csv_number(_billing_csv_value(row,"total_ttc","total","montant","total_amount"),-1)<0:
+            errors.append({"line":line,"error":"total facture invalide"});continue
+        key=identifier if kind=="invoices" else _billing_assistant_normalize(identifier)
+        if key in existing or key in seen:duplicates+=1
+        seen.add(key)
+    return {"errors":errors[:30],"duplicates":duplicates}
+
 @app.get("/api/v1/customers",response_model=list[CustomerOut])
 def list_customers(organization_id:str,user:User=Depends(current_user),db:Session=Depends(get_db)):
     require_member(db,user,organization_id);return db.query(Customer).filter_by(organization_id=organization_id).order_by(Customer.name).all()
 
 @app.post("/api/v1/customers/import",status_code=201)
 async def import_customers(organization_id:str,file:UploadFile=File(...),user:User=Depends(current_user),db:Session=Depends(get_db)):
-    require_org_admin(db,user,organization_id);raw=await file.read()
-    try: rows=csv.DictReader(io.StringIO(raw.decode("utf-8-sig")))
-    except Exception: raise HTTPException(422,"Fichier CSV clients invalide")
-    created=0;errors=[]
-    for number,row in enumerate(rows,start=2):
-        name=(row.get("name") or row.get("nom") or row.get("client") or "").strip()
-        if not name: errors.append(f"Ligne {number}: nom manquant");continue
-        db.add(Customer(organization_id=organization_id,name=name,phone=(row.get("phone") or row.get("telephone") or None),email=row.get("email") or None,address=(row.get("address") or row.get("adresse") or None),notes=row.get("notes") or None));created+=1
-    db.commit();return {"created":created,"errors":errors[:30]}
+    require_org_admin(db,user,organization_id);rows,_=_billing_csv_records(await file.read())
+    return _billing_import_execute(db,organization_id,"clients",rows,user)
+
+@app.post("/api/v1/billing/import/analyze")
+async def analyze_billing_csv_import(organization_id:str,file:UploadFile=File(...),kind:str=Form("auto"),user:User=Depends(current_user),db:Session=Depends(get_db)):
+    """Dry-run used by the billing import assistant before it writes data."""
+    require_org_admin(db,user,organization_id)
+    rows,meta=_billing_csv_records(await file.read());detected=_billing_csv_kind(meta["headers"],file.filename or "",kind)
+    preflight=_billing_import_preflight(db,organization_id,detected,rows)
+    samples=[]
+    for number,row in enumerate(rows[:5],2):
+        if detected=="categories":samples.append({"line":number,"name":_billing_csv_value(row,"categorie","category","name","nom")})
+        elif detected=="clients":samples.append({"line":number,"name":_billing_csv_value(row,"client","name","nom"),"phone":_billing_csv_value(row,"telephone","phone")})
+        elif detected=="headers":samples.append({"line":number,"name":_billing_csv_value(row,"entreprise","company_name","nom"),"style":_billing_csv_value(row,"style_document","document_style") or "standard"})
+        elif detected=="products":samples.append({"line":number,"name":_billing_csv_value(row,"designation","name","nom"),"price":_billing_csv_value(row,"prix_unitaire","prix","price"),"category":_billing_csv_value(row,"categorie","category")})
+        else:samples.append({"line":number,"number":_billing_csv_value(row,"numero","number"),"client":_billing_csv_value(row,"client","customer"),"total":_billing_csv_value(row,"total_ttc","total")})
+    warning=""
+    if detected=="invoices":warning="Ce CSV contient le numéro, le client, l’entête et le total, mais pas les lignes de produits ni les paiements. Les factures seront donc importées comme historique non payé avec une ligne récapitulative."
+    if preflight["duplicates"]:
+        duplicate_note=f"{preflight['duplicates']} doublon(s) seront ignorés pendant l’import."
+        warning=" ".join(part for part in (warning,duplicate_note) if part)
+    return {"kind":detected,"filename":file.filename or "import.csv","rows":meta["rows"],"delimiter":"point-virgule" if meta["delimiter"]==";" else "virgule" if meta["delimiter"]=="," else meta["delimiter"],"headers":meta["headers"],"samples":samples,"errors":preflight["errors"],"duplicates":preflight["duplicates"],"warning":warning}
+
+@app.post("/api/v1/billing/import/execute",status_code=201)
+async def execute_billing_csv_import(organization_id:str,file:UploadFile=File(...),kind:str=Form("auto"),user:User=Depends(current_user),db:Session=Depends(get_db)):
+    require_org_admin(db,user,organization_id)
+    rows,meta=_billing_csv_records(await file.read());detected=_billing_csv_kind(meta["headers"],file.filename or "",kind)
+    result=_billing_import_execute(db,organization_id,detected,rows,user)
+    return {**result,"filename":file.filename or "import.csv","rows":meta["rows"]}
 
 def _billing_csv(filename,headers,rows):
     output=io.StringIO();writer=csv.writer(output);writer.writerow(headers);writer.writerows(rows)
@@ -601,46 +812,8 @@ def create_billing_header(organization_id:str,data:BillingHeaderIn,user:User=Dep
 
 @app.post("/api/v1/billing/headers/import",status_code=201)
 async def import_billing_headers(organization_id:str,file:UploadFile=File(...),user:User=Depends(current_user),db:Session=Depends(get_db)):
-    require_org_admin(db,user,organization_id)
-    raw=await file.read()
-    try: rows=csv.DictReader(io.StringIO(raw.decode("utf-8-sig")))
-    except Exception: raise HTTPException(422,"Fichier CSV d’entêtes invalide")
-    created=0;errors=[]
-    allowed_styles={"standard","scan_gauche","scan_alasko","scan_centre","scan_compact","scan_facture_simple","moderne_clair","moderne_bandeau","moderne_minimal"}
-    allowed_fonts={"","times","arial","calibri","segoe","courier","trebuchet"}
-    def csv_bool(*keys,default=False):
-        value=next((row.get(key) for key in keys if row.get(key) not in (None,"")),None)
-        if value is None:return default
-        return str(value).strip().lower() in {"1","true","yes","oui","vrai","on"}
-    def csv_number(*keys,default=0):
-        value=next((row.get(key) for key in keys if row.get(key) not in (None,"")),None)
-        try:return float(str(value).replace(" ","").replace(",","."))
-        except (TypeError,ValueError):return default
-    for number,row in enumerate(rows,start=2):
-        name=(row.get("company_name") or row.get("nom") or row.get("entreprise") or "").strip()
-        if not name: errors.append(f"Ligne {number}: nom entreprise manquant");continue
-        try:
-            style=(row.get("document_style") or row.get("style_document") or "standard").strip()
-            if style not in allowed_styles: style="standard"
-            isb_enabled=csv_bool("isb_enabled","isb_applicable")
-            table_font=(row.get("table_font_family") or "").strip().lower()
-            if table_font not in allowed_fonts: table_font=""
-            table_size=csv_number("table_font_size",default=0)
-            item=BillingHeader(
-                organization_id=organization_id,company_name=name,
-                address=(row.get("address") or row.get("adresse") or None),
-                phone=(row.get("phone") or row.get("telephone") or None),email=(row.get("email") or None),
-                nif=(row.get("nif") or None),rccm=(row.get("rccm") or None),
-                logo_url=(row.get("logo_url") or row.get("logo") or None),document_style=style,
-                tax_enabled=False if isb_enabled else csv_bool("tax_enabled","tva_applicable"),
-                tax_rate=max(0,min(100,csv_number("tax_rate","taux_tva",default=19))),
-                isb_enabled=isb_enabled,isb_rate=max(0,min(100,csv_number("isb_rate","taux_isb",default=3))),
-                table_font_family=table_font or None,table_font_size=table_size if 8<=table_size<=14 else None,
-                is_default=created==0 and not db.query(BillingHeader).filter_by(organization_id=organization_id).first(),
-            )
-            db.add(item);created+=1
-        except Exception as error: errors.append(f"Ligne {number}: {error}")
-    db.commit();return {"created":created,"errors":errors[:30]}
+    require_org_admin(db,user,organization_id);rows,_=_billing_csv_records(await file.read())
+    return _billing_import_execute(db,organization_id,"headers",rows,user)
 
 @app.put("/api/v1/billing/headers/{header_id}")
 def update_billing_header(header_id:str,data:BillingHeaderIn,user:User=Depends(current_user),db:Session=Depends(get_db)):
@@ -700,6 +873,110 @@ def billing_dashboard(organization_id:str,user:User=Depends(current_user),db:Ses
     customer_ids={item.customer_id for item in recent if item.customer_id};customer_names={item.id:item.name for item in db.query(Customer).filter(Customer.id.in_(customer_ids)).all()} if customer_ids else {}
     db.commit()
     return {"invoices":count,"customers":customers,"headers":headers,"billing_products":products,"shop_products":shop_products,"invoiced_xof":total,"paid_xof":paid,"outstanding_xof":max(0,total-paid),"recent":[{"id":item.id,"number":item.number,"customer":customer_names.get(item.customer_id,"Client comptant"),"document_type":item.document_type,"total_amount":float(item.total_amount),"created_at":item.created_at} for item in recent]}
+
+def _billing_assistant_normalize(value:str|None)->str:
+    value=unicodedata.normalize("NFD",str(value or "").lower())
+    return " ".join("".join(char for char in value if not unicodedata.combining(char)).split())
+
+def _billing_assistant_number(value:str|None,default:float=0)->float:
+    raw=re.sub(r"[^0-9,.-]","",str(value or "")).replace(" ","")
+    if not raw:return default
+    if raw.count(",")==1 and raw.count(".")==0:raw=raw.replace(",",".")
+    else:raw=raw.replace(",","")
+    try:return float(raw)
+    except ValueError:return default
+
+def _billing_assistant_catalog(db:Session,organization_id:str)->list[dict]:
+    products=[
+        {"id":item.id,"name":item.name,"price_xof":float(item.unit_price),"unit":item.unit or "piece","source":"FACTURATION"}
+        for item in db.query(Product).filter_by(organization_id=organization_id,enabled=True).order_by(Product.name).all()
+    ]
+    products.extend(
+        {"id":item.id,"name":item.name,"price_xof":float(item.price_xof),"unit":item.unit or "piece","source":"BOUTIQUE"}
+        for item in db.query(ShopProduct).filter_by(organization_id=organization_id,enabled=True).order_by(ShopProduct.name).all()
+    )
+    return products
+
+def _billing_assistant_matching_lines(message:str,catalog:list[dict])->list[dict]:
+    """Find real FUSAA catalog products in a natural-language billing request.
+
+    This intentionally only produces a draft. The browser must still apply and
+    save it explicitly, mirroring the confirmation step of the Boulangerie
+    billing agent.
+    """
+    normalized=_billing_assistant_normalize(message)
+    lines=[]
+    for product in catalog:
+        name=_billing_assistant_normalize(product["name"])
+        words=[word for word in name.split() if len(word)>=3]
+        exact=name in normalized
+        overlap=sum(word in normalized.split() for word in words)
+        similarity=overlap/max(1,len(words)) if words else 0
+        if not exact and similarity<0.7:continue
+        start=normalized.find(name) if exact else 0
+        prefix=normalized[max(0,start-55):start+len(name)+70]
+        after_product=normalized[start+len(name):] if exact else prefix
+        quantity_match=re.search(r"(\d+(?:[,.]\d+)?)\s*(?:x|fois|unites?|pieces?)?\s*(?:de |du |des )?"+re.escape(name),normalized)
+        if not quantity_match:
+            quantity_match=re.search(r"(\d+(?:[,.]\d+)?)\s*(?:x|fois|unites?|pieces?)?",prefix)
+        quantity=max(.01,_billing_assistant_number(quantity_match.group(1) if quantity_match else None,1))
+        price_match=re.search(r"(?:a|@)\s*(\d[\d .,:]*)",after_product)
+        price=max(0,_billing_assistant_number(price_match.group(1) if price_match else None,float(product["price_xof"])))
+        if any(line["product_id"]==product["id"] for line in lines):continue
+        lines.append({"product_id":product["id"],"description":product["name"],"quantity":quantity,"unit_amount":price,"unit":product["unit"],"source":product["source"]})
+    return lines
+
+def _billing_assistant_document_type(message:str)->str:
+    text=_billing_assistant_normalize(message)
+    if "proforma" in text:return "PROFORMA"
+    if "devis" in text:return "QUOTE"
+    if "bon de livraison" in text or "livraison" in text:return "DELIVERY_NOTE"
+    if "recu" in text or "recu" in text:return "RECEIPT"
+    return "INVOICE"
+
+def _billing_assistant_document_label(document_type:str)->str:
+    return {"QUOTE":"devis","PROFORMA":"proforma","INVOICE":"facture","DELIVERY_NOTE":"bon de livraison","RECEIPT":"recu"}.get(document_type,"facture")
+
+@app.post("/api/v1/billing/assistant")
+def billing_assistant(data:BillingAssistantIn,user:User=Depends(current_user),db:Session=Depends(get_db)):
+    """A billing-only assistant. It never redirects to or mutates Boutique AI."""
+    require_member(db,user,data.organization_id)
+    message=data.message.strip()
+    text=_billing_assistant_normalize(message)
+    catalog=_billing_assistant_catalog(db,data.organization_id)
+    header=db.get(BillingHeader,data.billing_header_id) if data.billing_header_id else default_billing_header(db,data.organization_id)
+    if header and header.organization_id!=data.organization_id:raise HTTPException(422,"Entete d'une autre organisation")
+    customer=db.get(Customer,data.customer_id) if data.customer_id else None
+    if customer and customer.organization_id!=data.organization_id:raise HTTPException(422,"Client d'une autre organisation")
+    if not customer:
+        for candidate in db.query(Customer).filter_by(organization_id=data.organization_id).order_by(Customer.name).all():
+            if _billing_assistant_normalize(candidate.name) in text:
+                customer=candidate;break
+    context={"header":billing_header_out(header) if header else None,"customer":{"id":customer.id,"name":customer.name,"phone":customer.phone,"email":customer.email,"address":customer.address} if customer else None}
+    if any(word in text for word in ("bonjour","bonsoir","salut","hello","coucou")):
+        return {"title":"Assistant IA de facturation","answer":"Bonjour. Je suis distinct de l'assistant Boutique. Je peux preparer un brouillon de facture, devis, proforma, bon de livraison ou recu avec vos vraies entetes, clients et produits. Je ne genere aucun document sans votre validation.","suggestions":["Faire un devis","Lister les produits","Expliquer les types de document"],"context":context}
+    if any(word in text for word in ("payer","paiement","wave","mynita","amanata")):
+        return {"title":"Paiement","answer":payment_instructions()+" La facture reste en attente tant que le paiement n'est pas enregistre dans FUSAA.","suggestions":["Preparer une facture","Voir les documents"],"context":context}
+    if any(word in text for word in ("type de document","difference","difference entre","devis","proforma")) and not re.search(r"\d+",text):
+        return {"title":"Types de documents","answer":"Un devis propose un prix, une proforma sert de facture provisoire, une facture declenche le suivi de paiement, le bon de livraison accompagne la remise et le recu confirme le paiement. Choisissez toujours le type avant d'enregistrer.","suggestions":["Faire un devis","Faire une proforma","Faire une facture"],"context":context}
+    if any(word in text for word in ("produit","catalogue","disponible","article")) and not re.search(r"\d+",text):
+        shown=catalog[:8]
+        answer="Produits disponibles : "+("; ".join(f"{item['name']} ({int(item['price_xof']) if float(item['price_xof']).is_integer() else item['price_xof']} FCFA)" for item in shown) if shown else "Aucun produit n'est encore disponible dans le catalogue de facturation.")
+        return {"title":"Catalogue facture","answer":answer,"suggestions":["Faire un devis","Ajouter un produit"],"context":context}
+    lines=_billing_assistant_matching_lines(message,catalog)
+    requested=any(word in text for word in ("facture","devis","proforma","livraison","recu","cree","creer","prepare","ajoute"))
+    if not lines:
+        return {"title":"Informations a preciser","answer":"Je n'ai pas retrouve de produit dans le catalogue. Indiquez par exemple : « Fais un devis pour Moussa : 2 x Ramette A4 a 3 500 ». Vous pouvez aussi ajouter le produit dans le catalogue de facturation.","suggestions":["Lister les produits","Ajouter un produit","Creer un client"],"context":context,"requires_customer":False,"requested":requested}
+    if not customer:
+        return {"title":"Client requis","answer":"Le brouillon est pret a etre prepare, mais il faut d'abord choisir ou creer le client avec le bouton + Client. Aucun client n'est cree automatiquement.","suggestions":["Creer un client","Choisir un client"],"context":context,"requires_customer":True}
+    if not header:
+        return {"title":"Entete requise","answer":"Choisissez ou creez une entete avec le bouton + Entete avant de preparer le document.","suggestions":["Creer une entete"],"context":context,"requires_header":True}
+    document_type=_billing_assistant_document_type(message)
+    total=sum(line["quantity"]*line["unit_amount"] for line in lines)
+    label=_billing_assistant_document_label(document_type)
+    draft={"billing_header_id":header.id,"customer_id":customer.id,"document_type":document_type,"subject":f"{label.title()} - {customer.name}","notes":"Brouillon prepare par l'assistant de facturation. A verifier avant enregistrement.","lines":lines,"total_amount":round(total,2)}
+    return {"title":"Brouillon de "+label,"answer":f"J'ai prepare un brouillon de {label} pour {customer.name} avec {len(lines)} ligne(s), total {round(total,2):,.0f} FCFA. Verifiez les lignes puis utilisez « Appliquer au brouillon ». L'enregistrement final reste a votre confirmation.","suggestions":["Appliquer au brouillon","Modifier les lignes","Changer le type"],"context":context,"draft":draft}
+
 @app.get("/api/v1/billing/catalog/page")
 def billing_catalog_page(organization_id:str,q:str="",page:int=1,page_size:int=20,user:User=Depends(current_user),db:Session=Depends(get_db)):
     require_member(db,user,organization_id);page=max(1,page);page_size=max(1,min(50,page_size));needle=f"%{q.strip()}%" if q.strip() else None
@@ -862,31 +1139,9 @@ def delete_billing_product(product_id:str,user:User=Depends(current_user),db:Ses
 async def import_billing_products(organization_id:str,file:UploadFile=File(...),user:User=Depends(current_user),db:Session=Depends(get_db)):
     require_org_admin(db,user,organization_id)
     if not (file.filename or "").lower().endswith(".csv"):raise HTTPException(422,"Importez une liste CSV")
-    raw=await file.read()
-    try:rows=list(csv.DictReader(io.StringIO(raw.decode("utf-8-sig"))))
-    except UnicodeDecodeError:raise HTTPException(422,"Le CSV doit être encodé en UTF-8")
-    created=0;errors=[]
-    for index,row in enumerate(rows,2):
-        name=(row.get("nom") or row.get("name") or row.get("designation") or "").strip();price=(row.get("prix") or row.get("price") or row.get("prix_unitaire") or "").replace(" ","").replace(",",".")
-        if not name or not price:errors.append({"line":index,"error":"nom ou prix manquant"});continue
-        try:amount=float(price)
-        except ValueError:errors.append({"line":index,"error":"prix invalide"});continue
-        sku=(row.get("sku") or row.get("code") or row.get("code_produit") or "").strip() or None
-        if sku and db.query(Product).filter_by(organization_id=organization_id,sku=sku).first():errors.append({"line":index,"error":"code déjà utilisé"});continue
-        category_name=(row.get("categorie") or row.get("category") or "").strip()
-        category_id=None
-        if category_name:
-            category=db.query(BillingCategory).filter_by(organization_id=organization_id,name=category_name).first()
-            if not category:
-                category=BillingCategory(organization_id=organization_id,name=category_name);db.add(category);db.flush()
-            category_id=category.id
-        def csv_number(*keys,default=0):
-            raw_value=next((row.get(key) for key in keys if row.get(key) not in (None,"")),default)
-            try:return float(str(raw_value).replace(" ","").replace(",","."))
-            except (TypeError,ValueError):return default
-        db.add(Product(organization_id=organization_id,name=name,unit_price=amount,sku=sku,billing_category_id=category_id,unit=(row.get("unite") or row.get("unit") or "piece").strip()[:20] or "piece",stock_quantity=max(0,int(csv_number("stock","quantite","quantity"))),stock_minimum=max(0,int(csv_number("seuil_stock","stock_minimum","minimum"))),cost_xof=max(0,csv_number("cout","cost","prix_achat"))));created+=1
-    audit(db,user.id,"BILLING_PRODUCTS_IMPORTED","Product","csv",parameters={"created":created,"errors":len(errors)},result="SUCCESS");db.commit()
-    return {"created":created,"errors":errors[:30],"message":"Les produits importés sont réservés à la facturation et ne sont pas visibles dans la Boutique."}
+    rows,_=_billing_csv_records(await file.read())
+    result=_billing_import_execute(db,organization_id,"products",rows,user)
+    return {**result,"message":"Les produits importés sont réservés à la facturation et ne sont pas visibles dans la Boutique."}
 @app.get("/api/v1/billing/invoices/{invoice_id}/pdf")
 def download_billing_invoice(invoice_id:str,document_type:str|None=None,user:User=Depends(current_user),db:Session=Depends(get_db)):
     invoice=one(db,Invoice,invoice_id);require_member(db,user,invoice.organization_id)

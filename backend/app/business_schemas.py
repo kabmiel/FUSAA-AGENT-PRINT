@@ -41,6 +41,12 @@ class BillingDocumentIn(BaseModel):
     notes:str|None=Field(default=None,max_length=2000)
     discount_amount:float=Field(default=0,ge=0)
     lines:list[BillingLineIn]=Field(min_length=1,max_length=100)
+class BillingAssistantIn(BaseModel):
+    """Context sent only to the billing assistant, never to the shop assistant."""
+    organization_id:str
+    message:str=Field(min_length=1,max_length=2000)
+    billing_header_id:str|None=None
+    customer_id:str|None=None
 class StockMovementIn(BaseModel):
     catalogue:str=Field(pattern="^(SHOP|BILLING)$")
     product_id:str

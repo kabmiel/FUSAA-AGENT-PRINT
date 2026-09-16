@@ -14,12 +14,12 @@ from sqlalchemy.orm import Session
 ROOT=Path(__file__).parents[1]
 sys.path[:0]=[str(ROOT/"backend"),str(ROOT/"local-agent")]
 from app.database import Base
-from app.models import User,Organization,OrganizationMember,Workshop,WorkshopMember,Document,PrintJob,ComputerAgent,Printer,JobStatus,LocalActivity,BrowserLink,GuestOrder,ShopCategory,ShopProduct,AnonymousVisit,Invoice,BillingHeader
-from app.main import cancel_job,confirm_job,prepare_job,central_supervision,list_jobs,list_documents,audit_history,list_workshop_members,update_workshop_member,remove_workshop_member,assign_workshop_member,register,create_guest_order,guest_order_status,verify_guest_payment,list_guest_orders,export_guest_orders,archive_guest_order,restore_guest_order,set_public_pricing,get_public_pricing,refresh_guest_quote,create_guest_receipt,production_dashboard,index,impression_index,admin_index,public_tracking_page,delete_job,archive_public_job,create_shop_order,shop_public_products,shop_public_products_page,shop_admin_products_page,record_public_visit,visitor_analytics,create_billing_document,update_billing_invoice,duplicate_billing_invoice,create_billing_competition,create_stock_movement,billing_stock_alerts,create_billing_category,create_billing_product,list_billing_products,create_customer,update_billing_customer,delete_billing_customer,get_billing_invoice,record_billing_payment,list_billing_headers,create_billing_header,billing_dashboard,billing_catalog_page,upload_billing_header_logo,import_billing_headers
+from app.models import User,Organization,OrganizationMember,Workshop,WorkshopMember,Document,PrintJob,ComputerAgent,Printer,JobStatus,LocalActivity,BrowserLink,GuestOrder,ShopCategory,ShopProduct,AnonymousVisit,Invoice,InvoiceLine,Product,BillingHeader
+from app.main import cancel_job,confirm_job,prepare_job,central_supervision,list_jobs,list_documents,audit_history,list_workshop_members,update_workshop_member,remove_workshop_member,assign_workshop_member,register,create_guest_order,guest_order_status,verify_guest_payment,list_guest_orders,export_guest_orders,archive_guest_order,restore_guest_order,set_public_pricing,get_public_pricing,refresh_guest_quote,create_guest_receipt,production_dashboard,index,impression_index,admin_index,public_tracking_page,delete_job,archive_public_job,create_shop_order,shop_public_products,shop_public_products_page,shop_admin_products_page,record_public_visit,visitor_analytics,create_billing_document,update_billing_invoice,duplicate_billing_invoice,create_billing_competition,create_stock_movement,billing_stock_alerts,create_billing_category,create_billing_product,list_billing_products,create_customer,update_billing_customer,delete_billing_customer,get_billing_invoice,record_billing_payment,list_billing_headers,create_billing_header,billing_dashboard,billing_catalog_page,upload_billing_header_logo,import_billing_headers,billing_assistant,_billing_csv_records,_billing_import_execute,_billing_import_preflight
 from app.connectors import IncomingDocument, ingest_incoming_document
 from app.config import settings
 from app.schemas import JobOptions,GuestPaymentIn,PublicPricingIn,PublicVisitIn,RegisterIn
-from app.business_schemas import BillingCategoryIn,BillingCompetitionIn,BillingDocumentIn,BillingHeaderIn,BillingProductIn,CustomerIn,PaymentIn
+from app.business_schemas import BillingAssistantIn,BillingCategoryIn,BillingCompetitionIn,BillingDocumentIn,BillingHeaderIn,BillingProductIn,CustomerIn,PaymentIn
 from app.business_schemas import StockMovementIn
 from app.shop_schemas import ShopPublicOrderIn
 from app.multisite_schemas import WorkshopMemberIn,WorkshopMemberRoleIn
@@ -433,6 +433,43 @@ def test_billing_customer_can_be_updated_and_deleted_without_history(setup_db):
     updated=update_billing_customer(customer.id,CustomerIn(organization_id="o",name="Nouveau nom",phone="90909090"),admin,db)
     assert updated.name=="Nouveau nom" and updated.phone=="90909090"
     assert delete_billing_customer(customer.id,"o",admin,db)=={"ok":True}
+
+def test_billing_only_assistant_prepares_a_catalog_draft_without_creating_invoice(setup_db):
+    db,_,admin=setup_db
+    product=create_billing_product(BillingProductIn(organization_id="o",name="Ramette A4",unit_price=3500,unit="paquet"),admin,db)
+    customer=create_customer(CustomerIn(organization_id="o",name="Moussa Commerce",phone="90000000",email="moussa@example.test",address="Zinder"),admin,db)
+    header=list_billing_headers("o",admin,db)[0]
+    result=billing_assistant(BillingAssistantIn(organization_id="o",billing_header_id=header["id"],customer_id=customer.id,message="Fais une proforma : 2 x Ramette A4 a 3 500"),admin,db)
+    assert result["draft"]["document_type"]=="PROFORMA"
+    assert result["draft"]["billing_header_id"]==header["id"] and result["draft"]["customer_id"]==customer.id
+    assert result["draft"]["lines"]==[{"product_id":product["id"],"description":"Ramette A4","quantity":2.0,"unit_amount":3500.0,"unit":"paquet","source":"FACTURATION"}]
+    assert result["draft"]["total_amount"]==7000 and db.query(Invoice).count()==0
+    greeting=billing_assistant(BillingAssistantIn(organization_id="o",message="Bonjour"),admin,db)
+    assert "distinct" in greeting["answer"].lower() and "draft" not in greeting
+
+def test_boulangerie_semicolon_csv_import_preserves_billing_data_without_shop_leak(setup_db):
+    db,_,admin=setup_db
+    fixtures={
+        "headers":"Entreprise;Telephone;Email;Adresse;NIF;RCCM\nFUSAA INFORMATIQUE;98313369;contact@fusaa.test;Route Tanout;NIF-1;RCCM-1\n",
+        "clients":"Client;Telephone;Email;Adresse\nMoussa;90000000;moussa@example.test;Zinder\n_;_;_;_\n",
+        "categories":"Categorie;Description\nBureautique;Papier et fournitures\n",
+        "products":"Designation;Categorie;Prix unitaire;Unite;Description\nRamette A4;Bureautique;3500.00;Pièce;Papier\n",
+        "invoices":"Numero;Client;Entreprise;Date;Statut;Total TTC;Objet\nFACT-IMPORT-001;Moussa;FUSAA INFORMATIQUE;14/09/2026;Facture Proforma;7000.00;Papier\n",
+    }
+    for kind,content in fixtures.items():
+        rows,meta=_billing_csv_records(content.encode("utf-8"))
+        assert meta["delimiter"]==";"
+        preview=_billing_import_preflight(db,"o",kind,rows)
+        assert preview["duplicates"]==0
+        if kind=="clients":assert preview["errors"]==[{"line":3,"error":"identifiant obligatoire manquant"}]
+        else:assert preview["errors"]==[]
+        result=_billing_import_execute(db,"o",kind,rows,admin)
+        assert result["created"]==1, result
+    product=db.query(Product).filter_by(organization_id="o",name="Ramette A4").one()
+    invoice=db.query(Invoice).filter_by(number="FACT-IMPORT-001").one()
+    assert product.billing_category_id and not db.query(ShopProduct).filter_by(organization_id="o",name="Ramette A4").first()
+    assert invoice.document_type=="PROFORMA" and float(invoice.total_amount)==7000
+    assert db.query(InvoiceLine).filter_by(invoice_id=invoice.id).one().description.startswith("Historique importé")
 
 def test_printer_must_match_job_workshop(setup_db):
     db,_,admin=setup_db

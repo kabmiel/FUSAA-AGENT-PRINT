@@ -26,9 +26,15 @@ let org="o",token="test";function loadBilling(){};
 const esc=value=>String(value??"").replace(/[&<>"']/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
 const money=value=>Number(value||0).toLocaleString("fr-FR")+" FCFA";
 function tell(value){window.lastNotice=value}
+function showFusaaOperation(){return null}async function hideFusaaOperation(){}
 function selectView(view){document.querySelectorAll(".view").forEach(item=>item.classList.toggle("active",item.id===view));if(view==="billing")loadBilling()}
 function openBillingAssistant(){}function openBillingInvoice(){}function downloadBillingInvoice(){}
-async function api(path){
+async function api(path,options={}){
+ if(path.includes("/billing/import/analyze"))return {kind:"categories",filename:"facturation_categories.csv",rows:2,delimiter:"point-virgule",headers:["categorie","description"],samples:[{line:2,name:"Bureautique"}],warning:""};
+ if(path.includes("/billing/import/execute"))return {kind:"categories",filename:"facturation_categories.csv",created:2,skipped:0,errors:[],warnings:[]};
+ if(path.includes("/billing/assistant"))return {title:"Brouillon de proforma",answer:"Brouillon prêt.",draft:{billing_header_id:"h",customer_id:"c",document_type:"PROFORMA",subject:"Proforma",notes:"",total_amount:7000,lines:[{product_id:"p",description:"Ramette A4",quantity:2,unit_amount:3500,unit:"paquet"}]}};
+ if(path==="/api/v1/customers"&&options.method==="POST")return {id:"new-c",name:"Nouveau client",phone:"90000000",email:"client@example.test",address:"Zinder",notes:"Test"};
+ if(path.includes("/billing/headers")&&options.method==="POST")return {id:"new-h",company_name:"Nouvelle entête",is_default:false,document_style:"standard",tax_enabled:false,tax_rate:19,isb_enabled:false,isb_rate:3};
  if(path.includes("/billing/dashboard"))return {invoices:0,invoiced_xof:0,billing_products:1,shop_products:0,customers:1,outstanding_xof:0,headers:1,recent:[]};
  if(path.includes("/billing/headers"))return [{id:"h",company_name:"FUSAA",is_default:true,document_style:"standard",tax_enabled:false,tax_rate:19,isb_enabled:false,isb_rate:3}];
  if(path.includes("/customers"))return [{id:"c",name:"Client exemple"}];
@@ -75,6 +81,28 @@ def test_billing_badges_and_invoice_editor_are_visible_on_desktop_and_mobile():
         page.locator("#billingNewCatalog button[aria-label='Ajouter à la facture']").click()
         assert page.locator("#billingLines .billing-line").count() == 2
         assert page.locator("#billingLines .billing-line").last.get_attribute("data-unit") == "paquet"
+        page.locator("#billingAddHeader").click()
+        assert page.locator("#billingHeaderQuickDialog").is_visible()
+        page.locator("#billingHeaderQuickDialog [name='company_name']").fill("Nouvelle entête")
+        page.locator("#billingHeaderQuickDialog form").last.evaluate("form => form.requestSubmit()")
+        assert page.locator("#billingNewHeader").input_value() == "new-h"
+        page.locator("#billingAddCustomer").click()
+        assert page.locator("#billingCustomerDialog").is_visible()
+        page.locator("#billingCustomerDialog [name='name']").fill("Nouveau client")
+        page.locator("#billingCustomerDialog form").evaluate("form => form.requestSubmit()")
+        assert page.locator("#billingNewCustomer").input_value() == "new-c"
+        page.locator("#billingAiPrompt").fill("Fais une proforma : 2 x Ramette A4 a 3 500")
+        page.locator("button",has_text="Ouvrir le chat IA").click()
+        assert page.locator("#billingFacturationAssistantDialog").is_visible()
+        assert page.locator("#billingFacturationAssistantDialog").get_by_text("Appliquer au brouillon").is_visible()
+        page.locator("#billingFacturationAssistantDialog button[aria-label='Fermer']").click()
+        page.locator("#billingWorkspaceContent").get_by_text("Assistant import CSV").click()
+        assert page.locator("#billingImportAssistantDialog").is_visible()
+        page.locator("#billingImportFile-categories").set_input_files({"name":"facturation_categories.csv","mimeType":"text/csv","buffer":b"Categorie;Description\nBureautique;Papier\n"})
+        page.locator("#billingImportAssistantDialog").get_by_text("Analyser les CSV").click()
+        assert page.locator("#billingImportResults").get_by_text("Bureautique").is_visible()
+        page.locator("#billingImportExecute").click()
+        assert page.locator("#billingImportResults").get_by_text("Cr\u00e9\u00e9s").is_visible()
         page.set_viewport_size({"width": 390, "height": 844})
         assert page.locator('[data-billtab="new"]').is_visible()
         overflow = page.evaluate("""() => ({width:document.documentElement.scrollWidth, viewport:window.innerWidth, elements:[...document.querySelectorAll('#billing *')].filter(node=>node.getBoundingClientRect().right>window.innerWidth+1).slice(0,8).map(node=>({tag:node.tagName,className:node.className,right:Math.round(node.getBoundingClientRect().right)}))})""")
