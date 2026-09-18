@@ -85,6 +85,9 @@ body:has(#billing.active) .workspace main{max-width:none;min-width:0;width:100%;
 #billing .billing-type-badge{display:inline-flex;align-items:center;padding:5px 8px;border:1px solid #54dfd35b;border-radius:999px;background:#54dfd314;color:var(--bill-accent);font-size:.69rem;font-weight:850;white-space:nowrap}
 #billing .billing-row-type{display:grid;gap:6px;min-width:150px}
 #billing .billing-row-type select{width:100%;min-width:150px;margin:0;padding:7px 9px;font-size:.76rem}
+#billing .billing-row-style{display:flex;align-items:center;gap:6px;min-width:235px}
+#billing .billing-row-style select{flex:1;min-width:150px;margin:0;padding:7px 9px;font-size:.76rem}
+#billing .billing-row-style button{white-space:nowrap}
 #billing .billing-icon-button{display:inline-flex;align-items:center;gap:6px}
 #billing .billing-icon-button svg{width:16px;height:16px}
 #billing .billing-form-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px}

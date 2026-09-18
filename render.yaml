@@ -42,5 +42,14 @@ services:
         sync: false
       - key: META_WHATSAPP_APP_SECRET
         value: ""
+      # Set these in the Render dashboard to keep uploaded billing logos after
+      # a restart. Without them, a logo remains available only in the current
+      # ephemeral Render instance.
+      - key: CLOUDINARY_CLOUD_NAME
+        sync: false
+      - key: CLOUDINARY_API_KEY
+        sync: false
+      - key: CLOUDINARY_API_SECRET
+        sync: false
       - key: MAX_UPLOAD_BYTES
         value: "104857600"

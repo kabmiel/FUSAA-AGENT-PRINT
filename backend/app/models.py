@@ -242,6 +242,9 @@ class Invoice(Timestamped, Base):
     discount_amount: Mapped[float] = mapped_column(Numeric(12,2), default=0)
     pdf_key: Mapped[str | None] = mapped_column(String(512), nullable=True)
     billing_header_id: Mapped[str | None] = mapped_column(ForeignKey("billing_headers.id"), nullable=True, index=True)
+    # Snapshot of the selected template.  A document may therefore be rendered
+    # with another style later without changing the shared company header.
+    document_style: Mapped[str | None] = mapped_column(String(40), nullable=True)
     issued_on: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
 class InvoiceLine(Base):

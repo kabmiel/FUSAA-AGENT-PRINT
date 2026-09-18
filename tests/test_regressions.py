@@ -15,11 +15,11 @@ ROOT=Path(__file__).parents[1]
 sys.path[:0]=[str(ROOT/"backend"),str(ROOT/"local-agent")]
 from app.database import Base
 from app.models import User,Organization,OrganizationMember,Workshop,WorkshopMember,Document,PrintJob,ComputerAgent,Printer,JobStatus,LocalActivity,BrowserLink,GuestOrder,ShopCategory,ShopProduct,AnonymousVisit,Invoice,InvoiceLine,Product,BillingHeader
-from app.main import cancel_job,confirm_job,prepare_job,central_supervision,list_jobs,list_documents,audit_history,list_workshop_members,update_workshop_member,remove_workshop_member,assign_workshop_member,register,create_guest_order,guest_order_status,verify_guest_payment,list_guest_orders,export_guest_orders,archive_guest_order,restore_guest_order,set_public_pricing,get_public_pricing,refresh_guest_quote,create_guest_receipt,production_dashboard,index,impression_index,admin_index,public_tracking_page,delete_job,archive_public_job,create_shop_order,shop_public_products,shop_public_products_page,shop_admin_products_page,record_public_visit,visitor_analytics,create_billing_document,update_billing_invoice,duplicate_billing_invoice,create_billing_competition,create_stock_movement,billing_stock_alerts,create_billing_category,create_billing_product,list_billing_products,create_customer,update_billing_customer,delete_billing_customer,get_billing_invoice,record_billing_payment,list_billing_headers,create_billing_header,billing_dashboard,billing_catalog_page,upload_billing_header_logo,import_billing_headers,billing_assistant,_billing_csv_records,_billing_import_execute,_billing_import_preflight
+from app.main import cancel_job,confirm_job,prepare_job,central_supervision,list_jobs,list_documents,audit_history,list_workshop_members,update_workshop_member,remove_workshop_member,assign_workshop_member,register,create_guest_order,guest_order_status,verify_guest_payment,list_guest_orders,export_guest_orders,archive_public_job,restore_guest_order,set_public_pricing,get_public_pricing,refresh_guest_quote,create_guest_receipt,production_dashboard,index,impression_index,admin_index,public_tracking_page,delete_job,create_shop_order,shop_public_products,shop_public_products_page,shop_admin_products_page,record_public_visit,visitor_analytics,create_billing_document,update_billing_invoice,update_billing_invoice_style,duplicate_billing_invoice,create_billing_competition,create_stock_movement,billing_stock_alerts,create_billing_category,create_billing_product,list_billing_products,create_customer,update_billing_customer,delete_billing_customer,get_billing_invoice,record_billing_payment,list_billing_headers,create_billing_header,billing_dashboard,billing_catalog_page,upload_billing_header_logo,import_billing_headers,billing_assistant,_billing_csv_records,_billing_import_execute,_billing_import_preflight
 from app.connectors import IncomingDocument, ingest_incoming_document
 from app.config import settings
 from app.schemas import JobOptions,GuestPaymentIn,PublicPricingIn,PublicVisitIn,RegisterIn
-from app.business_schemas import BillingAssistantIn,BillingCategoryIn,BillingCompetitionIn,BillingDocumentIn,BillingHeaderIn,BillingProductIn,CustomerIn,PaymentIn
+from app.business_schemas import BillingAssistantIn,BillingCategoryIn,BillingCompetitionIn,BillingDocumentIn,BillingHeaderIn,BillingInvoiceStyleIn,BillingProductIn,CustomerIn,PaymentIn
 from app.business_schemas import StockMovementIn
 from app.shop_schemas import ShopPublicOrderIn
 from app.multisite_schemas import WorkshopMemberIn,WorkshopMemberRoleIn
@@ -279,7 +279,7 @@ def test_shop_order_uses_fcfa_stock_and_public_workshop(setup_db,monkeypatch,tmp
     db.refresh(product)
     assert order["currency"]=="XOF" and order["total_xof"]==500000 and product.stock_quantity==0
     invoice=db.query(Invoice).filter_by(source_shop_order_id=order["id"]).one()
-    assert invoice.number==order["invoice_number"] and float(invoice.total_amount)==500000 and invoice.billing_header_id
+    assert invoice.number==order["invoice_number"] and float(invoice.total_amount)==500000 and invoice.billing_header_id and invoice.document_style=="standard"
     from app.billing import generate_invoice_pdf
     monkeypatch.setattr(settings,"storage_dir",tmp_path)
     assert generate_invoice_pdf(db,invoice).read_bytes().startswith(b"%PDF")
@@ -390,25 +390,28 @@ def test_boulangerie_pdf_layout_catalogue_keeps_all_distinct_templates():
     assert "Onze mille soixante-sept francs CFA"==_amount_words(11067)
     assert _reference_amount_words(11067)=="Onze mille soixante-sept"
 
-def test_billing_header_logo_requires_cloudinary_configuration(setup_db,monkeypatch):
-    db,_,admin=setup_db
+def test_billing_header_logo_upload_renders_without_cloudinary(setup_db,monkeypatch,tmp_path):
+    from PIL import Image
+    from app.billing import generate_invoice_pdf
+    db,_,admin=setup_db;monkeypatch.setattr(settings,"storage_dir",tmp_path)
     header=list_billing_headers("o",admin,db)[0]
-    monkeypatch.setattr(settings,"cloudinary_cloud_name","")
-    upload=UploadFile(file=BytesIO(b"image"),filename="logo.png",headers=Headers({"content-type":"image/png"}))
-    with pytest.raises(HTTPException) as error:
-        asyncio.run(upload_billing_header_logo(header["id"],upload,admin,db))
-    assert error.value.status_code==503
-
-def test_billing_header_logo_upload_updates_the_company_header(setup_db,monkeypatch):
-    import cloudinary.uploader
-    db,_,admin=setup_db
-    header=list_billing_headers("o",admin,db)[0]
-    for key,value in (("cloudinary_cloud_name","test-cloud"),("cloudinary_api_key","test-key"),("cloudinary_api_secret","test-secret")):
-        monkeypatch.setattr(settings,key,value)
-    monkeypatch.setattr(cloudinary.uploader,"upload",lambda content,**kwargs:{"secure_url":"https://res.cloudinary.com/test-cloud/image/upload/logo.png"})
-    upload=UploadFile(file=BytesIO(b"image"),filename="logo.png",headers=Headers({"content-type":"image/png"}))
+    image=Image.new("RGB",(160,80),(20,180,160));payload=BytesIO();image.save(payload,format="PNG")
+    upload=UploadFile(file=BytesIO(payload.getvalue()),filename="logo.png",headers=Headers({"content-type":"image/png"}))
     updated=asyncio.run(upload_billing_header_logo(header["id"],upload,admin,db))
-    assert updated["logo_url"]=="https://res.cloudinary.com/test-cloud/image/upload/logo.png"
+    assert updated["logo_url"].startswith("storage://billing-logos/")
+    assert updated["logo_preview_url"].endswith("/logo")
+    document=create_billing_document(BillingDocumentIn(organization_id="o",billing_header_id=header["id"],customer_name="Client logo",lines=[{"description":"Service","quantity":1,"unit_amount":1000}]),admin,db)
+    pdf=generate_invoice_pdf(db,db.get(Invoice,document["id"]))
+    assert pdf.read_bytes().startswith(b"%PDF") and b"/Image" in pdf.read_bytes()
+
+def test_billing_document_style_is_saved_per_invoice(setup_db,monkeypatch,tmp_path):
+    from app.billing import generate_invoice_pdf
+    db,_,admin=setup_db;document=create_billing_document(BillingDocumentIn(organization_id="o",customer_name="Client style",lines=[{"description":"Service","quantity":1,"unit_amount":1000}]),admin,db)
+    result=update_billing_invoice_style(document["id"],BillingInvoiceStyleIn(document_style="moderne_bandeau"),admin,db)
+    assert result["document_style"]=="moderne_bandeau"
+    assert get_billing_invoice(document["id"],admin,db)["document_style"]=="moderne_bandeau"
+    monkeypatch.setattr(settings,"storage_dir",tmp_path)
+    assert generate_invoice_pdf(db,db.get(Invoice,document["id"])).read_bytes().startswith(b"%PDF")
 
 def test_stock_movement_and_alerts_cover_both_catalogues(setup_db):
     db,_,admin=setup_db
@@ -655,6 +658,14 @@ def test_websocket_credentials_are_redacted_from_logs():
     RedactSessionSecrets().filter(record)
     assert "secret" not in record.getMessage() and "jwt" not in record.getMessage()
     assert record.getMessage().count("[REDACTED]")==2
+
+def test_uvicorn_access_log_redaction_keeps_formatter_arguments():
+    import logging
+    from app.observability import RedactSessionSecrets
+    record=logging.LogRecord("uvicorn.access",20,"",0,'%s - "%s %s HTTP/%s" %s',("127.0.0.1","POST","/api/v1/shop/public/orders?token=secret","1.1",201),None)
+    RedactSessionSecrets().filter(record)
+    assert len(record.args)==5 and "secret" not in record.getMessage()
+    assert "[REDACTED]" in record.getMessage()
 
 def test_spooler_exit_treated_as_successful_completion(tmp_path,monkeypatch):
     import pywintypes

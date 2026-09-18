@@ -12,7 +12,7 @@ from decimal import Decimal, ROUND_HALF_UP
 from io import BytesIO
 from pathlib import Path
 from urllib.parse import urlparse
-from urllib.request import urlopen
+from urllib.request import Request, urlopen
 
 from reportlab.graphics import renderPDF
 from reportlab.graphics.barcode import qr
@@ -23,6 +23,8 @@ from reportlab.lib.units import mm
 from reportlab.lib.utils import ImageReader
 from reportlab.pdfbase import pdfmetrics
 from reportlab.pdfgen import canvas
+
+from .config import settings
 
 
 # Values are the Boulangerie source layout values, converted to ReportLab units.
@@ -188,26 +190,51 @@ def _rule(pdf, x1, y, x2, colour="#111111", thickness=.55):
 
 
 def _logo_reader(url):
-    if not url:
+    """Read a logo saved by FUSAA or a public HTTPS logo.
+
+    Billing used to accept only a Cloudinary URL here.  That meant a logo
+    selected from the header form could be stored but silently disappear from
+    every generated PDF whenever Cloudinary was not configured.  Local
+    ``storage://billing-logos`` references are now the primary path, while
+    existing public HTTPS links remain compatible with imported headers.
+    """
+    value = str(url or "").strip()
+    if not value:
         return None
-    parsed = urlparse(url)
-    if parsed.scheme != "https" or parsed.hostname != "res.cloudinary.com":
+    local_prefix = "storage://billing-logos/"
+    if value.startswith(local_prefix):
+        filename = Path(value[len(local_prefix):]).name
+        root = (settings.storage_dir / "billing-logos").resolve()
+        path = (root / filename).resolve()
+        if path.parent != root or not path.is_file():
+            return None
+        try:
+            return ImageReader(str(path))
+        except Exception:
+            return None
+    parsed = urlparse(value)
+    if parsed.scheme != "https" or not parsed.hostname:
         return None
     try:
-        with urlopen(url, timeout=4) as response:
+        request = Request(value, headers={"User-Agent": "FUSAA-PDF/1.0", "Accept": "image/*"})
+        with urlopen(request, timeout=4) as response:
             content = response.read(2_000_001)
-        return ImageReader(BytesIO(content)) if len(content) <= 2_000_000 else None
+            content_type = str(response.headers.get("Content-Type", "")).lower()
+        if len(content) > 2_000_000 or (content_type and not content_type.startswith("image/")):
+            return None
+        return ImageReader(BytesIO(content))
     except Exception:
         return None
 
 
 def _draw_logo(pdf, logo, x, top, width, height):
     if not logo:
-        return
+        return False
     try:
         pdf.drawImage(logo, x, top - height, width=width, height=height, preserveAspectRatio=True, anchor="nw", mask="auto")
+        return True
     except Exception:
-        pass
+        return False
 
 
 def _draw_qr(pdf, value, x, y, size):
@@ -447,8 +474,8 @@ def _modern_header(pdf, invoice, header, customer, logo, cfg, width, height, con
     pdf.setFillColor(_colour(cfg["panel"])); pdf.setStrokeColor(border)
     pdf.rect(left, y - box_h, available, box_h, fill=1, stroke=1)
     pdf.setFillColor(accent); pdf.rect(left, y - box_h, 3 * mm, box_h, fill=1, stroke=0)
-    _draw_logo(pdf, logo, left + 6 * mm, y - 4 * mm, 22 * mm, 20 * mm)
-    if not logo:
+    logo_drawn = _draw_logo(pdf, logo, left + 6 * mm, y - 4 * mm, 22 * mm, 20 * mm)
+    if not logo_drawn:
         pdf.setFillColor(muted); pdf.setFont("Helvetica-Bold", 8); pdf.drawCentredString(left + 17 * mm, y - 17 * mm, "LOGO")
     company_x, company_w = left + 33 * mm, available - 86 * mm
     pdf.setFillColor(accent)
@@ -711,7 +738,9 @@ def render_invoice_pdf(path: Path, invoice, header, customer, lines):
     path.parent.mkdir(parents=True, exist_ok=True)
     pdf = canvas.Canvas(str(path), pagesize=A4, pageCompression=1)
     width, height = A4
-    style = str(getattr(header, "document_style", "standard") or "standard")
+    # The chosen style belongs to the document once it has been issued.  The
+    # header remains the default only for older documents without a snapshot.
+    style = str(getattr(invoice, "document_style", None) or getattr(header, "document_style", "standard") or "standard")
     logo = _logo_reader(getattr(header, "logo_url", None))
     if style in REFERENCE_STYLES:
         _render_reference(pdf, invoice, header, customer, lines, logo, style, width, height)

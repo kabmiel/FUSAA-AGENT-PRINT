@@ -7,6 +7,7 @@ import io
 import csv
 import zipfile
 import re
+import mimetypes
 import unicodedata
 from contextlib import asynccontextmanager
 from datetime import datetime, timedelta, timezone
@@ -31,7 +32,7 @@ from .document_processing import DocumentProcessor, LayoutEngine
 from .processing_schemas import LayoutRequest, ProcessRequest
 from .connector_schemas import ConnectorCreate, ConnectorOut, ConnectorSecretOut
 from .connectors import IncomingDocument, ingest_incoming_document, verify_meta_signature, whatsapp_media_message_ids
-from .business_schemas import BillingAssistantIn, BillingCategoryIn, BillingCompetitionIn, BillingDocumentIn, BillingHeaderIn, BillingProductIn, BillingProfileIn, CatalogIn, CustomerIn, CustomerOut, FinalCostIn, InvoiceCreate, InvoiceOut, PaymentIn, PriceRuleIn, PriceRuleOut, PrintCostOut, ServiceIn, StockMovementIn
+from .business_schemas import BillingAssistantIn, BillingCategoryIn, BillingCompetitionIn, BillingDocumentIn, BillingHeaderIn, BillingInvoiceStyleIn, BillingProductIn, BillingProfileIn, CatalogIn, CustomerIn, CustomerOut, FinalCostIn, InvoiceCreate, InvoiceOut, PaymentIn, PriceRuleIn, PriceRuleOut, PrintCostOut, ServiceIn, StockMovementIn
 from .shop_schemas import ShopCategoryIn, ShopCloudinaryImageIn, ShopOrderStatusIn, ShopProductIn, ShopPublicOrderIn
 from .business import estimate_print_cost
 from .billing import BILLING_DOCUMENT_TYPES, billing_profile, default_billing_header, header_tax, ensure_shop_invoice, generate_invoice_pdf, generate_invoice_preview_pdf
@@ -629,7 +630,7 @@ def _billing_import_execute(db:Session,organization_id:str,kind:str,rows:list[di
                 header=default_billing_header(db,organization_id)
                 warnings.append("Certaines factures utilisent l’entête par défaut car l’entête source n’est pas encore importée.")
             document_type=_billing_import_document_type(_billing_csv_value(row,"statut","status"))
-            invoice=Invoice(organization_id=organization_id,customer_id=customer.id,number=number[:60],status="DRAFT",currency="XOF",total_amount=total,document_type=document_type,subject=_billing_csv_value(row,"objet","subject") or "Historique importé Boulangerie",notes="Import historique Boulangerie · statut source : "+(_billing_csv_value(row,"statut","status") or "non précisé"),subtotal_amount=total,tax_rate=0,tax_amount=0,isb_amount=0,discount_amount=0,billing_header_id=header.id if header else None,issued_on=_billing_import_date(_billing_csv_value(row,"date","issued_on")))
+            invoice=Invoice(organization_id=organization_id,customer_id=customer.id,number=number[:60],status="DRAFT",currency="XOF",total_amount=total,document_type=document_type,document_style=header.document_style if header else None,subject=_billing_csv_value(row,"objet","subject") or "Historique importé Boulangerie",notes="Import historique Boulangerie · statut source : "+(_billing_csv_value(row,"statut","status") or "non précisé"),subtotal_amount=total,tax_rate=0,tax_amount=0,isb_amount=0,discount_amount=0,billing_header_id=header.id if header else None,issued_on=_billing_import_date(_billing_csv_value(row,"date","issued_on")))
             db.add(invoice);db.flush();db.add(InvoiceLine(invoice_id=invoice.id,description="Historique importé · "+number[:180],unit="forfait",quantity=1,unit_amount=total,total_amount=total));existing.add(number);created+=1
         if created:warnings.append("Le CSV factures ne contient pas les lignes de produits : chaque facture historique est importée avec une ligne récapitulative et sans paiement automatique.")
     else:raise HTTPException(422,"Type d’import inconnu")
@@ -791,8 +792,16 @@ def update_billing_profile(organization_id:str,data:BillingProfileIn,user:User=D
     audit(db,user.id,"BILLING_PROFILE_UPDATED","BillingProfile",profile.id,result="SUCCESS");db.commit()
     return {"ok":True,"id":profile.id}
 
+def _billing_local_logo_path(value:str|None):
+    prefix="storage://billing-logos/";raw=str(value or "")
+    if not raw.startswith(prefix):return None
+    filename=Path(raw[len(prefix):]).name;root=(settings.storage_dir/"billing-logos").resolve();path=(root/filename).resolve()
+    return path if path.parent==root and path.is_file() else None
+
 def billing_header_out(item:BillingHeader):
-    return {key:(float(getattr(item,key)) if key in {"tax_rate","isb_rate","table_font_size"} and getattr(item,key) is not None else getattr(item,key)) for key in ("id","company_name","address","phone","email","nif","rccm","logo_url","document_style","tax_enabled","tax_rate","isb_enabled","isb_rate","table_font_family","table_font_size","is_default")}
+    data={key:(float(getattr(item,key)) if key in {"tax_rate","isb_rate","table_font_size"} and getattr(item,key) is not None else getattr(item,key)) for key in ("id","company_name","address","phone","email","nif","rccm","logo_url","document_style","tax_enabled","tax_rate","isb_enabled","isb_rate","table_font_family","table_font_size","is_default")}
+    data["logo_preview_url"]=f"/api/v1/billing/headers/{item.id}/logo" if _billing_local_logo_path(item.logo_url) else item.logo_url
+    return data
 
 @app.get("/api/v1/billing/headers")
 def list_billing_headers(organization_id:str,user:User=Depends(current_user),db:Session=Depends(get_db)):
@@ -834,22 +843,44 @@ def delete_billing_header(header_id:str,user:User=Depends(current_user),db:Sessi
     was_default=item.is_default;organization_id=item.organization_id;db.delete(item);db.flush()
     if was_default:default_billing_header(db,organization_id)
     audit(db,user.id,"BILLING_HEADER_DELETED","BillingHeader",header_id,result="SUCCESS");db.commit();return {"ok":True}
+
+@app.get("/api/v1/billing/headers/{header_id}/logo",include_in_schema=False)
+def billing_header_logo(header_id:str,db:Session=Depends(get_db)):
+    """Serve the company logo saved for invoice rendering.
+
+    Image tags cannot send the bearer token, and the resource only contains the
+    logo which is also printed on the public invoice.  Header UUIDs make the
+    URL non-enumerable while retaining a direct browser preview.
+    """
+    item=one(db,BillingHeader,header_id);path=_billing_local_logo_path(item.logo_url)
+    if not path:raise HTTPException(404,"Logo introuvable")
+    return FileResponse(path,media_type=mimetypes.guess_type(path.name)[0] or "application/octet-stream",headers={"Cache-Control":"private, max-age=300"})
+
 @app.post("/api/v1/billing/headers/{header_id}/logo")
 async def upload_billing_header_logo(header_id:str,file:UploadFile=File(...),user:User=Depends(current_user),db:Session=Depends(get_db)):
     item=one(db,BillingHeader,header_id);require_org_admin(db,user,item.organization_id)
-    if not (settings.cloudinary_cloud_name and settings.cloudinary_api_key and settings.cloudinary_api_secret):
-        raise HTTPException(503,"Cloudinary n’est pas configuré pour les logos.")
     if file.content_type not in {"image/png","image/jpeg","image/webp"}:
         raise HTTPException(422,"Choisissez un logo PNG, JPEG ou WebP.")
     content=await file.read(5*1024*1024+1)
     if len(content)>5*1024*1024:raise HTTPException(413,"Le logo ne doit pas dépasser 5 Mo.")
     try:
-        import cloudinary
-        import cloudinary.uploader
-        cloudinary.config(cloud_name=settings.cloudinary_cloud_name,api_key=settings.cloudinary_api_key,api_secret=settings.cloudinary_api_secret,secure=True)
-        result=await asyncio.to_thread(cloudinary.uploader.upload,content,folder="fusaa-shop/billing-headers",resource_type="image",public_id=f"{item.id}-{secrets.token_hex(4)}",overwrite=False)
-    except Exception:raise HTTPException(502,"Envoi du logo impossible. Vérifiez la configuration Cloudinary.")
-    item.logo_url=result.get("secure_url");audit(db,user.id,"BILLING_HEADER_LOGO_UPLOADED","BillingHeader",item.id,result="SUCCESS");db.commit()
+        from PIL import Image
+        image=Image.open(io.BytesIO(content));image.verify()
+    except Exception:raise HTTPException(422,"Le fichier ne contient pas une image valide.")
+    if settings.cloudinary_cloud_name and settings.cloudinary_api_key and settings.cloudinary_api_secret:
+        try:
+            import cloudinary
+            import cloudinary.uploader
+            cloudinary.config(cloud_name=settings.cloudinary_cloud_name,api_key=settings.cloudinary_api_key,api_secret=settings.cloudinary_api_secret,secure=True)
+            result=await asyncio.to_thread(cloudinary.uploader.upload,content,folder="fusaa-shop/billing-headers",resource_type="image",public_id=f"{item.id}-{secrets.token_hex(4)}",overwrite=False)
+            item.logo_url=result["secure_url"]
+        except Exception:raise HTTPException(502,"Envoi du logo impossible. Vérifiez la configuration Cloudinary.")
+    else:
+        suffix={"image/png":".png","image/jpeg":".jpg","image/webp":".webp"}[file.content_type]
+        directory=settings.storage_dir/"billing-logos";directory.mkdir(parents=True,exist_ok=True)
+        filename=f"{item.id}-{secrets.token_hex(4)}{suffix}";path=directory/filename;path.write_bytes(content)
+        item.logo_url=f"storage://billing-logos/{filename}"
+    audit(db,user.id,"BILLING_HEADER_LOGO_UPLOADED","BillingHeader",item.id,result="SUCCESS");db.commit()
     return billing_header_out(item)
 @app.get("/api/v1/billing/invoices")
 def list_billing_invoices(organization_id:str,page:int=1,page_size:int=0,user:User=Depends(current_user),db:Session=Depends(get_db)):
@@ -860,7 +891,7 @@ def list_billing_invoices(organization_id:str,page:int=1,page_size:int=0,user:Us
     invoice_ids=[item.id for item in items]
     payments=db.query(Payment).filter(Payment.invoice_id.in_(invoice_ids),Payment.status=="CONFIRMED").all() if invoice_ids else [];settled={}
     for payment in payments:settled[payment.invoice_id]=settled.get(payment.invoice_id,0)+float(payment.amount)
-    return [{"id":item.id,"number":item.number,"status":item.status,"document_type":item.document_type,"subject":item.subject,"total_amount":float(item.total_amount),"paid_amount":settled.get(item.id,0),"balance_amount":max(0,float(item.total_amount)-settled.get(item.id,0)),"customer_name":customers.get(item.customer_id).name if item.customer_id in customers else None,"currency":item.currency,"created_at":item.created_at,"source_shop_order_id":item.source_shop_order_id,"competition_source_invoice_id":item.competition_source_invoice_id,"competition_margin_percent":float(item.competition_margin_percent) if item.competition_margin_percent is not None else None} for item in items]
+    return [{"id":item.id,"number":item.number,"status":item.status,"document_type":item.document_type,"document_style":item.document_style,"subject":item.subject,"total_amount":float(item.total_amount),"paid_amount":settled.get(item.id,0),"balance_amount":max(0,float(item.total_amount)-settled.get(item.id,0)),"customer_name":customers.get(item.customer_id).name if item.customer_id in customers else None,"currency":item.currency,"created_at":item.created_at,"source_shop_order_id":item.source_shop_order_id,"competition_source_invoice_id":item.competition_source_invoice_id,"competition_margin_percent":float(item.competition_margin_percent) if item.competition_margin_percent is not None else None} for item in items]
 @app.get("/api/v1/billing/dashboard")
 def billing_dashboard(organization_id:str,user:User=Depends(current_user),db:Session=Depends(get_db)):
     require_member(db,user,organization_id);default_billing_header(db,organization_id)
@@ -995,7 +1026,7 @@ def get_billing_invoice(invoice_id:str,user:User=Depends(current_user),db:Sessio
     invoice=one(db,Invoice,invoice_id);require_member(db,user,invoice.organization_id);customer=db.get(Customer,invoice.customer_id) if invoice.customer_id else None
     lines=db.query(InvoiceLine).filter_by(invoice_id=invoice.id).all();payments=db.query(Payment).filter_by(invoice_id=invoice.id).order_by(Payment.created_at.desc()).all();paid=sum(float(item.amount) for item in payments if item.status=="CONFIRMED")
     header=db.get(BillingHeader,invoice.billing_header_id) if invoice.billing_header_id else None
-    return {"id":invoice.id,"number":invoice.number,"document_type":invoice.document_type,"status":invoice.status,"subject":invoice.subject,"notes":invoice.notes,"currency":invoice.currency,"issued_on":invoice.issued_on,"billing_header_id":invoice.billing_header_id,"header_name":header.company_name if header else None,"source_shop_order_id":invoice.source_shop_order_id,"competition_source_invoice_id":invoice.competition_source_invoice_id,"competition_margin_percent":float(invoice.competition_margin_percent) if invoice.competition_margin_percent is not None else None,"subtotal_amount":float(invoice.subtotal_amount or 0),"discount_amount":float(invoice.discount_amount or 0),"tax_rate":float(invoice.tax_rate or 0),"tax_amount":float(invoice.tax_amount or 0),"isb_amount":float(invoice.isb_amount or 0),"total_amount":float(invoice.total_amount),"paid_amount":paid,"balance_amount":max(0,float(invoice.total_amount)-paid),"customer":{"id":customer.id,"name":customer.name,"phone":customer.phone,"email":customer.email,"address":customer.address} if customer else None,"lines":[{"id":line.id,"shop_product_id":line.shop_product_id,"billing_product_id":line.billing_product_id,"product_id":line.shop_product_id or line.billing_product_id,"description":line.description,"unit":line.unit,"quantity":line.quantity,"unit_amount":float(line.unit_amount),"total_amount":float(line.total_amount)} for line in lines],"payments":[{"id":payment.id,"amount":float(payment.amount),"method":payment.method,"status":payment.status,"reference":payment.reference,"created_at":payment.created_at} for payment in payments]}
+    return {"id":invoice.id,"number":invoice.number,"document_type":invoice.document_type,"document_style":invoice.document_style or (header.document_style if header else "standard"),"status":invoice.status,"subject":invoice.subject,"notes":invoice.notes,"currency":invoice.currency,"issued_on":invoice.issued_on,"billing_header_id":invoice.billing_header_id,"header_name":header.company_name if header else None,"source_shop_order_id":invoice.source_shop_order_id,"competition_source_invoice_id":invoice.competition_source_invoice_id,"competition_margin_percent":float(invoice.competition_margin_percent) if invoice.competition_margin_percent is not None else None,"subtotal_amount":float(invoice.subtotal_amount or 0),"discount_amount":float(invoice.discount_amount or 0),"tax_rate":float(invoice.tax_rate or 0),"tax_amount":float(invoice.tax_amount or 0),"isb_amount":float(invoice.isb_amount or 0),"total_amount":float(invoice.total_amount),"paid_amount":paid,"balance_amount":max(0,float(invoice.total_amount)-paid),"customer":{"id":customer.id,"name":customer.name,"phone":customer.phone,"email":customer.email,"address":customer.address} if customer else None,"lines":[{"id":line.id,"shop_product_id":line.shop_product_id,"billing_product_id":line.billing_product_id,"product_id":line.shop_product_id or line.billing_product_id,"description":line.description,"unit":line.unit,"quantity":line.quantity,"unit_amount":float(line.unit_amount),"total_amount":float(line.total_amount)} for line in lines],"payments":[{"id":payment.id,"amount":float(payment.amount),"method":payment.method,"status":payment.status,"reference":payment.reference,"created_at":payment.created_at} for payment in payments]}
 @app.put("/api/v1/billing/invoices/{invoice_id}")
 def update_billing_invoice(invoice_id:str,data:BillingDocumentIn,user:User=Depends(current_user),db:Session=Depends(get_db)):
     """Update a manual unpaid document and invalidate its cached PDF.
@@ -1024,7 +1055,7 @@ def update_billing_invoice(invoice_id:str,data:BillingDocumentIn,user:User=Depen
     billing_products={item.id:item for item in db.query(Product).filter(Product.organization_id==invoice.organization_id,Product.id.in_(product_ids),Product.enabled.is_(True)).all()}
     if len(shop_products)+len(billing_products)!=len(set(product_ids)):raise HTTPException(422,"Produit de facturation introuvable")
     subtotal=sum(line.quantity*line.unit_amount for line in data.lines);discount=min(data.discount_amount,subtotal);tax_amount,isb_amount,total=header_tax(header,subtotal,discount)
-    invoice.customer_id=customer.id;invoice.billing_header_id=header.id;invoice.issued_on=data.issued_on or invoice.issued_on or datetime.now(timezone.utc)
+    invoice.customer_id=customer.id;invoice.billing_header_id=header.id;invoice.document_style=invoice.document_style or header.document_style;invoice.issued_on=data.issued_on or invoice.issued_on or datetime.now(timezone.utc)
     invoice.document_type=data.document_type;invoice.status="PENDING_PAYMENT" if data.document_type=="INVOICE" else "DRAFT";invoice.subject=data.subject;invoice.notes=data.notes
     invoice.subtotal_amount=subtotal;invoice.discount_amount=discount;invoice.tax_rate=float(header.tax_rate or 0) if header.tax_enabled else 0;invoice.tax_amount=tax_amount;invoice.isb_amount=isb_amount;invoice.total_amount=total;invoice.pdf_key=None
     db.query(InvoiceLine).filter_by(invoice_id=invoice.id).delete(synchronize_session=False);db.flush()
@@ -1033,6 +1064,14 @@ def update_billing_invoice(invoice_id:str,data:BillingDocumentIn,user:User=Depen
         db.add(InvoiceLine(invoice_id=invoice.id,shop_product_id=shop_product.id if shop_product else None,billing_product_id=billing_product.id if billing_product else None,description=line.description,unit=line.unit,quantity=line.quantity,unit_amount=line.unit_amount,total_amount=line.quantity*line.unit_amount))
     audit(db,user.id,"BILLING_DOCUMENT_UPDATED","Invoice",invoice.id,parameters={"document_type":invoice.document_type,"total":float(invoice.total_amount)},result="SUCCESS");db.commit()
     return {"id":invoice.id,"number":invoice.number,"document_type":invoice.document_type,"total_amount":float(invoice.total_amount),"status":invoice.status}
+
+@app.patch("/api/v1/billing/invoices/{invoice_id}/style")
+def update_billing_invoice_style(invoice_id:str,data:BillingInvoiceStyleIn,user:User=Depends(current_user),db:Session=Depends(get_db)):
+    """Change just this document's rendering model and refresh its PDF."""
+    invoice=one(db,Invoice,invoice_id);require_member(db,user,invoice.organization_id)
+    invoice.document_style=data.document_style;invoice.pdf_key=None
+    audit(db,user.id,"BILLING_DOCUMENT_STYLE_UPDATED","Invoice",invoice.id,parameters={"document_style":data.document_style},result="SUCCESS");db.commit()
+    return {"id":invoice.id,"number":invoice.number,"document_style":invoice.document_style}
 @app.post("/api/v1/billing/invoices/{invoice_id}/payments",status_code=201)
 def record_billing_payment(invoice_id:str,data:PaymentIn,user:User=Depends(current_user),db:Session=Depends(get_db)):
     return record_payment(invoice_id,data,user,db)
@@ -1058,7 +1097,7 @@ def create_billing_document(data:BillingDocumentIn,user:User=Depends(current_use
     billing_products={item.id:item for item in db.query(Product).filter(Product.organization_id==data.organization_id,Product.id.in_(product_ids),Product.enabled.is_(True)).all()}
     if len(shop_products)+len(billing_products)!=len(set(product_ids)):raise HTTPException(422,"Produit de facturation introuvable")
     subtotal=sum(line.quantity*line.unit_amount for line in data.lines);discount=min(data.discount_amount,subtotal);tax_amount,isb_amount,total=header_tax(header,subtotal,discount);tax_rate=float(header.tax_rate or 0) if header.tax_enabled else 0
-    invoice=Invoice(organization_id=data.organization_id,customer_id=customer.id,billing_header_id=header.id,issued_on=data.issued_on or datetime.now(timezone.utc),number=f"{data.document_type[:3]}-{datetime.now(timezone.utc):%Y%m%d}-{secrets.token_hex(3).upper()}",status="DRAFT" if data.document_type!="INVOICE" else "PENDING_PAYMENT",currency="XOF",document_type=data.document_type,subject=data.subject,notes=data.notes,subtotal_amount=subtotal,discount_amount=discount,tax_rate=tax_rate,tax_amount=tax_amount,isb_amount=isb_amount,total_amount=total);db.add(invoice);db.flush()
+    invoice=Invoice(organization_id=data.organization_id,customer_id=customer.id,billing_header_id=header.id,document_style=header.document_style,issued_on=data.issued_on or datetime.now(timezone.utc),number=f"{data.document_type[:3]}-{datetime.now(timezone.utc):%Y%m%d}-{secrets.token_hex(3).upper()}",status="DRAFT" if data.document_type!="INVOICE" else "PENDING_PAYMENT",currency="XOF",document_type=data.document_type,subject=data.subject,notes=data.notes,subtotal_amount=subtotal,discount_amount=discount,tax_rate=tax_rate,tax_amount=tax_amount,isb_amount=isb_amount,total_amount=total);db.add(invoice);db.flush()
     for line in data.lines:
         shop_product=shop_products.get(line.product_id) if line.product_id else None;billing_product=billing_products.get(line.product_id) if line.product_id else None
         db.add(InvoiceLine(invoice_id=invoice.id,shop_product_id=shop_product.id if shop_product else None,billing_product_id=billing_product.id if billing_product else None,description=line.description,unit=line.unit,quantity=line.quantity,unit_amount=line.unit_amount,total_amount=line.quantity*line.unit_amount))
@@ -1068,7 +1107,7 @@ def create_billing_document(data:BillingDocumentIn,user:User=Depends(current_use
 def duplicate_billing_invoice(invoice_id:str,document_type:str="QUOTE",user:User=Depends(current_user),db:Session=Depends(get_db)):
     original=one(db,Invoice,invoice_id);require_member(db,user,original.organization_id)
     if document_type not in {"QUOTE","PROFORMA","INVOICE","DELIVERY_NOTE","RECEIPT"}:raise HTTPException(422,"Type de document invalide")
-    copy=Invoice(organization_id=original.organization_id,customer_id=original.customer_id,billing_header_id=original.billing_header_id,issued_on=datetime.now(timezone.utc),number=f"{document_type[:3]}-{datetime.now(timezone.utc):%Y%m%d}-{secrets.token_hex(3).upper()}",status="PENDING_PAYMENT" if document_type=="INVOICE" else "DRAFT",currency=original.currency,document_type=document_type,subject=original.subject,notes=original.notes,subtotal_amount=original.subtotal_amount,discount_amount=original.discount_amount,tax_rate=original.tax_rate,tax_amount=original.tax_amount,isb_amount=original.isb_amount,total_amount=original.total_amount);db.add(copy);db.flush()
+    copy=Invoice(organization_id=original.organization_id,customer_id=original.customer_id,billing_header_id=original.billing_header_id,document_style=original.document_style,issued_on=datetime.now(timezone.utc),number=f"{document_type[:3]}-{datetime.now(timezone.utc):%Y%m%d}-{secrets.token_hex(3).upper()}",status="PENDING_PAYMENT" if document_type=="INVOICE" else "DRAFT",currency=original.currency,document_type=document_type,subject=original.subject,notes=original.notes,subtotal_amount=original.subtotal_amount,discount_amount=original.discount_amount,tax_rate=original.tax_rate,tax_amount=original.tax_amount,isb_amount=original.isb_amount,total_amount=original.total_amount);db.add(copy);db.flush()
     for line in db.query(InvoiceLine).filter_by(invoice_id=original.id).all():db.add(InvoiceLine(invoice_id=copy.id,shop_product_id=line.shop_product_id,billing_product_id=line.billing_product_id,description=line.description,unit=line.unit,quantity=line.quantity,unit_amount=line.unit_amount,total_amount=line.total_amount))
     audit(db,user.id,"BILLING_DOCUMENT_DUPLICATED","Invoice",copy.id,parameters={"source":original.id,"document_type":document_type},result="SUCCESS");db.commit()
     return {"id":copy.id,"number":copy.number,"document_type":copy.document_type}
@@ -1086,7 +1125,7 @@ def create_billing_competition(invoice_id:str,data:BillingCompetitionIn,user:Use
     copied=[(line,round(float(line.unit_amount)*(1+margin/100),2)) for line in source_lines]
     subtotal=sum(float(line.quantity)*price for line,price in copied)
     tax_amount,isb_amount,total=header_tax(header,subtotal)
-    copy=Invoice(organization_id=original.organization_id,customer_id=original.customer_id,billing_header_id=header.id,issued_on=datetime.now(timezone.utc),number=f"CON-{datetime.now(timezone.utc):%Y%m%d}-{secrets.token_hex(3).upper()}",status="DRAFT",currency=original.currency,document_type="QUOTE",subject=original.subject,notes=original.notes,competition_source_invoice_id=original.id,competition_margin_percent=margin,subtotal_amount=subtotal,discount_amount=0,tax_rate=float(header.tax_rate or 0) if header.tax_enabled else 0,tax_amount=tax_amount,isb_amount=isb_amount,total_amount=total)
+    copy=Invoice(organization_id=original.organization_id,customer_id=original.customer_id,billing_header_id=header.id,document_style=header.document_style,issued_on=datetime.now(timezone.utc),number=f"CON-{datetime.now(timezone.utc):%Y%m%d}-{secrets.token_hex(3).upper()}",status="DRAFT",currency=original.currency,document_type="QUOTE",subject=original.subject,notes=original.notes,competition_source_invoice_id=original.id,competition_margin_percent=margin,subtotal_amount=subtotal,discount_amount=0,tax_rate=float(header.tax_rate or 0) if header.tax_enabled else 0,tax_amount=tax_amount,isb_amount=isb_amount,total_amount=total)
     db.add(copy);db.flush()
     for line,price in copied:db.add(InvoiceLine(invoice_id=copy.id,shop_product_id=line.shop_product_id,billing_product_id=line.billing_product_id,description=line.description,unit=line.unit,quantity=line.quantity,unit_amount=price,total_amount=round(float(line.quantity)*price,2)))
     audit(db,user.id,"BILLING_COMPETITION_CREATED","Invoice",copy.id,parameters={"source":original.id,"source_number":original.number,"billing_header_id":header.id,"margin_percent":margin},result="SUCCESS");db.commit()

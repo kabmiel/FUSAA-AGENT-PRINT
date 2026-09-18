@@ -73,6 +73,9 @@ class BillingHeaderIn(BaseModel):
     table_font_size:float|None=Field(default=None,ge=8,le=14)
     is_default:bool=False
 
+class BillingInvoiceStyleIn(BaseModel):
+    document_style:str=Field(pattern="^(standard|scan_gauche|scan_alasko|scan_centre|scan_compact|scan_facture_simple|moderne_clair|moderne_bandeau|moderne_minimal)$")
+
 class BillingCompetitionIn(BaseModel):
     billing_header_id:str
     margin_percent:float=Field(ge=0,le=1000)

@@ -16,6 +16,16 @@ Upload a PDF/image → inspect and create a `WAITING_APPROVAL` job → select a 
 docker compose up --build
 ```
 
+Pour lancer uniquement l'application locale Windows, sans utiliser la base
+hébergée configurée pour Render :
+
+```powershell
+.\scripts\start-local.ps1
+```
+
+Le script applique les migrations sur `backend/fusaa.db`, puis ouvre
+`http://127.0.0.1:8000`. Il n'écrit jamais dans la base de production.
+
 Backend docs: `http://localhost:8000/docs`; dashboard: `http://localhost:8000/`.
 
 Create an initial user with the API (`POST /api/v1/auth/register`), create an organization/workshop, then run the local agent from `local-agent` using its generated enrollment token.

@@ -67,7 +67,7 @@ def ensure_shop_invoice(db, order: ShopOrder) -> Invoice:
     subtotal=sum(float(line.unit_price_xof)*line.quantity for line in lines)
     tax_amount,isb_amount,total=header_tax(header,subtotal)
     tax_rate=float(header.tax_rate or 0) if header.tax_enabled else 0
-    invoice=Invoice(organization_id=order.organization_id,customer_id=customer.id,source_shop_order_id=order.id,billing_header_id=header.id,number=invoice_number(db),status="PENDING_PAYMENT",currency="XOF",document_type="INVOICE",subject=f"Commande boutique {order.order_number}",notes=order.notes,subtotal_amount=subtotal,tax_rate=tax_rate,tax_amount=tax_amount,isb_amount=isb_amount,total_amount=total)
+    invoice=Invoice(organization_id=order.organization_id,customer_id=customer.id,source_shop_order_id=order.id,billing_header_id=header.id,document_style=header.document_style,number=invoice_number(db),status="PENDING_PAYMENT",currency="XOF",document_type="INVOICE",subject=f"Commande boutique {order.order_number}",notes=order.notes,subtotal_amount=subtotal,tax_rate=tax_rate,tax_amount=tax_amount,isb_amount=isb_amount,total_amount=total)
     db.add(invoice);db.flush()
     for line in lines:
         db.add(InvoiceLine(invoice_id=invoice.id,shop_product_id=line.product_id,description=line.product_name,unit="piece",quantity=line.quantity,unit_amount=float(line.unit_price_xof),total_amount=float(line.unit_price_xof)*line.quantity))
@@ -126,7 +126,7 @@ def generate_invoice_preview_pdf(db, invoice: Invoice, document_type: str) -> Pa
     customer=db.get(Customer,invoice.customer_id) if invoice.customer_id else None
     lines=db.query(InvoiceLine).filter_by(invoice_id=invoice.id).order_by(InvoiceLine.id).all()
     preview=SimpleNamespace(
-        number=invoice.number,document_type=selected,issued_on=invoice.issued_on,
+        number=invoice.number,document_type=selected,document_style=invoice.document_style,issued_on=invoice.issued_on,
         subject=invoice.subject,notes=invoice.notes,subtotal_amount=invoice.subtotal_amount,
         discount_amount=invoice.discount_amount,tax_rate=invoice.tax_rate,
         tax_amount=invoice.tax_amount,isb_amount=invoice.isb_amount,total_amount=invoice.total_amount,
