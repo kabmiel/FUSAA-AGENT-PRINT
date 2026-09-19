@@ -44,6 +44,7 @@ MODERN_STYLES = {
 
 DOCUMENT_NAMES = {"INVOICE": "FACTURE", "QUOTE": "DEVIS", "PROFORMA": "FACTURE PROFORMA", "DELIVERY_NOTE": "BON DE LIVRAISON", "RECEIPT": "REÇU"}
 FONT_NAMES = {"times": "Times-Roman", "arial": "Helvetica", "calibri": "Helvetica", "segoe": "Helvetica", "courier": "Courier", "trebuchet": "Helvetica"}
+ULTRA_COMPACT_STYLE = "ultra_compact"
 
 
 def _decimal(value) -> Decimal:
@@ -181,6 +182,17 @@ def _draw_text(pdf, lines, x, y, width, font, size, leading, align="left", limit
             pdf.drawString(x, y, line)
         y -= leading
     return y
+
+
+def _fit_text(value, font, size, max_width):
+    """Keep a compact PDF label on one line without drawing outside its cell."""
+    text = " ".join(str(value or "").split())
+    if pdfmetrics.stringWidth(text, font, size) <= max_width:
+        return text
+    suffix = "..."
+    while text and pdfmetrics.stringWidth(text + suffix, font, size) > max_width:
+        text = text[:-1]
+    return text.rstrip() + suffix if text else suffix
 
 
 def _rule(pdf, x1, y, x2, colour="#111111", thickness=.55):
@@ -453,6 +465,122 @@ def _render_reference(pdf, invoice, header, customer, lines, logo, style, width,
         pdf.drawRightString(left + available - cfg["signature_right"] * mm, y, "Signature" if cfg.get("simple") else "Le fournisseur")
     else:
         pdf.drawRightString(left + available - cfg["signature_right"] * mm, y, "Reçu" if kind == "RECEIPT" else "Signature")
+
+
+def _render_ultra_compact(pdf, invoice, header, customer, lines, logo, width, height):
+    """High-density A4 layout for up to thirty ordinary invoice lines.
+
+    It intentionally keeps each line in its supplied order.  Short product
+    names use a 5.7 mm row, so 30 products, totals and signatures fit on a
+    single A4 page.  Long descriptions use a second line only when necessary.
+    """
+    left = right = 8 * mm
+    top = bottom = 7 * mm
+    available = width - left - right
+    delivery = str(getattr(invoice, "document_type", "")) == "DELIVERY_NOTE"
+    table_font = FONT_NAMES.get(getattr(header, "table_font_family", None) or "", "Helvetica")
+    configured_size = float(getattr(header, "table_font_size", None) or 8)
+    font_size = min(7.25, max(6.15, configured_size - 1.5))
+    title_font = _font_variant(table_font, True)
+
+    def page_header(continued=False):
+        y = height - top
+        logo_drawn = _draw_logo(pdf, logo, left, y, 14 * mm, 12 * mm)
+        company_x = left + (17 * mm if logo_drawn else 0)
+        company_width = available * .56 - (company_x - left)
+        pdf.setFillColor(_colour("#102b42"))
+        pdf.setFont(title_font, 10.2)
+        pdf.drawString(company_x, y - 3.8 * mm, _fit_text(getattr(header, "company_name", "FUSAA"), title_font, 10.2, company_width))
+        details = " · ".join(item for item in (str(getattr(header, "address", "") or "").replace("\n", ", "), getattr(header, "phone", None), getattr(header, "email", None), getattr(header, "nif", None)) if item)
+        pdf.setFillColor(_colour("#536879")); pdf.setFont(table_font, 6.2)
+        pdf.drawString(company_x, y - 7.6 * mm, _fit_text(details, table_font, 6.2, company_width))
+        pdf.setFillColor(_colour("#0d6470")); pdf.setFont(title_font, 9.5)
+        pdf.drawRightString(left + available, y - 3.7 * mm, _document_title(invoice))
+        pdf.setFillColor(_colour("#536879")); pdf.setFont(table_font, 6.5)
+        issued = getattr(invoice, "issued_on", None) or datetime.now()
+        date_text = issued.strftime("%d/%m/%Y") if hasattr(issued, "strftime") else str(issued)
+        pdf.drawRightString(left + available, y - 7.5 * mm, _fit_text(f"N° {getattr(invoice, 'number', '')} · {date_text}", table_font, 6.5, available * .39))
+        y -= 15 * mm
+        if continued:
+            pdf.setFillColor(_colour("#536879")); pdf.setFont(title_font, 6.4)
+            pdf.drawString(left, y, "SUITE DES LIGNES")
+            y -= 3.4 * mm
+        else:
+            client_text = "Client comptant" if not customer else " / ".join(part for part in (getattr(customer, "name", None), getattr(customer, "phone", None), getattr(customer, "address", None)) if part)
+            pdf.setFillColor(_colour("#162c3b")); pdf.setFont(title_font, 7.1)
+            pdf.drawString(left, y, "CLIENT : " + _fit_text(client_text, table_font, 7.1, available - 20 * mm))
+            subject = str(getattr(invoice, "subject", "") or "").strip()
+            if subject:
+                pdf.setFillColor(_colour("#536879")); pdf.setFont(table_font, 6.3)
+                pdf.drawRightString(left + available, y, _fit_text(subject, table_font, 6.3, available * .46))
+            y -= 4.4 * mm
+        _rule(pdf, left, y, left + available, "#0d6470", .7)
+        return y - 2.4 * mm
+
+    labels, parts = (["N°", "DÉSIGNATION", "QTÉ"], [7, 75, 18]) if delivery else (["N°", "DÉSIGNATION", "QTÉ", "P.U.", "TOTAL"], [7, 55, 10, 14, 14])
+    columns = [available * part / sum(parts) for part in parts]
+
+    def table_head(y):
+        h, x = 5.4 * mm, left
+        pdf.setFillColor(_colour("#11354e")); pdf.rect(left, y - h, available, h, fill=1, stroke=0)
+        pdf.setFillColor(colors.white); pdf.setFont(title_font, 6.1)
+        for index, (label, column) in enumerate(zip(labels, columns)):
+            if index == 1: pdf.drawString(x + 1.2 * mm, y - 3.55 * mm, label)
+            elif index in (0, 2): pdf.drawCentredString(x + column / 2, y - 3.55 * mm, label)
+            else: pdf.drawRightString(x + column - 1.2 * mm, y - 3.55 * mm, label)
+            x += column
+        return y - h
+
+    y = table_head(page_header())
+    footer_space = 31 * mm if not delivery else 15 * mm
+    for row, line in enumerate(lines, 1):
+        values = [str(row), str(getattr(line, "description", "")), _quantity(getattr(line, "quantity", 0))]
+        if not delivery:
+            values += [_reference_money(getattr(line, "unit_amount", 0), " "), _reference_money(_total(line), " ")]
+        wrapped = _wrap(values[1], table_font, font_size, columns[1] - 2.4 * mm)[:2] or [""]
+        if len(wrapped) == 2 and pdfmetrics.stringWidth(wrapped[-1], table_font, font_size) > columns[1] - 4 * mm:
+            wrapped[-1] = _fit_text(wrapped[-1], table_font, font_size, columns[1] - 4 * mm)
+        row_h = max(5.7 * mm, len(wrapped) * 3.05 * mm + 1.1 * mm)
+        if y - row_h < bottom + footer_space:
+            pdf.showPage(); y = table_head(page_header(True))
+        if row % 2 == 0:
+            pdf.setFillColor(_colour("#edf4f5")); pdf.rect(left, y - row_h, available, row_h, fill=1, stroke=0)
+        x = left
+        for index, (value, column) in enumerate(zip(values, columns)):
+            pdf.setStrokeColor(_colour("#8da7b4")); pdf.rect(x, y - row_h, column, row_h, fill=0, stroke=1)
+            pdf.setFillColor(_colour("#152b3a"))
+            if index == 1:
+                _draw_text(pdf, wrapped, x + 1.2 * mm, y - 3.45 * mm, column - 2.4 * mm, table_font, font_size, 3.05 * mm)
+            else:
+                pdf.setFont(table_font, font_size)
+                if index in (0, 2): pdf.drawCentredString(x + column / 2, y - 3.45 * mm, _fit_text(value, table_font, font_size, column - 2 * mm))
+                else: pdf.drawRightString(x + column - 1.2 * mm, y - 3.45 * mm, _fit_text(value, table_font, font_size, column - 2 * mm))
+            x += column
+        y -= row_h
+
+    if delivery:
+        y -= 8 * mm; pdf.setFillColor(_colour("#152b3a")); pdf.setFont(title_font, 7)
+        pdf.drawString(left, y, "CERTIFIE SERVICE FAIT"); pdf.drawRightString(left + available, y, "LE FOURNISSEUR")
+        return
+
+    totals = _totals(invoice, header, no_tax_label="TOTAL")
+    total_x = left + available - 57 * mm
+    if y - (len(totals) * 5.7 * mm + 12 * mm) < bottom:
+        pdf.showPage(); y = table_head(page_header(True))
+    y -= 2 * mm
+    for index, (label, amount) in enumerate(totals):
+        h = 5.7 * mm; final = index == len(totals) - 1
+        pdf.setFillColor(_colour("#0d6470") if final else colors.white); pdf.setStrokeColor(_colour("#0d6470"))
+        pdf.rect(total_x, y - h, 57 * mm, h, fill=1, stroke=1)
+        pdf.setFillColor(colors.white if final else _colour("#152b3a")); pdf.setFont(title_font, 6.5)
+        pdf.drawString(total_x + 1.8 * mm, y - 3.7 * mm, label); pdf.drawRightString(left + available - 1.8 * mm, y - 3.7 * mm, _reference_money(amount, " ") + " FCFA")
+        y -= h
+    y -= 3.2 * mm
+    pdf.setFillColor(_colour("#536879")); pdf.setFont(table_font, 5.9)
+    pdf.drawString(left, y, _fit_text("Arrêté " + _document_article(invoice) + " " + _document_label(invoice) + " à " + _reference_money(getattr(invoice, "total_amount", 0), " ") + " FCFA.", table_font, 5.9, available))
+    y -= 7 * mm; pdf.setFillColor(_colour("#152b3a")); pdf.setFont(title_font, 6.6)
+    left_label, right_label = ("Pour acquit", "Le fournisseur") if str(getattr(invoice, "document_type", "")) == "INVOICE" else ("Signature", "Validation")
+    pdf.drawString(left, y, left_label); pdf.drawRightString(left + available, y, right_label)
 
 
 def _modern_header(pdf, invoice, header, customer, logo, cfg, width, height, continued=False):
@@ -742,7 +870,9 @@ def render_invoice_pdf(path: Path, invoice, header, customer, lines):
     # header remains the default only for older documents without a snapshot.
     style = str(getattr(invoice, "document_style", None) or getattr(header, "document_style", "standard") or "standard")
     logo = _logo_reader(getattr(header, "logo_url", None))
-    if style in REFERENCE_STYLES:
+    if style == ULTRA_COMPACT_STYLE:
+        _render_ultra_compact(pdf, invoice, header, customer, lines, logo, width, height)
+    elif style in REFERENCE_STYLES:
         _render_reference(pdf, invoice, header, customer, lines, logo, style, width, height)
     elif style in MODERN_STYLES:
         _render_modern(pdf, invoice, header, customer, lines, logo, style, width, height)

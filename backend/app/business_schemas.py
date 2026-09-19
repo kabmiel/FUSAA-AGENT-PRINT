@@ -64,7 +64,7 @@ class BillingHeaderIn(BaseModel):
     nif:str|None=Field(default=None,max_length=80)
     rccm:str|None=Field(default=None,max_length=80)
     logo_url:str|None=Field(default=None,max_length=1024)
-    document_style:str=Field(default="standard",pattern="^(standard|scan_gauche|scan_alasko|scan_centre|scan_compact|scan_facture_simple|moderne_clair|moderne_bandeau|moderne_minimal)$")
+    document_style:str=Field(default="standard",pattern="^(standard|scan_gauche|scan_alasko|scan_centre|scan_compact|scan_facture_simple|ultra_compact|moderne_clair|moderne_bandeau|moderne_minimal)$")
     tax_enabled:bool=False
     tax_rate:float=Field(default=19,ge=0,le=100)
     isb_enabled:bool=False
@@ -74,7 +74,7 @@ class BillingHeaderIn(BaseModel):
     is_default:bool=False
 
 class BillingInvoiceStyleIn(BaseModel):
-    document_style:str=Field(pattern="^(standard|scan_gauche|scan_alasko|scan_centre|scan_compact|scan_facture_simple|moderne_clair|moderne_bandeau|moderne_minimal)$")
+    document_style:str=Field(pattern="^(standard|scan_gauche|scan_alasko|scan_centre|scan_compact|scan_facture_simple|ultra_compact|moderne_clair|moderne_bandeau|moderne_minimal)$")
 
 class BillingCompetitionIn(BaseModel):
     billing_header_id:str

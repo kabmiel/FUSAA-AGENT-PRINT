@@ -60,6 +60,10 @@ body:has(#billing.active) .workspace main{max-width:none;min-width:0;width:100%;
 #billing .billing-popup-loading em,#billing .billing-import-progress em{grid-column:1/-1;z-index:1;display:block;height:7px;overflow:hidden;border-radius:99px;background:#ffffff13}
 #billing .billing-popup-loading u,#billing .billing-import-progress u{display:block;width:var(--billing-import-progress,45%);height:100%;border-radius:inherit;background:linear-gradient(90deg,#26d2bb,#2584ee);box-shadow:0 0 18px #35dbc4;animation:billing-progress-pulse 1.05s ease-in-out infinite}
 #billing .billing-import-progress{margin:10px 0;padding:18px;border:1px solid #54dfd38a;border-radius:18px;box-shadow:inset 0 1px #ffffff1a,0 14px 38px #04121c75}
+#billing .billing-import-inline{margin-top:13px;min-height:0}
+#billing .billing-import-inline .billing-import-progress{margin-bottom:0}
+#billing .billing-import-step,#billing .billing-import-success{margin:8px 2px 0;color:var(--bill-muted);font-size:.8rem;line-height:1.45}
+#billing .billing-import-success{padding:10px 12px;border:1px solid #54dfd354;border-radius:12px;background:#3fd6c011;color:var(--bill-text)}
 #billing .billing-load-error{grid-template-columns:46px minmax(0,1fr);border-color:#e9878788;background:linear-gradient(145deg,#40212c,#151b2a)}
 #billing .billing-load-error>i{display:grid;place-items:center;width:40px;height:40px;border:1px solid #ffaaaa7a;border-radius:50%;background:#e85c6533;color:#ffd3d3;font-style:normal;font-weight:900;font-size:1.2rem}
 #billing .billing-load-error button{width:auto;margin-top:12px}

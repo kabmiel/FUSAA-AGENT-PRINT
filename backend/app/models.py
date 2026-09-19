@@ -254,6 +254,9 @@ class InvoiceLine(Base):
     print_job_id: Mapped[str | None] = mapped_column(ForeignKey("print_jobs.id"), nullable=True)
     shop_product_id: Mapped[str | None] = mapped_column(ForeignKey("shop_products.id"), nullable=True)
     billing_product_id: Mapped[str | None] = mapped_column(ForeignKey("products.id"), nullable=True, index=True)
+    # The saved order is intentional: it is the order entered on the invoice
+    # screen and must remain identical in previews, PDFs, copies and quotes.
+    display_order: Mapped[int] = mapped_column(Integer, default=0)
     description: Mapped[str] = mapped_column(String(255))
     unit: Mapped[str] = mapped_column(String(20), default="piece")
     quantity: Mapped[float] = mapped_column(Numeric(10,2), default=1)

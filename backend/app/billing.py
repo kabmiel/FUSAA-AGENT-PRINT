@@ -63,20 +63,20 @@ def ensure_shop_invoice(db, order: ShopOrder) -> Invoice:
         customer=Customer(organization_id=order.organization_id,name=order.customer_name,phone=order.customer_phone,notes=order.delivery_address)
         db.add(customer);db.flush()
     header=default_billing_header(db,order.organization_id)
-    lines=db.query(ShopOrderLine).filter_by(order_id=order.id).all()
+    lines=db.query(ShopOrderLine).filter_by(order_id=order.id).order_by(ShopOrderLine.id).all()
     subtotal=sum(float(line.unit_price_xof)*line.quantity for line in lines)
     tax_amount,isb_amount,total=header_tax(header,subtotal)
     tax_rate=float(header.tax_rate or 0) if header.tax_enabled else 0
     invoice=Invoice(organization_id=order.organization_id,customer_id=customer.id,source_shop_order_id=order.id,billing_header_id=header.id,document_style=header.document_style,number=invoice_number(db),status="PENDING_PAYMENT",currency="XOF",document_type="INVOICE",subject=f"Commande boutique {order.order_number}",notes=order.notes,subtotal_amount=subtotal,tax_rate=tax_rate,tax_amount=tax_amount,isb_amount=isb_amount,total_amount=total)
     db.add(invoice);db.flush()
-    for line in lines:
-        db.add(InvoiceLine(invoice_id=invoice.id,shop_product_id=line.product_id,description=line.product_name,unit="piece",quantity=line.quantity,unit_amount=float(line.unit_price_xof),total_amount=float(line.unit_price_xof)*line.quantity))
+    for position,line in enumerate(lines,1):
+        db.add(InvoiceLine(invoice_id=invoice.id,shop_product_id=line.product_id,display_order=position,description=line.product_name,unit="piece",quantity=line.quantity,unit_amount=float(line.unit_price_xof),total_amount=float(line.unit_price_xof)*line.quantity))
     return invoice
 
 def _legacy_invoice_pdf(db, invoice: Invoice) -> Path:
     profile=billing_profile(db,invoice.organization_id)
     customer=db.get(Customer,invoice.customer_id) if invoice.customer_id else None
-    lines=db.query(InvoiceLine).filter_by(invoice_id=invoice.id).order_by(InvoiceLine.id).all()
+    lines=db.query(InvoiceLine).filter_by(invoice_id=invoice.id).order_by(InvoiceLine.display_order,InvoiceLine.id).all()
     path=settings.storage_dir / "invoices" / f"{invoice.number}.pdf";path.parent.mkdir(parents=True,exist_ok=True)
     pdf=canvas.Canvas(str(path),pagesize=A4);width,height=A4
     pdf.setFillColor(colors.HexColor("#071a2a"));pdf.rect(0,height-48*mm,width,48*mm,fill=1,stroke=0)
@@ -105,7 +105,7 @@ def _legacy_invoice_pdf(db, invoice: Invoice) -> Path:
 def generate_invoice_pdf(db, invoice: Invoice) -> Path:
     header=db.get(BillingHeader,invoice.billing_header_id) if invoice.billing_header_id else default_billing_header(db,invoice.organization_id)
     customer=db.get(Customer,invoice.customer_id) if invoice.customer_id else None
-    lines=db.query(InvoiceLine).filter_by(invoice_id=invoice.id).order_by(InvoiceLine.id).all()
+    lines=db.query(InvoiceLine).filter_by(invoice_id=invoice.id).order_by(InvoiceLine.display_order,InvoiceLine.id).all()
     path=settings.storage_dir / "invoices" / f"{invoice.number}.pdf"
     render_invoice_pdf(path,invoice,header,customer,lines)
     invoice.pdf_key=str(path.relative_to(settings.storage_dir))
@@ -124,7 +124,7 @@ def generate_invoice_preview_pdf(db, invoice: Invoice, document_type: str) -> Pa
         raise ValueError("Type de document invalide")
     header=db.get(BillingHeader,invoice.billing_header_id) if invoice.billing_header_id else default_billing_header(db,invoice.organization_id)
     customer=db.get(Customer,invoice.customer_id) if invoice.customer_id else None
-    lines=db.query(InvoiceLine).filter_by(invoice_id=invoice.id).order_by(InvoiceLine.id).all()
+    lines=db.query(InvoiceLine).filter_by(invoice_id=invoice.id).order_by(InvoiceLine.display_order,InvoiceLine.id).all()
     preview=SimpleNamespace(
         number=invoice.number,document_type=selected,document_style=invoice.document_style,issued_on=invoice.issued_on,
         subject=invoice.subject,notes=invoice.notes,subtotal_amount=invoice.subtotal_amount,

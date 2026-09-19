@@ -390,7 +390,7 @@ def create_guest_receipt(order_id:str,user:User=Depends(current_user),db:Session
     if order.invoice_id:return guest_receipt_out(db,order)
     job=one(db,PrintJob,order.print_job_id);document=one(db,Document,job.document_id);amount=float(job.final_cost or job.estimated_cost or 0)
     invoice=Invoice(organization_id=order.organization_id,number=f"REC-{datetime.now(timezone.utc):%Y%m%d}-{secrets.token_hex(3).upper()}",status="PAID",currency="XOF",total_amount=amount)
-    db.add(invoice);db.flush();db.add(InvoiceLine(invoice_id=invoice.id,print_job_id=job.id,description=f"Commande {order.order_number} · {document.original_name}",quantity=1,unit_amount=amount,total_amount=amount));db.add(Payment(invoice_id=invoice.id,amount=amount,method="MANUAL",reference=order.payment_reference,status="CONFIRMED"));order.invoice_id=invoice.id
+    db.add(invoice);db.flush();db.add(InvoiceLine(invoice_id=invoice.id,print_job_id=job.id,display_order=1,description=f"Commande {order.order_number} · {document.original_name}",quantity=1,unit_amount=amount,total_amount=amount));db.add(Payment(invoice_id=invoice.id,amount=amount,method="MANUAL",reference=order.payment_reference,status="CONFIRMED"));order.invoice_id=invoice.id
     audit(db,user.id,"GUEST_RECEIPT_CREATED","Invoice",invoice.id,parameters={"order_number":order.order_number,"amount":amount},result="SUCCESS");db.commit();db.refresh(order)
     return guest_receipt_out(db,order)
 
@@ -501,7 +501,10 @@ def _billing_csv_records(raw:bytes)->tuple[list[dict],dict]:
     headers=[_billing_csv_key(item) for item in reader.fieldnames]
     records=[]
     for row in reader:
-        records.append({_billing_csv_key(key):str(value or "").strip() for key,value in row.items() if key is not None})
+        record={_billing_csv_key(key):str(value or "").strip() for key,value in row.items() if key is not None}
+        # Spreadsheet exports frequently carry blank trailing rows.  They are
+        # not products and must not appear as import errors.
+        if any(record.values()):records.append(record)
     return records,{"delimiter":delimiter,"headers":headers,"rows":len(records)}
 
 def _billing_csv_value(row:dict,*keys:str)->str:
@@ -514,10 +517,27 @@ def _billing_csv_name(value:str|None)->str:
 def _billing_csv_number(value:str|None,default:float=0)->float:
     raw=re.sub(r"[^0-9,.-]","",str(value or "")).replace(" ","")
     if not raw:return default
-    if raw.count(",")==1 and raw.count(".")==0:raw=raw.replace(",",".")
-    else:raw=raw.replace(",","")
+    # Accept French (12 500,50), international (12,500.50), and plain
+    # decimal (12500.00) product exports.
+    if "," in raw and "." in raw:
+        if raw.rfind(",")>raw.rfind("."):raw=raw.replace(".","").replace(",",".")
+        else:raw=raw.replace(",","")
+    elif "," in raw:raw=raw.replace(",",".")
     try:return float(raw)
     except ValueError:return default
+
+def _billing_product_csv_values(row:dict)->dict:
+    """Read standard Boulangerie product labels and their common aliases."""
+    return {
+        "name":_billing_csv_name(_billing_csv_value(row,"designation","designation_produit","libelle","libelle_produit","nom_produit","name","nom","produit","article","item")),
+        "price":_billing_csv_value(row,"prix_unitaire","prix_unitaire_fcfa","prix","prix_vente","prix_de_vente","price","unit_price","pu"),
+        "category":_billing_csv_value(row,"categorie","nom_categorie","category","famille"),
+        "sku":_billing_csv_value(row,"sku","code","code_produit","code_article","reference","ref"),
+        "unit":_billing_csv_value(row,"unite","unit","unite_de_vente"),
+        "stock":_billing_csv_value(row,"stock","quantite","quantity","quantite_stock","stock_initial"),
+        "minimum":_billing_csv_value(row,"seuil_stock","stock_minimum","minimum","seuil_alerte"),
+        "cost":_billing_csv_value(row,"cout","cost","prix_achat","cout_achat"),
+    }
 
 def _billing_csv_kind(headers:list[str],filename:str="",requested:str="auto")->str:
     requested=_billing_csv_key(requested)
@@ -587,7 +607,7 @@ def _billing_import_execute(db:Session,organization_id:str,kind:str,rows:list[di
             db.add(Customer(organization_id=organization_id,name=name[:160],phone=_billing_csv_value(row,"telephone","phone") or None,email=_billing_csv_value(row,"email","e_mail") or None,address=_billing_csv_value(row,"adresse","address") or None,notes=_billing_csv_value(row,"notes","note") or None));existing.add(key);created+=1
     elif kind=="headers":
         existing={_billing_assistant_normalize(item.company_name) for item in db.query(BillingHeader).filter_by(organization_id=organization_id).all()}
-        allowed_styles={"standard","scan_gauche","scan_alasko","scan_centre","scan_compact","scan_facture_simple","moderne_clair","moderne_bandeau","moderne_minimal"}
+        allowed_styles={"standard","scan_gauche","scan_alasko","scan_centre","scan_compact","scan_facture_simple","ultra_compact","moderne_clair","moderne_bandeau","moderne_minimal"}
         for line,row in enumerate(rows,2):
             name=_billing_csv_name(_billing_csv_value(row,"entreprise","company_name","nom","name"))
             if not name:errors.append({"line":line,"error":"nom entreprise manquant"});continue
@@ -601,14 +621,14 @@ def _billing_import_execute(db:Session,organization_id:str,kind:str,rows:list[di
     elif kind=="products":
         existing={_billing_assistant_normalize(item.name) for item in db.query(Product).filter_by(organization_id=organization_id).all()}
         for line,row in enumerate(rows,2):
-            name=_billing_csv_name(_billing_csv_value(row,"designation","name","nom","produit"));price_raw=_billing_csv_value(row,"prix_unitaire","prix","price","unit_price")
+            values=_billing_product_csv_values(row);name,price_raw=values["name"],values["price"]
             if not name or not price_raw:errors.append({"line":line,"error":"désignation ou prix manquant"});continue
             amount=_billing_csv_number(price_raw,-1)
             if amount<0:errors.append({"line":line,"error":"prix invalide"});continue
             key=_billing_assistant_normalize(name)
             if key in existing:skipped+=1;continue
-            category=_billing_import_category(db,organization_id,_billing_csv_value(row,"categorie","category"),cache=category_cache)
-            db.add(Product(organization_id=organization_id,name=name[:160],unit_price=amount,sku=_billing_csv_value(row,"sku","code","code_produit") or None,billing_category_id=category.id if category else None,unit=(_billing_csv_value(row,"unite","unit") or "piece")[:20],stock_quantity=max(0,int(_billing_csv_number(_billing_csv_value(row,"stock","quantite","quantity"),0))),stock_minimum=max(0,int(_billing_csv_number(_billing_csv_value(row,"seuil_stock","stock_minimum","minimum"),3))),cost_xof=max(0,_billing_csv_number(_billing_csv_value(row,"cout","cost","prix_achat"),0))));existing.add(key);created+=1
+            category=_billing_import_category(db,organization_id,values["category"],cache=category_cache)
+            db.add(Product(organization_id=organization_id,name=name[:160],unit_price=amount,sku=values["sku"] or None,billing_category_id=category.id if category else None,unit=(values["unit"] or "piece")[:20],stock_quantity=max(0,int(_billing_csv_number(values["stock"],0))),stock_minimum=max(0,int(_billing_csv_number(values["minimum"],3))),cost_xof=max(0,_billing_csv_number(values["cost"],0))));existing.add(key);created+=1
     elif kind=="invoices":
         customers={_billing_assistant_normalize(item.name):item for item in db.query(Customer).filter_by(organization_id=organization_id).all()}
         headers={_billing_assistant_normalize(item.company_name):item for item in db.query(BillingHeader).filter_by(organization_id=organization_id).all()}
@@ -631,11 +651,11 @@ def _billing_import_execute(db:Session,organization_id:str,kind:str,rows:list[di
                 warnings.append("Certaines factures utilisent l’entête par défaut car l’entête source n’est pas encore importée.")
             document_type=_billing_import_document_type(_billing_csv_value(row,"statut","status"))
             invoice=Invoice(organization_id=organization_id,customer_id=customer.id,number=number[:60],status="DRAFT",currency="XOF",total_amount=total,document_type=document_type,document_style=header.document_style if header else None,subject=_billing_csv_value(row,"objet","subject") or "Historique importé Boulangerie",notes="Import historique Boulangerie · statut source : "+(_billing_csv_value(row,"statut","status") or "non précisé"),subtotal_amount=total,tax_rate=0,tax_amount=0,isb_amount=0,discount_amount=0,billing_header_id=header.id if header else None,issued_on=_billing_import_date(_billing_csv_value(row,"date","issued_on")))
-            db.add(invoice);db.flush();db.add(InvoiceLine(invoice_id=invoice.id,description="Historique importé · "+number[:180],unit="forfait",quantity=1,unit_amount=total,total_amount=total));existing.add(number);created+=1
+            db.add(invoice);db.flush();db.add(InvoiceLine(invoice_id=invoice.id,display_order=1,description="Historique importé · "+number[:180],unit="forfait",quantity=1,unit_amount=total,total_amount=total));existing.add(number);created+=1
         if created:warnings.append("Le CSV factures ne contient pas les lignes de produits : chaque facture historique est importée avec une ligne récapitulative et sans paiement automatique.")
     else:raise HTTPException(422,"Type d’import inconnu")
     audit(db,user.id,"BILLING_CSV_IMPORTED","BillingImport",kind,parameters={"created":created,"skipped":skipped,"errors":len(errors)},result="SUCCESS")
-    db.commit();return {"kind":kind,"created":created,"skipped":skipped,"errors":errors[:30],"warnings":list(dict.fromkeys(warnings))}
+    db.commit();return {"kind":kind,"created":created,"skipped":skipped,"errors":errors[:30],"warnings":list(dict.fromkeys(warnings)),"processed_rows":len(rows),"total_rows":len(rows)}
 
 def _billing_import_preflight(db:Session,organization_id:str,kind:str,rows:list[dict])->dict:
     """Validate an import without writing; shown by the CSV assistant first."""
@@ -650,7 +670,7 @@ def _billing_import_preflight(db:Session,organization_id:str,kind:str,rows:list[
         value=lambda row:_billing_csv_name(_billing_csv_value(row,"entreprise","company_name","nom","name"))
     elif kind=="products":
         existing={_billing_assistant_normalize(item.name) for item in db.query(Product).filter_by(organization_id=organization_id).all()}
-        value=lambda row:_billing_csv_name(_billing_csv_value(row,"designation","name","nom","produit"))
+        value=lambda row:_billing_product_csv_values(row)["name"]
     else:
         existing={item.number for item in db.query(Invoice.number).all()}
         value=lambda row:_billing_csv_name(_billing_csv_value(row,"numero","number","facture"))
@@ -659,7 +679,7 @@ def _billing_import_preflight(db:Session,organization_id:str,kind:str,rows:list[
         identifier=value(row)
         if not identifier:
             errors.append({"line":line,"error":"identifiant obligatoire manquant"});continue
-        if kind=="products" and _billing_csv_number(_billing_csv_value(row,"prix_unitaire","prix","price","unit_price"),-1)<0:
+        if kind=="products" and _billing_csv_number(_billing_product_csv_values(row)["price"],-1)<0:
             errors.append({"line":line,"error":"prix produit invalide"});continue
         if kind=="invoices" and _billing_csv_number(_billing_csv_value(row,"total_ttc","total","montant","total_amount"),-1)<0:
             errors.append({"line":line,"error":"total facture invalide"});continue
@@ -688,7 +708,8 @@ async def analyze_billing_csv_import(organization_id:str,file:UploadFile=File(..
         if detected=="categories":samples.append({"line":number,"name":_billing_csv_value(row,"categorie","category","name","nom")})
         elif detected=="clients":samples.append({"line":number,"name":_billing_csv_value(row,"client","name","nom"),"phone":_billing_csv_value(row,"telephone","phone")})
         elif detected=="headers":samples.append({"line":number,"name":_billing_csv_value(row,"entreprise","company_name","nom"),"style":_billing_csv_value(row,"style_document","document_style") or "standard"})
-        elif detected=="products":samples.append({"line":number,"name":_billing_csv_value(row,"designation","name","nom"),"price":_billing_csv_value(row,"prix_unitaire","prix","price"),"category":_billing_csv_value(row,"categorie","category")})
+        elif detected=="products":
+            values=_billing_product_csv_values(row);samples.append({"line":number,"name":values["name"],"price":values["price"],"category":values["category"]})
         else:samples.append({"line":number,"number":_billing_csv_value(row,"numero","number"),"client":_billing_csv_value(row,"client","customer"),"total":_billing_csv_value(row,"total_ttc","total")})
     warning=""
     if detected=="invoices":warning="Ce CSV contient le numéro, le client, l’entête et le total, mais pas les lignes de produits ni les paiements. Les factures seront donc importées comme historique non payé avec une ligne récapitulative."
@@ -775,8 +796,8 @@ def create_invoice(data:InvoiceCreate,user:User=Depends(current_user),db:Session
     jobs=[one(db,PrintJob,item) for item in data.job_ids]
     if any(job.organization_id!=data.organization_id for job in jobs):raise HTTPException(422,"Job belongs to another organization")
     invoice=Invoice(organization_id=data.organization_id,customer_id=data.customer_id,number=f"FUS-{datetime.now(timezone.utc):%Y%m%d}-{secrets.token_hex(3).upper()}",currency=data.currency);db.add(invoice);db.flush();total=0.0
-    for job in jobs:
-        amount=float(job.final_cost or job.estimated_cost or estimate_print_cost(db,job)[0]);db.add(InvoiceLine(invoice_id=invoice.id,print_job_id=job.id,description=f"Impression {job.id[:8]}",quantity=1,unit_amount=amount,total_amount=amount));total+=amount
+    for position,job in enumerate(jobs,1):
+        amount=float(job.final_cost or job.estimated_cost or estimate_print_cost(db,job)[0]);db.add(InvoiceLine(invoice_id=invoice.id,print_job_id=job.id,display_order=position,description=f"Impression {job.id[:8]}",quantity=1,unit_amount=amount,total_amount=amount));total+=amount
     invoice.total_amount=total;audit(db,user.id,"INVOICE_CREATED","Invoice",invoice.id,parameters={"jobs":data.job_ids,"total":total},result="SUCCESS");db.commit();db.refresh(invoice);return invoice
 @app.post("/api/v1/invoices/{invoice_id}/payments",status_code=201)
 def record_payment(invoice_id:str,data:PaymentIn,user:User=Depends(current_user),db:Session=Depends(get_db)):
@@ -1024,7 +1045,7 @@ def billing_catalog_page(organization_id:str,q:str="",page:int=1,page_size:int=2
 @app.get("/api/v1/billing/invoices/{invoice_id}")
 def get_billing_invoice(invoice_id:str,user:User=Depends(current_user),db:Session=Depends(get_db)):
     invoice=one(db,Invoice,invoice_id);require_member(db,user,invoice.organization_id);customer=db.get(Customer,invoice.customer_id) if invoice.customer_id else None
-    lines=db.query(InvoiceLine).filter_by(invoice_id=invoice.id).all();payments=db.query(Payment).filter_by(invoice_id=invoice.id).order_by(Payment.created_at.desc()).all();paid=sum(float(item.amount) for item in payments if item.status=="CONFIRMED")
+    lines=db.query(InvoiceLine).filter_by(invoice_id=invoice.id).order_by(InvoiceLine.display_order,InvoiceLine.id).all();payments=db.query(Payment).filter_by(invoice_id=invoice.id).order_by(Payment.created_at.desc()).all();paid=sum(float(item.amount) for item in payments if item.status=="CONFIRMED")
     header=db.get(BillingHeader,invoice.billing_header_id) if invoice.billing_header_id else None
     return {"id":invoice.id,"number":invoice.number,"document_type":invoice.document_type,"document_style":invoice.document_style or (header.document_style if header else "standard"),"status":invoice.status,"subject":invoice.subject,"notes":invoice.notes,"currency":invoice.currency,"issued_on":invoice.issued_on,"billing_header_id":invoice.billing_header_id,"header_name":header.company_name if header else None,"source_shop_order_id":invoice.source_shop_order_id,"competition_source_invoice_id":invoice.competition_source_invoice_id,"competition_margin_percent":float(invoice.competition_margin_percent) if invoice.competition_margin_percent is not None else None,"subtotal_amount":float(invoice.subtotal_amount or 0),"discount_amount":float(invoice.discount_amount or 0),"tax_rate":float(invoice.tax_rate or 0),"tax_amount":float(invoice.tax_amount or 0),"isb_amount":float(invoice.isb_amount or 0),"total_amount":float(invoice.total_amount),"paid_amount":paid,"balance_amount":max(0,float(invoice.total_amount)-paid),"customer":{"id":customer.id,"name":customer.name,"phone":customer.phone,"email":customer.email,"address":customer.address} if customer else None,"lines":[{"id":line.id,"shop_product_id":line.shop_product_id,"billing_product_id":line.billing_product_id,"product_id":line.shop_product_id or line.billing_product_id,"description":line.description,"unit":line.unit,"quantity":line.quantity,"unit_amount":float(line.unit_amount),"total_amount":float(line.total_amount)} for line in lines],"payments":[{"id":payment.id,"amount":float(payment.amount),"method":payment.method,"status":payment.status,"reference":payment.reference,"created_at":payment.created_at} for payment in payments]}
 @app.put("/api/v1/billing/invoices/{invoice_id}")
@@ -1059,9 +1080,9 @@ def update_billing_invoice(invoice_id:str,data:BillingDocumentIn,user:User=Depen
     invoice.document_type=data.document_type;invoice.status="PENDING_PAYMENT" if data.document_type=="INVOICE" else "DRAFT";invoice.subject=data.subject;invoice.notes=data.notes
     invoice.subtotal_amount=subtotal;invoice.discount_amount=discount;invoice.tax_rate=float(header.tax_rate or 0) if header.tax_enabled else 0;invoice.tax_amount=tax_amount;invoice.isb_amount=isb_amount;invoice.total_amount=total;invoice.pdf_key=None
     db.query(InvoiceLine).filter_by(invoice_id=invoice.id).delete(synchronize_session=False);db.flush()
-    for line in data.lines:
+    for position,line in enumerate(data.lines,1):
         shop_product=shop_products.get(line.product_id) if line.product_id else None;billing_product=billing_products.get(line.product_id) if line.product_id else None
-        db.add(InvoiceLine(invoice_id=invoice.id,shop_product_id=shop_product.id if shop_product else None,billing_product_id=billing_product.id if billing_product else None,description=line.description,unit=line.unit,quantity=line.quantity,unit_amount=line.unit_amount,total_amount=line.quantity*line.unit_amount))
+        db.add(InvoiceLine(invoice_id=invoice.id,shop_product_id=shop_product.id if shop_product else None,billing_product_id=billing_product.id if billing_product else None,display_order=position,description=line.description,unit=line.unit,quantity=line.quantity,unit_amount=line.unit_amount,total_amount=line.quantity*line.unit_amount))
     audit(db,user.id,"BILLING_DOCUMENT_UPDATED","Invoice",invoice.id,parameters={"document_type":invoice.document_type,"total":float(invoice.total_amount)},result="SUCCESS");db.commit()
     return {"id":invoice.id,"number":invoice.number,"document_type":invoice.document_type,"total_amount":float(invoice.total_amount),"status":invoice.status}
 
@@ -1098,9 +1119,9 @@ def create_billing_document(data:BillingDocumentIn,user:User=Depends(current_use
     if len(shop_products)+len(billing_products)!=len(set(product_ids)):raise HTTPException(422,"Produit de facturation introuvable")
     subtotal=sum(line.quantity*line.unit_amount for line in data.lines);discount=min(data.discount_amount,subtotal);tax_amount,isb_amount,total=header_tax(header,subtotal,discount);tax_rate=float(header.tax_rate or 0) if header.tax_enabled else 0
     invoice=Invoice(organization_id=data.organization_id,customer_id=customer.id,billing_header_id=header.id,document_style=header.document_style,issued_on=data.issued_on or datetime.now(timezone.utc),number=f"{data.document_type[:3]}-{datetime.now(timezone.utc):%Y%m%d}-{secrets.token_hex(3).upper()}",status="DRAFT" if data.document_type!="INVOICE" else "PENDING_PAYMENT",currency="XOF",document_type=data.document_type,subject=data.subject,notes=data.notes,subtotal_amount=subtotal,discount_amount=discount,tax_rate=tax_rate,tax_amount=tax_amount,isb_amount=isb_amount,total_amount=total);db.add(invoice);db.flush()
-    for line in data.lines:
+    for position,line in enumerate(data.lines,1):
         shop_product=shop_products.get(line.product_id) if line.product_id else None;billing_product=billing_products.get(line.product_id) if line.product_id else None
-        db.add(InvoiceLine(invoice_id=invoice.id,shop_product_id=shop_product.id if shop_product else None,billing_product_id=billing_product.id if billing_product else None,description=line.description,unit=line.unit,quantity=line.quantity,unit_amount=line.unit_amount,total_amount=line.quantity*line.unit_amount))
+        db.add(InvoiceLine(invoice_id=invoice.id,shop_product_id=shop_product.id if shop_product else None,billing_product_id=billing_product.id if billing_product else None,display_order=position,description=line.description,unit=line.unit,quantity=line.quantity,unit_amount=line.unit_amount,total_amount=line.quantity*line.unit_amount))
     audit(db,user.id,"BILLING_DOCUMENT_CREATED","Invoice",invoice.id,parameters={"document_type":data.document_type,"total":invoice.total_amount},result="SUCCESS");db.commit()
     return {"id":invoice.id,"number":invoice.number,"document_type":invoice.document_type,"total_amount":float(invoice.total_amount),"status":invoice.status}
 @app.post("/api/v1/billing/invoices/{invoice_id}/duplicate",status_code=201)
@@ -1108,7 +1129,7 @@ def duplicate_billing_invoice(invoice_id:str,document_type:str="QUOTE",user:User
     original=one(db,Invoice,invoice_id);require_member(db,user,original.organization_id)
     if document_type not in {"QUOTE","PROFORMA","INVOICE","DELIVERY_NOTE","RECEIPT"}:raise HTTPException(422,"Type de document invalide")
     copy=Invoice(organization_id=original.organization_id,customer_id=original.customer_id,billing_header_id=original.billing_header_id,document_style=original.document_style,issued_on=datetime.now(timezone.utc),number=f"{document_type[:3]}-{datetime.now(timezone.utc):%Y%m%d}-{secrets.token_hex(3).upper()}",status="PENDING_PAYMENT" if document_type=="INVOICE" else "DRAFT",currency=original.currency,document_type=document_type,subject=original.subject,notes=original.notes,subtotal_amount=original.subtotal_amount,discount_amount=original.discount_amount,tax_rate=original.tax_rate,tax_amount=original.tax_amount,isb_amount=original.isb_amount,total_amount=original.total_amount);db.add(copy);db.flush()
-    for line in db.query(InvoiceLine).filter_by(invoice_id=original.id).all():db.add(InvoiceLine(invoice_id=copy.id,shop_product_id=line.shop_product_id,billing_product_id=line.billing_product_id,description=line.description,unit=line.unit,quantity=line.quantity,unit_amount=line.unit_amount,total_amount=line.total_amount))
+    for position,line in enumerate(db.query(InvoiceLine).filter_by(invoice_id=original.id).order_by(InvoiceLine.display_order,InvoiceLine.id).all(),1):db.add(InvoiceLine(invoice_id=copy.id,shop_product_id=line.shop_product_id,billing_product_id=line.billing_product_id,display_order=position,description=line.description,unit=line.unit,quantity=line.quantity,unit_amount=line.unit_amount,total_amount=line.total_amount))
     audit(db,user.id,"BILLING_DOCUMENT_DUPLICATED","Invoice",copy.id,parameters={"source":original.id,"document_type":document_type},result="SUCCESS");db.commit()
     return {"id":copy.id,"number":copy.number,"document_type":copy.document_type}
 @app.post("/api/v1/billing/invoices/{invoice_id}/competition",status_code=201)
@@ -1119,7 +1140,7 @@ def create_billing_competition(invoice_id:str,data:BillingCompetitionIn,user:Use
     header=one(db,BillingHeader,data.billing_header_id)
     if header.organization_id!=original.organization_id:raise HTTPException(422,"Entête d'une autre organisation")
     if original.billing_header_id and header.id==original.billing_header_id:raise HTTPException(422,"Choisissez un autre entete pour la concurrence")
-    source_lines=db.query(InvoiceLine).filter_by(invoice_id=original.id).all()
+    source_lines=db.query(InvoiceLine).filter_by(invoice_id=original.id).order_by(InvoiceLine.display_order,InvoiceLine.id).all()
     if not source_lines:raise HTTPException(422,"Le document n'a aucune ligne")
     margin=round(float(data.margin_percent),2)
     copied=[(line,round(float(line.unit_amount)*(1+margin/100),2)) for line in source_lines]
@@ -1127,7 +1148,7 @@ def create_billing_competition(invoice_id:str,data:BillingCompetitionIn,user:Use
     tax_amount,isb_amount,total=header_tax(header,subtotal)
     copy=Invoice(organization_id=original.organization_id,customer_id=original.customer_id,billing_header_id=header.id,document_style=header.document_style,issued_on=datetime.now(timezone.utc),number=f"CON-{datetime.now(timezone.utc):%Y%m%d}-{secrets.token_hex(3).upper()}",status="DRAFT",currency=original.currency,document_type="QUOTE",subject=original.subject,notes=original.notes,competition_source_invoice_id=original.id,competition_margin_percent=margin,subtotal_amount=subtotal,discount_amount=0,tax_rate=float(header.tax_rate or 0) if header.tax_enabled else 0,tax_amount=tax_amount,isb_amount=isb_amount,total_amount=total)
     db.add(copy);db.flush()
-    for line,price in copied:db.add(InvoiceLine(invoice_id=copy.id,shop_product_id=line.shop_product_id,billing_product_id=line.billing_product_id,description=line.description,unit=line.unit,quantity=line.quantity,unit_amount=price,total_amount=round(float(line.quantity)*price,2)))
+    for position,(line,price) in enumerate(copied,1):db.add(InvoiceLine(invoice_id=copy.id,shop_product_id=line.shop_product_id,billing_product_id=line.billing_product_id,display_order=position,description=line.description,unit=line.unit,quantity=line.quantity,unit_amount=price,total_amount=round(float(line.quantity)*price,2)))
     audit(db,user.id,"BILLING_COMPETITION_CREATED","Invoice",copy.id,parameters={"source":original.id,"source_number":original.number,"billing_header_id":header.id,"margin_percent":margin},result="SUCCESS");db.commit()
     return {"id":copy.id,"number":copy.number,"document_type":copy.document_type,"status":copy.status,"total_amount":float(copy.total_amount),"competition_source_invoice_id":copy.competition_source_invoice_id,"competition_margin_percent":margin}
 @app.get("/api/v1/billing/products")
