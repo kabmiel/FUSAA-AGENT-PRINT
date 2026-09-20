@@ -343,6 +343,11 @@ function billingMoveCustomerFields(){const header=document.getElementById("billi
 function billingChooseDocumentType(){billingPopup("documents")}
 function billingStartDocument(){const select=document.getElementById("billingDocumentType");billingState.editingInvoice=null;billingState.documentType=select?.value||"INVOICE";billingClosePopup();billingOpen("new")}
 function billingReferenceSelect(id,items,placeholder,selected){const select=document.getElementById(id);if(!select)return;select.innerHTML=billingSelect(items,placeholder);if(selected&&items.some(item=>item.id===selected))select.value=selected}
+function billingAttachReferenceDialog(dialog){
+  const root=document.getElementById("billingWorkspace")||document.getElementById("billing");
+  if(root&&dialog.parentElement!==root)root.appendChild(dialog);
+  return dialog;
+}
 function billingCustomerPopup(){
   let dialog=document.getElementById("billingCustomerDialog");
   if(!dialog){
@@ -358,7 +363,7 @@ function billingCustomerPopup(){
       }catch(error){tell(error.message)}finally{await hideFusaaOperation(started)}
     };
   }
-  dialog.showModal();dialog.querySelector("[name='name']")?.focus();
+  billingAttachReferenceDialog(dialog);dialog.showModal();dialog.querySelector("[name='name']")?.focus();
 }
 function billingHeaderStyleOptions(selected="standard"){const styles={standard:"Standard",scan_gauche:"Référence 1 · gauche",scan_alasko:"Référence 2 · Alasko",scan_centre:"Référence 3 · centre",scan_compact:"Référence 4 · compact",scan_facture_simple:"Référence 5 · facture simple",ultra_compact:"Ultra compact · 30 lignes A4",moderne_clair:"Moderne clair",moderne_bandeau:"Moderne bandeau",moderne_minimal:"Moderne minimal"};return Object.entries(styles).map(([key,label])=>'<option value="'+key+'" '+(selected===key?"selected":"")+'>'+label+'</option>').join("")}
 function billingHeaderQuickPopup(){
@@ -377,7 +382,7 @@ function billingHeaderQuickPopup(){
       }catch(error){tell(error.message)}finally{await hideFusaaOperation(started)}
     };
   }
-  dialog.showModal();dialog.querySelector("[name='company_name']")?.focus();
+  billingAttachReferenceDialog(dialog);dialog.showModal();dialog.querySelector("[name='company_name']")?.focus();
 }
 function billingFacturationAssistantContext(){return {billing_header_id:document.getElementById("billingNewHeader")?.value||null,customer_id:document.getElementById("billingNewCustomer")?.value||null}}
 function billingAskAi(){billingFacturationAssistantOpen(document.getElementById("billingAiPrompt")?.value.trim()||"")}
@@ -539,8 +544,13 @@ function billingQuickProduct(){document.getElementById("billingQuickProductDialo
 async function billingSaveQuickProduct(event){
   event.preventDefault();const form=new FormData(event.target);
   try{
-    await api("/api/v1/billing/products",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({organization_id:org,name:String(form.get("name")).trim(),unit_price:Number(form.get("unit_price")),unit:String(form.get("unit")||"piece"),sku:form.get("sku")||null,stock_quantity:0,stock_minimum:3,cost_xof:0})});
-    document.getElementById("billingQuickProductDialog").close();tell("Produit enregistré dans la facturation.");await billingProductSearch(true);
+    const name=String(form.get("name")).trim(),price=Number(form.get("unit_price")),unit=String(form.get("unit")||"piece");
+    const saved=await api("/api/v1/billing/products",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({organization_id:org,name,unit_price:price,unit,stock_quantity:0,stock_minimum:3,cost_xof:0})});
+    const product={...saved,name:saved.name||name,price_xof:price,unit,source:"FACTURATION",stock_quantity:0};
+    if(Array.isArray(billingState.productCatalog)){billingState.productCatalog=[...billingState.productCatalog.filter(item=>item.id!==product.id),product];billingState.productCatalogLoaded=true}
+    const line=window.billingLineTarget;
+    if(line){line.dataset.productId=product.id;line.dataset.unit=unit;line.querySelector(".bill-designation").value=product.name;line.querySelector(".bill-price").value=price;window.billingLineTarget=null;billingUpdateTotal()}
+    document.getElementById("billingQuickProductDialog").close();event.target.reset();tell(line?"Produit ajouté à cette ligne de facture.":"Produit enregistré dans la facturation.");
   }catch(error){tell(error.message)}
 }
 async function billingQuickImportCsv(){
