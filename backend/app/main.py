@@ -1637,7 +1637,7 @@ def ensure_workshop_settings(db:Session,workshop:Workshop):
 @app.get("/api/v1/settings",response_model=WorkshopSettingsOut)
 def get_workshop_settings(user:User=Depends(current_user),db:Session=Depends(get_db)):
     workshop=configured_workshop(user,db);preferences=ensure_workshop_settings(db,workshop);db.commit();db.refresh(preferences)
-    return {**{field:getattr(preferences,field) for field in ("workshop_id","default_copies","default_paper_size","default_orientation","default_color_mode","default_duplex","popup_enabled","smart_suggestions")},"workshop_name":workshop.name}
+    return {**{field:getattr(preferences,field) for field in ("workshop_id","default_copies","default_paper_size","default_orientation","default_color_mode","default_duplex","popup_enabled","smart_suggestions","app_transparency")},"workshop_name":workshop.name}
 
 @app.put("/api/v1/settings",response_model=WorkshopSettingsOut)
 def update_workshop_settings(data:WorkshopSettingsIn,user:User=Depends(current_user),db:Session=Depends(get_db)):
@@ -1646,7 +1646,7 @@ def update_workshop_settings(data:WorkshopSettingsIn,user:User=Depends(current_u
     for field,value in values.items():setattr(preferences,field,value)
     if data.workshop_name:workshop.name=data.workshop_name
     audit(db,user.id,"WORKSHOP_SETTINGS_UPDATED","Workshop",workshop.id,parameters=values,result="SUCCESS");db.commit();db.refresh(preferences)
-    return {**{field:getattr(preferences,field) for field in ("workshop_id","default_copies","default_paper_size","default_orientation","default_color_mode","default_duplex","popup_enabled","smart_suggestions")},"workshop_name":workshop.name}
+    return {**{field:getattr(preferences,field) for field in ("workshop_id","default_copies","default_paper_size","default_orientation","default_color_mode","default_duplex","popup_enabled","smart_suggestions","app_transparency")},"workshop_name":workshop.name}
 
 @app.post("/api/v1/workshops",status_code=201)
 def create_workshop(data:WorkshopIn,user:User=Depends(current_user),db:Session=Depends(get_db)):

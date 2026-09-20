@@ -101,6 +101,7 @@ class WorkshopSettingsIn(BaseModel):
     default_duplex: bool = False
     popup_enabled: bool = True
     smart_suggestions: bool = True
+    app_transparency: int = Field(default=46,ge=0,le=85)
 class WorkshopSettingsOut(WorkshopSettingsIn):
     workshop_id: str
     workshop_name: str

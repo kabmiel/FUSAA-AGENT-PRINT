@@ -450,3 +450,5 @@ class WorkshopSettings(Timestamped, Base):
     default_duplex: Mapped[bool]=mapped_column(Boolean,default=False)
     popup_enabled: Mapped[bool]=mapped_column(Boolean,default=True)
     smart_suggestions: Mapped[bool]=mapped_column(Boolean,default=True)
+    # 0 = panneaux opaques, 85 = effet liquid glass marqué.
+    app_transparency: Mapped[int]=mapped_column(Integer,default=46)
