@@ -1016,29 +1016,36 @@ def billing_assistant(data:BillingAssistantIn,user:User=Depends(current_user),db
             if _billing_assistant_normalize(candidate.name) in text:
                 customer=candidate;break
     context={"header":billing_header_out(header) if header else None,"customer":{"id":customer.id,"name":customer.name,"phone":customer.phone,"email":customer.email,"address":customer.address} if customer else None}
-    if any(word in text for word in ("bonjour","bonsoir","salut","hello","coucou")):
+    if re.fullmatch(r"(?:(?:bonjours?|bonsoir|salut|hello|coucou|comment ca va|comment vas.tu|comment allez.vous|ca va|merci(?: beaucoup)?|et toi|bien|oui)[\s!?,.]*?)+",text):
+        return {"title":"Assistant Facturation","answer":"Bonjour ! Ça va bien, merci. Collez vos produits, un par ligne : je rechercherai les prix et vous demanderai ceux des nouveaux produits.","context":context}
+    if re.fullmatch(r"(?:fais|faire|prepare|preparer|cree|creer) (?:un |une )?(?:devis|facture|proforma)(?: avec les produits disponibles)?[.! ]*",text):
+        return {"title":"Votre liste de produits","answer":"Collez les produits souhaités, un par ligne. Exemple : 2 x Ramette A4. Je préparerai les lignes dans cet ordre.","context":context}
+    if text=="aide facturation":
         return {"title":"Assistant IA de facturation","answer":"Bonjour. Je suis distinct de l'assistant Boutique. Je peux preparer un brouillon de facture, devis, proforma, bon de livraison ou recu avec vos vraies entetes, clients et produits. Je ne genere aucun document sans votre validation.","suggestions":["Faire un devis","Lister les produits","Expliquer les types de document"],"context":context}
     if any(word in text for word in ("payer","paiement","wave","mynita","amanata")):
         return {"title":"Paiement","answer":payment_instructions()+" La facture reste en attente tant que le paiement n'est pas enregistre dans FUSAA.","suggestions":["Preparer une facture","Voir les documents"],"context":context}
-    if any(word in text for word in ("type de document","difference","difference entre","devis","proforma")) and not re.search(r"\d+",text):
+    if any(word in text for word in ("type de document","types de document","difference entre")) and not re.search(r"\d+",text):
         return {"title":"Types de documents","answer":"Un devis propose un prix, une proforma sert de facture provisoire, une facture declenche le suivi de paiement, le bon de livraison accompagne la remise et le recu confirme le paiement. Choisissez toujours le type avant d'enregistrer.","suggestions":["Faire un devis","Faire une proforma","Faire une facture"],"context":context}
-    if any(word in text for word in ("produit","catalogue","disponible","article")) and not re.search(r"\d+",text):
+    if re.fullmatch(r"(?:liste|lister|voir|montre|affiche)(?: les| le| des)? (?:produits|catalogue|articles)(?: disponibles)?[.! ]*",text):
         shown=catalog[:8]
         answer="Produits disponibles : "+("; ".join(f"{item['name']} ({int(item['price_xof']) if float(item['price_xof']).is_integer() else item['price_xof']} FCFA)" for item in shown) if shown else "Aucun produit n'est encore disponible dans le catalogue de facturation.")
         return {"title":"Catalogue facture","answer":answer,"suggestions":["Faire un devis","Ajouter un produit"],"context":context}
-    lines=_billing_assistant_matching_lines(message,catalog)
+    if "?" in text or re.match(r"^(?:comment|pourquoi|quel|quelle|quels|quelles|est.ce|peux.tu|explique|aide|combien)\b",text):
+        return {"title":"Assistant Facturation","answer":"Pour préparer une facture, collez les désignations et quantités, un produit par ligne. Vous pourrez vérifier les prix, choisir le client et l’entête avant l’enregistrement.","context":context}
+    from .billing_list_parser import parse_product_list
+    try: lines=parse_product_list(message,catalog)
+    except ValueError as error: raise HTTPException(422,str(error))
     requested=any(word in text for word in ("facture","devis","proforma","livraison","recu","cree","creer","prepare","ajoute"))
     if not lines:
         return {"title":"Informations a preciser","answer":"Je n'ai pas retrouve de produit dans le catalogue. Indiquez par exemple : « Fais un devis pour Moussa : 2 x Ramette A4 a 3 500 ». Vous pouvez aussi ajouter le produit dans le catalogue de facturation.","suggestions":["Lister les produits","Ajouter un produit","Creer un client"],"context":context,"requires_customer":False,"requested":requested}
-    if not customer:
-        return {"title":"Client requis","answer":"Le brouillon est pret a etre prepare, mais il faut d'abord choisir ou creer le client avec le bouton + Client. Aucun client n'est cree automatiquement.","suggestions":["Creer un client","Choisir un client"],"context":context,"requires_customer":True}
-    if not header:
-        return {"title":"Entete requise","answer":"Choisissez ou creez une entete avec le bouton + Entete avant de preparer le document.","suggestions":["Creer une entete"],"context":context,"requires_header":True}
     document_type=_billing_assistant_document_type(message)
-    total=sum(line["quantity"]*line["unit_amount"] for line in lines)
+    total=sum(line["quantity"]*(line["unit_amount"] or 0) for line in lines)
     label=_billing_assistant_document_label(document_type)
-    draft={"billing_header_id":header.id,"customer_id":customer.id,"document_type":document_type,"subject":f"{label.title()} - {customer.name}","notes":"Brouillon prepare par l'assistant de facturation. A verifier avant enregistrement.","lines":lines,"total_amount":round(total,2)}
-    return {"title":"Brouillon de "+label,"answer":f"J'ai prepare un brouillon de {label} pour {customer.name} avec {len(lines)} ligne(s), total {round(total,2):,.0f} FCFA. Verifiez les lignes puis utilisez « Appliquer au brouillon ». L'enregistrement final reste a votre confirmation.","suggestions":["Appliquer au brouillon","Modifier les lignes","Changer le type"],"context":context,"draft":draft}
+    draft={"billing_header_id":header.id if header else None,"customer_id":customer.id if customer else None,"document_type":document_type,"subject":f"{label.title()} - {customer.name}" if customer else label.title(),"notes":"","lines":lines,"total_amount":round(total,2)}
+    missing=sum(not line["product_id"] for line in lines)
+    return {"title":"Produits à compléter" if missing else "Brouillon de "+label,
+            "answer":f"{len(lines)} ligne(s) détectée(s), dans l’ordre de votre liste. "+(f"Vérifiez les {missing} produit(s) à compléter et leurs prix dans la fenêtre." if missing else "Vous pouvez appliquer ces lignes à la facture et choisir le client avant de l’enregistrer."),
+            "context":context,"draft":draft,"requires_product_review":bool(missing)}
 
 @app.get("/api/v1/billing/catalog/page")
 def billing_catalog_page(organization_id:str,q:str="",page:int=1,page_size:int=20,user:User=Depends(current_user),db:Session=Depends(get_db)):
