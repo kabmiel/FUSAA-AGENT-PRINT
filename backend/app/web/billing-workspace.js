@@ -107,6 +107,10 @@ const billingDocumentLabel=type=>billingDocumentTypes[type]||"Facture";
 const billingDocumentTypeOptions=selected=>Object.entries(billingDocumentTypes).map(([value,label])=>'<option value="'+value+'" '+(value===selected?"selected":"")+'>'+label+'</option>').join("");
 const billingIcon=paths=>'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">'+paths+'</svg>';
 const billingEyeIcon=billingIcon('<path d="M2.5 12s3.5-6 9.5-6 9.5 6 9.5 6-3.5 6-9.5 6-9.5-6-9.5-6Z"/><circle cx="12" cy="12" r="2.5"/>');
+const billingEditIcon=billingIcon('<path d="m4 20 4.2-1 10-10a2.1 2.1 0 0 0-3-3l-10 10L4 20Z"/><path d="m13.8 7.2 3 3"/>');
+const billingDuplicateIcon=billingIcon('<rect x="8" y="8" width="11" height="12" rx="2"/><path d="M16 8V6a2 2 0 0 0-2-2H6a2 2 0 0 0-2 2v10a2 2 0 0 0 2 2h2"/>');
+const billingCompetitionIcon=billingIcon('<path d="M4 18 10 12l4 3 6-8"/><path d="M15 7h5v5"/>');
+const billingApplyIcon=billingIcon('<path d="m5 12 4 4L19 6"/>');
 const billingIcons={
   dashboard:billingIcon('<rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/>'),
   new:billingIcon('<path d="M12 4v16M4 12h16"/><rect x="3" y="3" width="18" height="18" rx="3"/>'),
@@ -147,8 +151,9 @@ function billingNavigate(tab){billingPopupTabs.has(tab)?billingPopup(tab):billin
 async function billingPopup(tab){
   let dialog=document.getElementById("billingGlassDialog");
   if(!dialog){document.body.insertAdjacentHTML("beforeend",'<dialog id="billingGlassDialog" class="billing-glass-dialog"><div class="billing-glass-head"><span class="billing-eyebrow">FACTURATION FUSAA</span><button class="secondary" type="button" aria-label="Fermer" onclick="billingClosePopup()">×</button></div><div id="billingGlassContent"></div></dialog>');dialog=document.getElementById("billingGlassDialog")}
-  const billingRoot=document.getElementById("billing");
+  const billingRoot=document.getElementById("billingWorkspace")||document.getElementById("billing");
   if(billingRoot&&dialog.parentElement!==billingRoot)billingRoot.appendChild(dialog);
+  dialog.classList.toggle("billing-documents-dialog",tab==="documents");
   billingState.popupTarget="billingGlassContent";if(!dialog.open)dialog.showModal();
   try{await billingOpen(tab)}finally{billingState.popupTarget=null}
 }
@@ -198,8 +203,8 @@ billingInvoiceTable=function(items){
   return '<div class="billing-table-wrap"><table class="billing-table"><thead><tr><th>Numero</th><th>Client</th><th>Type</th><th>Style PDF</th><th>Date</th><th>Montant</th><th>Actions</th></tr></thead><tbody>'+items.map(item=>{
     const typeId="billingDocumentType-"+item.id,styleId="billingInvoiceStyle-"+item.id,itemId=esc(item.id),number=esc(item.number),selected=item.document_type||"INVOICE",style=item.document_style||"standard",locked=Boolean(item.source_shop_order_id)||Number(item.paid_amount||0)>0;
     const competition=item.competition_source_invoice_id?'<small class="billing-competition-mark">Concurrence +'+Number(item.competition_margin_percent||0).toLocaleString("fr-FR",{maximumFractionDigits:2})+' %</small>':"";
-    const edit=locked?'<span class="muted billing-document-locked" title="Commande Boutique ou document deja paye">Verrouille</span>':'<button class="secondary" type="button" onclick="billingEditDocument(\''+itemId+'\')">Modifier</button>';
-    return '<tr><td><b>'+number+'</b>'+competition+'</td><td>'+esc(item.customer_name||item.customer||"Client comptant")+'</td><td><div class="billing-row-type"><span class="billing-type-badge">'+esc(billingDocumentLabel(item.document_type))+'</span><select id="'+typeId+'" aria-label="Type a generer pour '+number+'">'+billingDocumentTypeOptions(selected)+'</select></div></td><td><div class="billing-row-style"><select id="'+styleId+'" aria-label="Style PDF pour '+number+'">'+billingHeaderStyleOptions(style)+'</select><button class="secondary" type="button" onclick="billingUpdateInvoiceStyle(\''+itemId+'\',document.getElementById(\''+styleId+'\').value)">Appliquer</button></div></td><td>'+billingDate(item.created_at)+'</td><td>'+billingCurrency(item.total_amount)+'</td><td><button class="secondary billing-icon-button" type="button" title="Visualiser le type selectionne" aria-label="Visualiser le PDF '+number+'" onclick="previewBillingInvoice(\''+itemId+'\',\''+number+'\',document.getElementById(\''+typeId+'\').value)">'+billingEyeIcon+'<span>Visualiser</span></button>'+edit+'<button class="secondary" type="button" onclick="billingDuplicate(\''+itemId+'\',document.getElementById(\''+typeId+'\').value)">Dupliquer</button><button class="secondary" type="button" onclick="billingCompetition(\''+itemId+'\')">Concurrence</button></td></tr>'
+    const edit=locked?'<span class="muted billing-document-locked" title="Commande Boutique ou document deja paye">Verrouillé</span>':'<button class="secondary billing-document-icon" type="button" title="Modifier" aria-label="Modifier '+number+'" onclick="billingEditDocument(\''+itemId+'\')">'+billingEditIcon+'</button>';
+    return '<tr><td><b>'+number+'</b>'+competition+'</td><td>'+esc(item.customer_name||item.customer||"Client comptant")+'</td><td><div class="billing-row-type"><span class="billing-type-badge">'+esc(billingDocumentLabel(item.document_type))+'</span><select id="'+typeId+'" aria-label="Type a generer pour '+number+'">'+billingDocumentTypeOptions(selected)+'</select></div></td><td><div class="billing-row-style"><select id="'+styleId+'" aria-label="Style PDF pour '+number+'">'+billingHeaderStyleOptions(style)+'</select><button class="secondary billing-document-icon" type="button" title="Appliquer le style" aria-label="Appliquer le style PDF" onclick="billingUpdateInvoiceStyle(\''+itemId+'\',document.getElementById(\''+styleId+'\').value)">'+billingApplyIcon+'</button></div></td><td>'+billingDate(item.created_at)+'</td><td>'+billingCurrency(item.total_amount)+'</td><td><div class="billing-document-actions"><button class="secondary billing-document-icon" type="button" title="Visualiser le type sélectionné" aria-label="Visualiser le PDF '+number+'" onclick="previewBillingInvoice(\''+itemId+'\',\''+number+'\',document.getElementById(\''+typeId+'\').value)">'+billingEyeIcon+'</button>'+edit+'<button class="secondary billing-document-icon" type="button" title="Dupliquer" aria-label="Dupliquer '+number+'" onclick="billingDuplicate(\''+itemId+'\',document.getElementById(\''+typeId+'\').value)">'+billingDuplicateIcon+'</button><button class="secondary billing-document-icon" type="button" title="Créer une variante concurrence" aria-label="Créer une variante concurrence pour '+number+'" onclick="billingCompetition(\''+itemId+'\')">'+billingCompetitionIcon+'</button></div></td></tr>'
   }).join("")+'</tbody></table></div>';
 };
 async function billingEditDocument(id){
@@ -384,6 +389,10 @@ function billingFacturationAssistantOpen(prefill=""){
     document.getElementById("billingAssistantForm").onsubmit=event=>{event.preventDefault();billingFacturationAssistantSend(document.getElementById("billingAssistantInput").value)};
     document.getElementById("billingAssistantInput").addEventListener("keydown",event=>{if((event.ctrlKey||event.metaKey)&&event.key==="Enter"){event.preventDefault();billingFacturationAssistantSend(event.currentTarget.value)}});
   }
+  // The dialog must live in the billing root: its glass/theme variables are
+  // intentionally scoped there and native dialogs still render in the top layer.
+  const billingRoot=document.getElementById("billing");
+  if(billingRoot&&dialog.parentElement!==billingRoot)billingRoot.appendChild(dialog);
   const context=billingFacturationAssistantContext(),header=billingState.headers.find(item=>item.id===context.billing_header_id),customer=billingState.customers.find(item=>item.id===context.customer_id);
   document.getElementById("billingAssistantContext").innerHTML='<span>Entête <b>'+esc(header?.company_name||"à choisir")+'</b></span><span>Client <b>'+esc(customer?.name||"à choisir")+'</b></span>';
   document.getElementById("billingAssistantMessages").innerHTML='<article class="billing-assistant-message assistant"><b>Assistant Facturation FUSAA</b><p>Je suis distinct de l’assistant Boutique. Je peux préparer une facture, un devis, une proforma, un bon de livraison ou un reçu à partir du catalogue et du client choisis.</p></article>';

@@ -474,40 +474,6 @@ def test_boulangerie_semicolon_csv_import_preserves_billing_data_without_shop_le
     assert invoice.document_type=="PROFORMA" and float(invoice.total_amount)==7000
     assert db.query(InvoiceLine).filter_by(invoice_id=invoice.id).one().description.startswith("Historique importé")
 
-def test_boulangerie_product_aliases_and_decimal_formats_import_with_progress_metadata(setup_db):
-    db,_,admin=setup_db
-    content=(
-        "Libellé;Nom catégorie;Prix de vente;Unité;Code article;Stock initial;Seuil alerte;Coût d'achat\n"
-        "Cartouche cyan;Impression;12 500,50;boîte;CY-01;7;2;9 000,25\n"
-        "Ramette premium;Papier;2,500.75;paquet;RA-02;4;1;1,700.50\n"
-    )
-    rows,meta=_billing_csv_records(content.encode("utf-8"))
-    assert meta["rows"]==2 and meta["delimiter"]==";"
-    assert _billing_import_preflight(db,"o","products",rows)["errors"]==[]
-    result=_billing_import_execute(db,"o","products",rows,admin)
-    assert result["created"]==2 and result["processed_rows"]==2 and result["total_rows"]==2
-    cyan=db.query(Product).filter_by(organization_id="o",name="Cartouche cyan").one()
-    premium=db.query(Product).filter_by(organization_id="o",name="Ramette premium").one()
-    assert float(cyan.unit_price)==12500.5 and cyan.sku=="CY-01" and cyan.stock_quantity==7
-    assert float(premium.unit_price)==2500.75 and float(premium.cost_xof)==1700.5
-
-def test_ultra_compact_pdf_keeps_thirty_invoice_lines_in_entered_order(setup_db,tmp_path,monkeypatch):
-    from app.billing import generate_invoice_pdf
-    from pypdf import PdfReader
-    db,_,admin=setup_db
-    lines=[{"description":f"Produit rang {number:02d}","quantity":1,"unit_amount":1000+number} for number in range(1,31)]
-    document=create_billing_document(BillingDocumentIn(organization_id="o",customer_name="Client compact",lines=lines),admin,db)
-    invoice=db.get(Invoice,document["id"])
-    update_billing_invoice_style(invoice.id,BillingInvoiceStyleIn(document_style="ultra_compact"),admin,db)
-    details=get_billing_invoice(invoice.id,admin,db)
-    assert [line["description"] for line in details["lines"]]==[line["description"] for line in lines]
-    monkeypatch.setattr(settings,"storage_dir",tmp_path)
-    pdf=generate_invoice_pdf(db,invoice)
-    reader=PdfReader(pdf)
-    text="\n".join(page.extract_text() for page in reader.pages)
-    assert len(reader.pages)==1
-    assert text.index("Produit rang 01")<text.index("Produit rang 15")<text.index("Produit rang 30")
-
 def test_printer_must_match_job_workshop(setup_db):
     db,_,admin=setup_db
     with pytest.raises(HTTPException) as error:

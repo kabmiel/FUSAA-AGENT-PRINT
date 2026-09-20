@@ -26,6 +26,8 @@ body:has(#billing.active) .workspace main{max-width:none;min-width:0;width:100%;
 #billing .billing-glass-card em{z-index:1;margin-top:auto;color:var(--bill-accent);font-size:.73rem;font-style:normal;font-weight:850}
 #billing .billing-glass-card em span{font-size:1rem}
 #billing .billing-glass-dialog{width:min(1080px,calc(100vw - 30px));max-height:90vh;padding:0;border:1px solid #54dfd399;border-radius:27px;background:linear-gradient(145deg,#132b40f5,#081624f2);color:var(--bill-text);box-shadow:0 30px 110px #000b;backdrop-filter:blur(24px)}
+#billing .billing-glass-dialog.billing-documents-dialog{width:min(1480px,calc(100vw - 28px))}
+#billing .billing-glass-dialog.billing-documents-dialog>#billingGlassContent{padding-left:26px;padding-right:26px}
 #billing .billing-glass-dialog::backdrop{background:#020b14b8;backdrop-filter:blur(9px)}
 #billing .billing-glass-dialog>#billingGlassContent{max-height:calc(90vh - 70px);overflow:auto;padding:0 20px 20px}
 #billing .billing-glass-head{display:flex;align-items:center;justify-content:space-between;padding:19px 22px 10px;position:sticky;top:0;z-index:2;background:#102337cc;backdrop-filter:blur(18px)}
@@ -94,6 +96,10 @@ body:has(#billing.active) .workspace main{max-width:none;min-width:0;width:100%;
 #billing .billing-row-style button{white-space:nowrap}
 #billing .billing-icon-button{display:inline-flex;align-items:center;gap:6px}
 #billing .billing-icon-button svg{width:16px;height:16px}
+#billing .billing-document-actions{display:flex;align-items:center;gap:6px;white-space:nowrap}
+#billing .billing-table td .billing-document-icon{display:inline-grid;place-items:center;width:36px;height:36px;margin:0;padding:0;border-radius:11px}
+#billing .billing-document-icon svg{width:17px;height:17px}
+#billing .billing-document-locked{display:inline-grid;place-items:center;min-width:36px;height:36px;font-size:.68rem}
 #billing .billing-form-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px}
 #billing .billing-form-grid label,#billing .billing-field{display:block;color:var(--bill-muted);font-size:.77rem;font-weight:750}
 #billing .billing-form-grid label input,#billing .billing-form-grid label select,#billing .billing-form-grid label textarea{margin-top:5px}
@@ -155,8 +161,10 @@ body:has(#billing.active) .workspace main{max-width:none;min-width:0;width:100%;
 #billing .billing-assistant-draft strong{color:var(--bill-accent)}
 #billing .billing-assistant-draft ul{display:grid;gap:4px;margin:0;padding-left:18px;color:var(--bill-muted);font-size:.82rem}
 #billing .billing-assistant-draft button{width:max-content;margin:0;padding:8px 11px;font-size:.78rem}
-#billing .billing-assistant-suggestions{display:flex;gap:8px;flex-wrap:wrap;padding:0 24px 13px}
-#billing .billing-assistant-suggestions button{width:auto;margin:0;padding:8px 10px;font-size:.75rem}
+#billing .billing-assistant-suggestions{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:9px;padding:0 24px 15px}
+#billing .billing-assistant-suggestions button{width:100%;min-height:42px;margin:0;padding:8px 10px;border:1px solid #54dfd36e;border-radius:13px;background:linear-gradient(145deg,#54dfd321,#2a87dc1a);color:var(--bill-text);font-size:.76rem;font-weight:800;line-height:1.2;transition:transform .18s ease,border-color .18s ease,background .18s ease}
+#billing .billing-assistant-suggestions button:first-child{border-color:#54dfd3b8;background:linear-gradient(135deg,#19bda99c,#207ee08c);color:#fff}
+#billing .billing-assistant-suggestions button:hover{transform:translateY(-2px);border-color:var(--bill-accent);background:linear-gradient(145deg,#54dfd338,#2a87dc31)}
 #billing .billing-assistant-composer{display:flex;align-items:center;gap:9px;padding:13px 24px;border-top:1px solid var(--bill-border);background:color-mix(in srgb,var(--bill-bg) 55%,transparent);backdrop-filter:blur(16px)}
 #billing .billing-assistant-composer input,#billing .billing-assistant-composer textarea{flex:1;min-width:0;margin:0}
 #billing .billing-assistant-composer textarea{min-height:48px;resize:vertical}
@@ -166,6 +174,19 @@ body:has(#billing.active) .workspace main{max-width:none;min-width:0;width:100%;
 #billing .billing-assistant-typing i{width:6px;height:6px;border-radius:50%;background:var(--bill-accent);animation:billing-assistant-bounce .9s ease-in-out infinite}
 #billing .billing-assistant-typing i:nth-child(2){animation-delay:.14s}#billing .billing-assistant-typing i:nth-child(3){animation-delay:.28s}
 @keyframes billing-assistant-bounce{50%{transform:translateY(-5px);opacity:.45}}
+/* Fallback for browsers that promote <dialog> out of its visual layer.
+   It prevents the native opaque white dialog from ever replacing the glass UI. */
+dialog.billing-assistant-dialog{border:1px solid #57e0d8b5!important;border-radius:28px!important;background:linear-gradient(140deg,#143047c9,#071420bd)!important;color:#eef6ff!important;box-shadow:0 34px 120px #000a,inset 0 1px #ffffff35!important;backdrop-filter:blur(32px) saturate(165%)!important}
+dialog.billing-assistant-dialog .billing-assistant-head{background:#13283ba8!important;color:inherit!important;backdrop-filter:blur(22px)}
+dialog.billing-assistant-dialog .billing-assistant-message.assistant{background:linear-gradient(145deg,#152c42ba,#0d1c2ca8)!important;color:inherit!important}
+dialog.billing-assistant-dialog .billing-assistant-composer{background:#0715229c!important;backdrop-filter:blur(16px)}
+dialog.billing-assistant-dialog .billing-assistant-suggestions{display:grid!important;grid-template-columns:repeat(4,minmax(0,1fr));gap:9px!important}
+dialog.billing-assistant-dialog .billing-assistant-suggestions button{width:100%!important;min-height:42px!important;margin:0!important;border:1px solid #54dfd36e!important;border-radius:13px!important;background:linear-gradient(145deg,#54dfd321,#2a87dc1a)!important;color:inherit!important;font-weight:800!important}
+dialog.billing-assistant-dialog .billing-assistant-suggestions button:first-child{border-color:#54dfd3b8!important;background:linear-gradient(135deg,#19bda99c,#207ee08c)!important;color:#fff!important}
+:root[data-theme="light"] dialog.billing-assistant-dialog{background:linear-gradient(145deg,#ffffffbd,#e8f8f8ad)!important;color:#163148!important}
+:root[data-theme="light"] dialog.billing-assistant-dialog .billing-assistant-head{background:#ffffffb8!important}
+:root[data-theme="light"] dialog.billing-assistant-dialog .billing-assistant-message.assistant{background:#f2f8fad4!important}
+:root[data-theme="light"] dialog.billing-assistant-dialog .billing-assistant-composer{background:#edf7f8bf!important}
 #billing .billing-import-dialog{width:min(960px,calc(100vw - 28px));max-height:92dvh;overflow:auto;padding:0;border:1px solid #57e0d8b5;border-radius:28px;background:linear-gradient(140deg,#143047f4,#071420f5);color:var(--bill-text);box-shadow:0 34px 120px #000c;backdrop-filter:blur(28px) saturate(150%)}
 #billing .billing-import-dialog::backdrop{background:#020b14c9;backdrop-filter:blur(9px)}
 #billing .billing-import-body{padding:0 24px 24px}
@@ -252,7 +273,7 @@ body:has(#billing.active) .workspace main{max-width:none;min-width:0;width:100%;
 @media(max-width:1100px){#billing .billing-kpis{grid-template-columns:repeat(2,minmax(0,1fr))}#billing .billing-composer,#billing .billing-split{grid-template-columns:minmax(0,1fr)}}
 @media(max-width:700px){#billing .billing-landing{padding:14px;border-radius:20px}#billing .billing-landing-intro{display:block}.billing-mini-stats{margin-top:14px}#billing .billing-card-grid{grid-template-columns:repeat(2,minmax(0,1fr));gap:9px}#billing .billing-glass-card{min-height:140px;padding:13px}#billing .billing-glass-card strong{font-size:.9rem}}
 @media(max-width:580px){#billing .billing-competition-dialog{padding:17px}#billing .billing-competition-preview{grid-template-columns:1fr}#billing .billing-competition-preview .billing-competition-total{border-top:1px solid var(--bill-border);border-left:0;padding:12px 5px 0}#billing .billing-competition-actions{display:grid;grid-template-columns:1fr 1fr}#billing .billing-competition-actions button{width:100%}}
-@media(max-width:620px){#billing .billing-reference-dialog{padding:17px}#billing .billing-assistant-head{padding:16px}#billing .billing-assistant-context,#billing .billing-assistant-suggestions{padding-left:16px;padding-right:16px}#billing .billing-assistant-messages{max-height:46dvh;margin-left:16px;margin-right:16px}#billing .billing-assistant-message{max-width:94%}#billing .billing-assistant-composer{padding:12px 16px}#billing .billing-assistant-composer button{min-width:92px;padding:9px 8px;font-size:.75rem}#billing .billing-assistant-foot{padding-left:16px;padding-right:16px}}
+@media(max-width:620px){#billing .billing-reference-dialog{padding:17px}#billing .billing-assistant-head{padding:16px}#billing .billing-assistant-context,#billing .billing-assistant-suggestions{padding-left:16px;padding-right:16px}#billing .billing-assistant-suggestions,dialog.billing-assistant-dialog .billing-assistant-suggestions{grid-template-columns:repeat(2,minmax(0,1fr))!important}#billing .billing-assistant-messages{max-height:46dvh;margin-left:16px;margin-right:16px}#billing .billing-assistant-message{max-width:94%}#billing .billing-assistant-composer{padding:12px 16px}#billing .billing-assistant-composer button{min-width:92px;padding:9px 8px;font-size:.75rem}#billing .billing-assistant-foot{padding-left:16px;padding-right:16px}}
 @media(max-width:680px){#billing .billing-import-body{padding:0 16px 16px}#billing .billing-import-slots{grid-template-columns:1fr}#billing .billing-import-slot{align-items:flex-start;flex-direction:column}#billing .billing-import-slot input{width:100%}#billing .billing-import-actions{display:grid;grid-template-columns:1fr}#billing .billing-import-actions button{width:100%}}
 @media(max-width:420px){#billing .billing-card-grid{grid-template-columns:1fr}#billing .billing-glass-card{min-height:112px}}
 @media(max-width:800px){#billing .billing-workspace{display:block}#billing .billing-menu{position:static;padding:12px;margin-bottom:16px;border-radius:17px}#billing .billing-menu h2{margin-bottom:9px;font-size:1rem}#billing .billing-menu-grid{grid-template-columns:repeat(5,minmax(0,1fr));gap:5px}#billing .billing-menu button{display:grid;justify-items:center;min-height:70px;padding:7px 4px;text-align:center;font-size:.66rem}#billing .billing-menu button i{width:25px;height:25px;margin:0 0 3px}#billing .billing-hero{align-items:flex-start;flex-direction:column}#billing .billing-document-picker,#billing .billing-document-picker select{width:100%;min-width:0}#billing .billing-form-grid{grid-template-columns:1fr}#billing .billing-line{grid-template-columns:minmax(120px,2fr) 58px 78px 36px;gap:4px}#billing .billing-line input{padding:7px}}
