@@ -1,5 +1,48 @@
 /* Facturation FUSAA : espace de gestion inspiré des parcours Boulangerie. */
-const billingProductSearchBase=billingProductSearch;
+/* Catalogue unique : une seule lecture serveur par session de facturation.
+   La recherche et les pages restent locales, donc aucun aller-retour par page. */
+async function billingLoadProductCatalog(force=false){
+  if(!force&&billingState.productCatalogLoaded)return billingState.productCatalog;
+  const data=await api("/api/v1/billing/products?organization_id="+encodeURIComponent(org));
+  billingState.productCatalog=Array.isArray(data.items)?data.items:[];
+  billingState.productCatalogLoaded=true;
+  return billingState.productCatalog;
+}
+function billingCatalogMatches(query){
+  const needle=String(query||"").trim().toLocaleLowerCase("fr");
+  return needle?billingState.productCatalog.filter(item=>[item.name,item.sku,item.unit,item.source].some(value=>String(value||"").toLocaleLowerCase("fr").includes(needle))):billingState.productCatalog;
+}
+function billingCatalogSlice(query,page,pageSize){
+  const all=billingCatalogMatches(query),pages=Math.max(1,Math.ceil(all.length/pageSize)),current=Math.max(1,Math.min(Number(page)||1,pages));
+  return {all,items:all.slice((current-1)*pageSize,current*pageSize),page:current,pages,hasMore:current<pages};
+}
+async function billingRefreshProductCatalog(){
+  billingState.productCatalogLoaded=false;
+  await billingLoadProductCatalog(true);
+  return document.getElementById("billingNewCatalog")?billingProductSearch(true):billingProducts();
+}
+async function billingProductSearchLocal(reset=false){
+  const target=document.getElementById("billingNewCatalog");if(!target)return;
+  billingState.productSearch=document.getElementById("billingNewSearch")?.value.trim()||"";
+  await billingLoadProductCatalog();
+  const items=billingCatalogMatches(billingState.productSearch);billingState.products=items;
+  target.innerHTML=items.length?'<div class="billing-table-wrap billing-catalog-table"><table class="billing-table"><thead><tr><th>Produit</th><th>Prix unitaire</th><th>Unité</th><th>Ajouter</th><th>Modifier</th><th>Supprimer</th></tr></thead><tbody>'+items.map((item,index)=>'<tr><td>'+esc(item.name)+'<small>'+esc(item.source==="BOUTIQUE"?"Boutique":"Facturation")+'</small></td><td>'+billingCurrency(item.price_xof)+'</td><td>'+esc(item.unit||"piece")+'</td><td><button type="button" class="secondary billing-round-action" aria-label="Ajouter à la facture" onclick="billingAddLine(billingState.products['+index+'])">+</button></td><td>'+(item.source==="FACTURATION"?'<button type="button" class="secondary billing-round-action" aria-label="Modifier le produit" onclick="billingQuickEditProduct('+index+')">✎</button>':"—")+'</td><td>'+(item.source==="FACTURATION"?'<button type="button" class="secondary billing-round-action" aria-label="Archiver le produit" onclick="billingQuickDeleteProduct('+index+')">×</button>':"—")+'</td></tr>').join("")+'</tbody></table></div><p class="billing-catalog-count">'+items.length+' produit(s) affiché(s) · chargement unique</p>':'<p class="billing-empty">Aucun produit trouvé. Vous pouvez saisir une ligne libre.</p>';
+}
+let billingProductSearchTimer=0;
+function billingProductSearchDynamic(){clearTimeout(billingProductSearchTimer);billingProductSearchTimer=setTimeout(()=>billingProductSearchBase(true),100)}
+async function billingProductsLocal(){
+  const categories=billingState.categories.length?billingState.categories:await api("/api/v1/billing/categories?organization_id="+encodeURIComponent(org));
+  billingState.categories=categories;await billingLoadProductCatalog();
+  const data=billingCatalogSlice(billingState.productSearch,billingState.productPage,20);billingState.productPage=data.page;billingState.products=data.items;
+  billingSet(billingHero("Produits","Le catalogue complet est chargé une seule fois, puis filtré localement.",'<button type="button" onclick="billingOpen(\'new\')">+ Nouvelle facture</button>')+
+    '<section class="billing-panel"><h2>Ajouter un produit réservé à la facturation</h2><form id="billProductForm" class="billing-form-grid"><label>Désignation<input name="name" required></label><label>Prix FCFA<input name="unit_price" type="number" min="0" required></label><label>Code<input name="sku"></label><label>Catégorie<select name="billing_category_id">'+billingSelect(categories,"Sans catégorie")+'</select></label><label>Unité<input name="unit" value="piece"></label><label>Stock initial<input name="stock_quantity" type="number" min="0" value="0"></label><label>Seuil d’alerte<input name="stock_minimum" type="number" min="0" value="3"></label><label>Coût d’achat<input name="cost_xof" type="number" min="0" value="0"></label><button>Enregistrer le produit</button></form><div class="billing-actions"><input id="billCsvFile" type="file" accept=".csv,text/csv"><button class="secondary" type="button" onclick="billingImportCsv()">Importer la liste CSV</button></div><div id="billProductImportStatus" class="billing-import-inline" aria-live="polite"></div></section>'+
+    '<section class="billing-panel"><div class="billing-toolbar"><input id="billProductsSearch" placeholder="Rechercher dans les produits chargés" value="'+esc(billingState.productSearch)+'"><button class="secondary" type="button" onclick="billingState.productSearch=document.getElementById(\'billProductsSearch\').value.trim();billingState.productPage=1;billingProducts()">Rechercher</button><button class="secondary" type="button" onclick="billingRefreshProductCatalog()">Actualiser le catalogue</button></div><div class="billing-table-wrap"><table class="billing-table"><thead><tr><th>Produit</th><th>Source</th><th>Prix</th><th>Stock</th><th>Actions</th></tr></thead><tbody>'+data.items.map((item,index)=>'<tr><td>'+esc(item.name)+'</td><td>'+esc(item.source)+'</td><td>'+billingCurrency(item.price_xof)+'</td><td>'+esc(item.stock_quantity)+'</td><td>'+(item.source==="FACTURATION"?'<button class="secondary" type="button" onclick="billingEditProductLocal('+index+')">Modifier</button><button class="danger" type="button" onclick="billingRemoveProductLocal('+index+')">Archiver</button>':'<span class="muted">Gérer dans Boutique</span>')+'</td></tr>').join("")+'</tbody></table></div><div class="billing-pagination"><button class="secondary" type="button" '+(data.page<=1?"disabled":"")+' onclick="billingState.productPage--;billingProducts()">←</button><span>'+data.page+' / '+data.pages+' · '+data.all.length+' produit(s)</span><button class="secondary" type="button" '+(!data.hasMore?"disabled":"")+' onclick="billingState.productPage++;billingProducts()">→</button></div></section>');
+  document.getElementById("billProductForm").onsubmit=async event=>{event.preventDefault();const f=new FormData(event.target);try{await api("/api/v1/billing/products",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({organization_id:org,name:f.get("name"),unit_price:Number(f.get("unit_price")),sku:f.get("sku")||null,billing_category_id:f.get("billing_category_id")||null,unit:f.get("unit")||"piece",stock_quantity:Number(f.get("stock_quantity")||0),stock_minimum:Number(f.get("stock_minimum")||3),cost_xof:Number(f.get("cost_xof")||0)})});billingState.productCatalogLoaded=false;tell("Produit enregistré.");await billingProducts()}catch(error){tell(error.message)}};
+}
+async function billingEditProductLocal(index){const item=billingState.products[index];if(!item||item.source!=="FACTURATION")return;const name=prompt("Désignation",item.name);if(name===null||!name.trim())return;const price=prompt("Prix FCFA",item.price_xof);if(price===null||!Number.isFinite(Number(price)))return;try{await api("/api/v1/billing/products/"+item.id,{method:"PUT",headers:{"Content-Type":"application/json"},body:JSON.stringify({organization_id:org,name:name.trim(),unit_price:Number(price),sku:item.sku,billing_category_id:item.billing_category_id,unit:item.unit||"piece",stock_quantity:item.stock_quantity,stock_minimum:item.stock_minimum,cost_xof:item.cost_xof})});billingState.productCatalogLoaded=false;tell("Produit modifié.");await billingProducts()}catch(error){tell(error.message)}}
+async function billingRemoveProductLocal(index){const item=billingState.products[index];if(!item||item.source!=="FACTURATION"||!confirm("Archiver ce produit de facturation ?"))return;try{await api("/api/v1/billing/products/"+item.id,{method:"DELETE"});billingState.productCatalogLoaded=false;tell("Produit archivé.");await billingProducts()}catch(error){tell(error.message)}}
+
+const billingProductSearchBase=billingProductSearchLocal;
 billingProductSearch=async function(...args){const started=showFusaaOperation("Mise a jour du catalogue…");try{return await billingProductSearchBase(...args)}finally{await hideFusaaOperation(started)}};
 async function billingLoading(label,work){const started=showFusaaOperation(label);try{return await work()}finally{await hideFusaaOperation(started)}}
 const billingRequestTimeout=12000;
@@ -40,6 +83,7 @@ async function billingImportProductsWithProgress(file,targetId){
     billingImportProgressAt(target,"Import terminé",100,(result.created||0)+" produit(s) enregistrés · "+(result.skipped||0)+" doublon(s) ignoré(s)");
     await billingPause(460);
     target.innerHTML=billingImportResultCard({...analysis,...result},"done")+'<p class="billing-import-success">Les produits importés restent réservés à la facturation : ils ne sont pas publiés dans la Boutique.</p>';
+    billingState.productCatalogLoaded=false;
     return result;
   }finally{clearInterval(progressTimer)}
 }
@@ -47,7 +91,7 @@ const billingClientsBase=billingClients;
 billingClients=async function(...args){return billingLoading("Chargement des clients…",()=>billingClientsBase(...args))};
 const billingHeadersBase=billingHeaders;
 billingHeaders=async function(...args){return billingLoading("Chargement des entetes…",()=>billingHeadersBase(...args))};
-const billingProductsBase=billingProducts;
+const billingProductsBase=billingProductsLocal;
 billingProducts=async function(...args){return billingLoading("Chargement des produits…",()=>billingProductsBase(...args))};
 const billingCategoriesBase=billingCategoryPage;
 billingCategoryPage=async function(...args){return billingLoading("Chargement des categories…",()=>billingCategoriesBase(...args))};
@@ -55,7 +99,7 @@ const billingEditDocumentBase=billingEditDocument;
 billingEditDocument=async function(id){const started=showFusaaOperation("Ouverture de la facture…");try{return await billingEditDocumentBase(id)}finally{await hideFusaaOperation(started)}};
 const billingInvoiceDetailBase=window.openBillingInvoice;
 if(billingInvoiceDetailBase)openBillingInvoice=async function(id){const started=showFusaaOperation("Chargement du document…");try{return await billingInvoiceDetailBase(id)}finally{await hideFusaaOperation(started)}};
-var billingState={tab:"dashboard",page:1,productPage:1,productSearch:"",products:[],headers:[],customers:[],categories:[],selectedHeader:null,documentType:"INVOICE",editingInvoice:null};
+var billingState={tab:"dashboard",page:1,productPage:1,productSearch:"",products:[],productCatalog:[],productCatalogLoaded:false,headers:[],customers:[],categories:[],selectedHeader:null,documentType:"INVOICE",editingInvoice:null};
 const billingMenuLabels={dashboard:"Tableau de bord",new:"Nouvelle facture",documents:"Documents",clients:"Clients",products:"Produits",headers:"Entêtes",categories:"Catégories",reports:"Rapports",maintenance:"Maintenance",settings:"Paramètres"};
 var billingLabels=billingMenuLabels;
 const billingDocumentTypes={INVOICE:"Facture",QUOTE:"Devis",PROFORMA:"Facture proforma",DELIVERY_NOTE:"Bon de livraison",RECEIPT:"Reçu"};
@@ -264,7 +308,7 @@ async function billingNew(){
     </section>
     <div class="billing-composer">
       <section class="billing-panel billing-catalog-panel">
-        <div class="billing-catalog-heading"><h2>Catalogue<br>des produits</h2><div class="billing-catalog-tools"><button class="secondary" type="button" onclick="document.getElementById('billingNewCsv').click()">↧ Importer (CSV)</button><button type="button" onclick="billingQuickProduct()">＋ Ajouter produit</button><button class="secondary" type="button" onclick="billingProductSearch()">↻ Actualiser</button><input id="billingNewSearch" placeholder="Rechercher un produit"><button class="secondary" type="button" onclick="billingProductSearch(true)">Rechercher</button></div></div>
+        <div class="billing-catalog-heading"><h2>Catalogue<br>des produits</h2><div class="billing-catalog-tools"><button class="secondary" type="button" onclick="document.getElementById('billingNewCsv').click()">↧ Importer (CSV)</button><button type="button" onclick="billingQuickProduct()">＋ Ajouter produit</button><button class="secondary" type="button" onclick="billingRefreshProductCatalog()">↻ Actualiser</button><input id="billingNewSearch" placeholder="Rechercher un produit" oninput="billingProductSearchDynamic()"><button class="secondary" type="button" onclick="billingProductSearchDynamic()">Rechercher</button></div></div>
         <input id="billingNewCsv" class="hidden" type="file" accept=".csv,text/csv" onchange="billingQuickImportCsv()"><div id="billingNewImportStatus" class="billing-import-inline" aria-live="polite"></div>
         <div id="billingNewCatalog"></div>
       </section>
@@ -335,9 +379,10 @@ function billingAskAi(){billingFacturationAssistantOpen(document.getElementById(
 function billingFacturationAssistantOpen(prefill=""){
   let dialog=document.getElementById("billingFacturationAssistantDialog");
   if(!dialog){
-    document.body.insertAdjacentHTML("beforeend",'<dialog id="billingFacturationAssistantDialog" class="billing-assistant-dialog"><div class="billing-assistant-head"><div><span class="billing-eyebrow">AGENT SECONDAIRE · FACTURATION</span><h2>Assistant IA de facturation</h2></div><button class="secondary" type="button" aria-label="Fermer" onclick="billingFacturationAssistantDialog.close()">×</button></div><div class="billing-assistant-context" id="billingAssistantContext"></div><div id="billingAssistantMessages" class="billing-assistant-messages" aria-live="polite"></div><div class="billing-assistant-suggestions"><button class="secondary" type="button" onclick="billingFacturationAssistantSuggest(\'Fais un devis avec les produits disponibles\')">Créer un devis</button><button class="secondary" type="button" onclick="billingFacturationAssistantSuggest(\'Liste les produits disponibles\')">Produits</button><button class="secondary" type="button" onclick="billingFacturationAssistantSuggest(\'Explique les types de document\')">Types de document</button></div><form id="billingAssistantForm" class="billing-assistant-composer"><input id="billingAssistantInput" autocomplete="off" placeholder="Ex. Fais une proforma : 2 x Ramette A4 à 3 500"><button type="submit">Envoyer ↑</button></form><p class="muted billing-assistant-foot">Cet assistant est réservé à la facturation. Il prépare un brouillon depuis vos données FUSAA ; aucun document n’est enregistré sans validation.</p></dialog>');
+    document.body.insertAdjacentHTML("beforeend",'<dialog id="billingFacturationAssistantDialog" class="billing-assistant-dialog"><div class="billing-assistant-head"><div><span class="billing-eyebrow">AGENT SECONDAIRE · FACTURATION</span><h2>Assistant IA de facturation</h2></div><button class="secondary" type="button" aria-label="Fermer" onclick="billingFacturationAssistantDialog.close()">×</button></div><div class="billing-assistant-context" id="billingAssistantContext"></div><div id="billingAssistantMessages" class="billing-assistant-messages" aria-live="polite"></div><div class="billing-assistant-suggestions"><button class="secondary" type="button" onclick="billingFacturationAssistantSuggest(\'Fais un devis avec les produits disponibles\')">Créer un devis</button><button class="secondary" type="button" onclick="billingFacturationAssistantSuggest(\'Prépare une facture : 2 x produit 1 ; 3 x produit 2\')">Coller une liste</button><button class="secondary" type="button" onclick="billingFacturationAssistantSuggest(\'Liste les produits disponibles\')">Produits</button><button class="secondary" type="button" onclick="billingFacturationAssistantSuggest(\'Explique les types de document\')">Types de document</button></div><form id="billingAssistantForm" class="billing-assistant-composer"><textarea id="billingAssistantInput" rows="2" autocomplete="off" placeholder="Collez votre liste : 2 x Ramette A4 ; 3 x Cahier. L’assistant propose un brouillon à confirmer."></textarea><button type="submit">Proposer ↑</button></form><p class="muted billing-assistant-foot">Collez une liste de produits ou décrivez votre besoin. L’assistant prépare uniquement un brouillon ; aucun document n’est enregistré sans votre validation.</p></dialog>');
     dialog=document.getElementById("billingFacturationAssistantDialog");
     document.getElementById("billingAssistantForm").onsubmit=event=>{event.preventDefault();billingFacturationAssistantSend(document.getElementById("billingAssistantInput").value)};
+    document.getElementById("billingAssistantInput").addEventListener("keydown",event=>{if((event.ctrlKey||event.metaKey)&&event.key==="Enter"){event.preventDefault();billingFacturationAssistantSend(event.currentTarget.value)}});
   }
   const context=billingFacturationAssistantContext(),header=billingState.headers.find(item=>item.id===context.billing_header_id),customer=billingState.customers.find(item=>item.id===context.customer_id);
   document.getElementById("billingAssistantContext").innerHTML='<span>Entête <b>'+esc(header?.company_name||"à choisir")+'</b></span><span>Client <b>'+esc(customer?.name||"à choisir")+'</b></span>';

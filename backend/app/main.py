@@ -957,25 +957,36 @@ def _billing_assistant_matching_lines(message:str,catalog:list[dict])->list[dict
     billing agent.
     """
     normalized=_billing_assistant_normalize(message)
-    lines=[]
+    words=normalized.split()
+    matches=[]
     for product in catalog:
         name=_billing_assistant_normalize(product["name"])
-        words=[word for word in name.split() if len(word)>=3]
-        exact=name in normalized
-        overlap=sum(word in normalized.split() for word in words)
-        similarity=overlap/max(1,len(words)) if words else 0
-        if not exact and similarity<0.7:continue
-        start=normalized.find(name) if exact else 0
-        prefix=normalized[max(0,start-55):start+len(name)+70]
-        after_product=normalized[start+len(name):] if exact else prefix
-        quantity_match=re.search(r"(\d+(?:[,.]\d+)?)\s*(?:x|fois|unites?|pieces?)?\s*(?:de |du |des )?"+re.escape(name),normalized)
-        if not quantity_match:
-            quantity_match=re.search(r"(\d+(?:[,.]\d+)?)\s*(?:x|fois|unites?|pieces?)?",prefix)
-        quantity=max(.01,_billing_assistant_number(quantity_match.group(1) if quantity_match else None,1))
-        price_match=re.search(r"(?:a|@)\s*(\d[\d .,:]*)",after_product)
-        price=max(0,_billing_assistant_number(price_match.group(1) if price_match else None,float(product["price_xof"])))
-        if any(line["product_id"]==product["id"] for line in lines):continue
-        lines.append({"product_id":product["id"],"description":product["name"],"quantity":quantity,"unit_amount":price,"unit":product["unit"],"source":product["source"]})
+        if not name:continue
+        # A pasted list may contain the same product more than once. Keep each
+        # occurrence and its position: the draft/PDF must respect that order.
+        occurrences=[match.start() for match in re.finditer(re.escape(name),normalized)]
+        if not occurrences:
+            product_words=[word for word in name.split() if len(word)>=3]
+            overlap=sum(word in words for word in product_words)
+            if not product_words or overlap/max(1,len(product_words))<.7:continue
+            occurrences=[normalized.find(next(word for word in product_words if word in words))]
+        for start in occurrences:
+            before=normalized[max(0,start-38):start]
+            after=normalized[start+len(name):start+110]
+            quantity_match=re.search(r"(\d+(?:[,.]\d+)?)\s*(?:x|fois|unites?|pieces?|pcs?)?\s*(?:de|du|des)?\s*$",before)
+            if not quantity_match:
+                quantity_match=re.match(r"\s*(?:x\s*)?(\d+(?:[,.]\d+)?)\b",after)
+            quantity=max(.01,_billing_assistant_number(quantity_match.group(1) if quantity_match else None,1))
+            price_match=re.search(r"(?:\ba\b|@|prix\s*(?:unitaire)?\s*[:=]?)\s*(\d[\d .,:]*)",after)
+            price=max(0,_billing_assistant_number(price_match.group(1) if price_match else None,float(product["price_xof"])))
+            matches.append((start,{"product_id":product["id"],"description":product["name"],"quantity":quantity,"unit_amount":price,"unit":product["unit"],"source":product["source"]}))
+    matches.sort(key=lambda item:item[0])
+    # Fuzzy detections can overlap an exact product occurrence. Deduplicate only
+    # a same product at the same text position, not repeated products in a list.
+    seen=set();lines=[]
+    for start,line in matches:
+        key=(start,line["product_id"])
+        if key not in seen:seen.add(key);lines.append(line)
     return lines
 
 def _billing_assistant_document_type(message:str)->str:
