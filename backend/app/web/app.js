@@ -279,7 +279,7 @@ function mountArrivals(){document.querySelector("#nav").insertAdjacentHTML("befo
 function mountSystem(){document.querySelector("#nav").insertAdjacentHTML("beforeend",'<a href="#system" data-view="system">⚙ État du système</a>');document.querySelector("main").insertAdjacentHTML("beforeend",'<section id="system" class="view"><div class="view-head"><div><p class="eyebrow">INSTALLATION WINDOWS</p><h1>État du système</h1></div></div><div class="panel"><div id="systemStatus"></div><button onclick="loadSystemHealth()">Vérifier maintenant</button></div></section>')}
 async function loadSystemHealth(){try{const data=await api("/api/v1/system/health"),backup=data.backup_last_at?new Date(data.backup_last_at).toLocaleString("fr-FR"):data.mode==="remote"?"sur le PC FUSAA (non visible depuis Render)":"en attente";$("systemStatus").textContent="Superviseur : "+data.supervisor+" · API : "+(data.api?"OK":"à vérifier")+" · Agent : "+(data.agent?"OK":"à vérifier")+" · Ollama : "+(data.ollama?"OK":"à vérifier")+" · Sauvegarde : "+(data.backup_today?"vérifiée "+backup:backup)}catch(error){$("systemStatus").textContent=error.message}}
 function mountStyle(){document.head.insertAdjacentHTML("beforeend",'<style>.ai-result{margin-top:14px}.ai-response{padding:16px;border:1px solid #27cdb94d;border-radius:13px;background:#071a28}.ai-response h3{font-size:1rem;line-height:1.6;margin:5px 0 10px}.ai-response ol{padding-left:22px;color:#c9d9e6}.ai-response li{margin:7px 0}.activity-list{display:grid;gap:11px}.arrival{display:flex;justify-content:space-between;gap:18px;padding:16px;border:1px solid #ffffff14;border-radius:15px;background:linear-gradient(130deg,#112b42,#0d1c2e)}.arrival b{display:block;margin:3px 0}.arrival p{margin:0;color:#a9bfd0;font-size:.88rem}.arrival time{color:#86a1b8;font-size:.78rem;white-space:nowrap}.arrival-source{display:inline-block;color:#2fe0c6;font-size:.69rem;font-weight:800;letter-spacing:.09em}.status-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px;margin:12px 0}.status-card{border:1px solid #ffffff16;border-radius:11px;padding:12px;background:#071522}.status-card b,.status-card span{display:block}.status-card span{color:#4cdfbd;margin-top:4px}@media(max-width:680px){.arrival{flex-direction:column;gap:7px}.status-grid{grid-template-columns:1fr}}</style>')}
-function applyWorkshopSettings(){const s=workshopSettings||{};if($("org"))$("org").textContent="FUSAA INFORMATIQUE";if($("workshop"))$("workshop").textContent=s.workshop_name||"FUSAA INFORMATIQUE";const fields={settingWorkshopName:s.workshop_name||"FUSAA INFORMATIQUE",settingCopies:s.default_copies||1,settingPaper:s.default_paper_size||"A4",settingOrientation:s.default_orientation||"PORTRAIT",settingColor:s.default_color_mode||"COLOR",settingDuplex:Boolean(s.default_duplex),settingPopup:Boolean(s.popup_enabled!==false),settingSmart:Boolean(s.smart_suggestions!==false),settingTransparency:s.app_transparency??46};Object.entries(fields).forEach(([id,value])=>{const node=$(id);if(!node)return;if(node.type==="checkbox")node.checked=value;else if(document.activeElement!==node)node.value=value});if($("copies")&&!$("copies").matches(":focus"))$("copies").value=s.default_copies||1;if($("paper")&&!$("paper").matches(":focus"))$("paper").value=s.default_paper_size||"A4";if($("orientation")&&!$("orientation").matches(":focus"))$("orientation").value=s.default_orientation||"PORTRAIT";if($("color")&&!$("color").matches(":focus"))$("color").value=s.default_color_mode||"COLOR";if($("duplex")&&!$("duplex").matches(":focus"))$("duplex").checked=Boolean(s.default_duplex);applyAppTransparency(s.app_transparency??46)}
+function applyWorkshopSettings(){const s=workshopSettings||{};if($("org"))$("org").textContent="FUSAA INFORMATIQUE";if($("workshop"))$("workshop").textContent=s.workshop_name||"FUSAA INFORMATIQUE";const fields={settingWorkshopName:s.workshop_name||"FUSAA INFORMATIQUE",settingCopies:s.default_copies||1,settingPaper:s.default_paper_size||"A4",settingOrientation:s.default_orientation||"PORTRAIT",settingColor:s.default_color_mode||"COLOR",settingDuplex:Boolean(s.default_duplex),settingPopup:Boolean(s.popup_enabled!==false),settingSmart:Boolean(s.smart_suggestions!==false)};Object.entries(fields).forEach(([id,value])=>{const node=$(id);if(!node)return;if(node.type==="checkbox")node.checked=value;else if(document.activeElement!==node)node.value=value});if($("copies")&&!$("copies").matches(":focus"))$("copies").value=s.default_copies||1;if($("paper")&&!$("paper").matches(":focus"))$("paper").value=s.default_paper_size||"A4";if($("orientation")&&!$("orientation").matches(":focus"))$("orientation").value=s.default_orientation||"PORTRAIT";if($("color")&&!$("color").matches(":focus"))$("color").value=s.default_color_mode||"COLOR";if($("duplex")&&!$("duplex").matches(":focus"))$("duplex").checked=Boolean(s.default_duplex)}
 async function saveSettings(event){event?.preventDefault();try{const data=await api("/api/v1/settings",{method:"PUT",headers:{"Content-Type":"application/json"},body:JSON.stringify({workshop_name:$("settingWorkshopName").value,default_copies:Number($("settingCopies").value),default_paper_size:$("settingPaper").value,default_orientation:$("settingOrientation").value,default_color_mode:$("settingColor").value,default_duplex:$("settingDuplex").checked,popup_enabled:$("settingPopup").checked,smart_suggestions:$("settingSmart").checked})});workshopSettings=data;applyWorkshopSettings();tell("Paramètres de FUSAA INFORMATIQUE enregistrés.")}catch(error){tell(error.message)}}
 function closeArrivalPopup(){$("arrivalPopup")?.classList.add("hidden")}
 function openArrivalPopup(item){if(!workshopSettings.popup_enabled||item.source!=="DESKTOP")return;const target=$("arrivalPopup");if(!target)return;$("popupFile").textContent=item.detail||item.title;$("popupSettings").textContent=["Format "+(workshopSettings.default_paper_size||"A4"),"Orientation "+(workshopSettings.default_orientation||"PORTRAIT"),"Couleur "+(workshopSettings.default_color_mode||"COLOR"),String(workshopSettings.default_copies||1)+" exemplaire(s)",workshopSettings.default_duplex?"Recto-verso":"Recto"].join(" · ");target.classList.remove("hidden")}
@@ -612,18 +612,11 @@ document.addEventListener("click",event=>animateFusaaButton(event.target.closest
 
 /* Apparence liquid glass : réglage conservé dans les paramètres de l'atelier. */
 function mountTransparencyControl(){
-  const panel=document.querySelector(".theme-panel");
-  if(!panel||$("settingTransparency"))return;
-  panel.insertAdjacentHTML("beforeend",'<label class="field-label" for="settingTransparency">TRANSPARENCE DE L’INTERFACE <output id="settingTransparencyValue">46 %</output></label><input id="settingTransparency" type="range" min="0" max="85" step="1" value="46" oninput="applyAppTransparency(this.value)"><p class="muted">0 % garde les panneaux opaques. Ce réglage administrateur est appliqué dès l’ouverture de FUSAA.</p>');
+  return;
 }
 function applyAppTransparency(value){
-  mountTransparencyControl();
-  const transparency=Math.max(0,Math.min(85,Number(value??46)||0));
-  document.documentElement.dataset.appGlass=transparency>0?"true":"false";
-  document.documentElement.style.setProperty("--fusaa-glass-alpha",String(Math.max(.15,1-transparency/100)));
-  const input=$("settingTransparency"),output=$("settingTransparencyValue");
-  if(input&&document.activeElement!==input)input.value=String(transparency);
-  if(output)output.textContent=transparency+" %";
+  document.documentElement.dataset.appGlass="false";
+  document.documentElement.style.removeProperty("--fusaa-glass-alpha");
 }
 const saveSettingsWithTransparency=saveSettings;
 saveSettings=async function(event){
@@ -632,12 +625,12 @@ saveSettings=async function(event){
     const data=await api("/api/v1/settings",{method:"PUT",headers:{"Content-Type":"application/json"},body:JSON.stringify({
       workshop_name:$("settingWorkshopName").value,default_copies:Number($("settingCopies").value),default_paper_size:$("settingPaper").value,
       default_orientation:$("settingOrientation").value,default_color_mode:$("settingColor").value,default_duplex:$("settingDuplex").checked,
-      popup_enabled:$("settingPopup").checked,smart_suggestions:$("settingSmart").checked,app_transparency:Number($("settingTransparency")?.value??46)
+      popup_enabled:$("settingPopup").checked,smart_suggestions:$("settingSmart").checked,app_transparency:0
     })});
     workshopSettings=data;applyWorkshopSettings();tell("Paramètres d’apparence enregistrés.");
   }catch(error){tell(error.message)}
 };
-document.head.insertAdjacentHTML("beforeend",`<style id="fusaaGlassAppearance">
+false&&document.head.insertAdjacentHTML("beforeend",`<style id="fusaaGlassAppearance">
 :root{--fusaa-glass-alpha:.54}
 :root[data-app-glass="true"] body{background:radial-gradient(circle at 84% -8%,#1ab9c45c,transparent 34rem),radial-gradient(circle at -6% 84%,#2571ed46,transparent 31rem),linear-gradient(135deg,#061522,#102944);background-attachment:fixed}
 :root[data-app-glass="true"]{background:transparent!important}
@@ -651,14 +644,8 @@ document.head.insertAdjacentHTML("beforeend",`<style id="fusaaGlassAppearance">
 :root[data-theme="light"][data-app-glass="true"] .topbar,:root[data-theme="light"][data-app-glass="true"] .sidebar,:root[data-theme="light"][data-app-glass="true"] .panel,:root[data-theme="light"][data-app-glass="true"] .card,:root[data-theme="light"][data-app-glass="true"] .job,:root[data-theme="light"][data-app-glass="true"] .arrival,:root[data-theme="light"][data-app-glass="true"] .chat-shell,:root[data-theme="light"][data-app-glass="true"] #billing .billing-menu,:root[data-theme="light"][data-app-glass="true"] #billing .billing-panel,:root[data-theme="light"][data-app-glass="true"] #billing .billing-hero,:root[data-theme="light"][data-app-glass="true"] #billing .billing-landing,:root[data-theme="light"][data-app-glass="true"] #billing .billing-glass-card{background:rgb(255 255 255 / var(--fusaa-glass-alpha))!important}
 </style>`);
 function ensureTransparencySettings(){
-  const form=$("settingsForm");
-  if(!form||$("settingTransparency"))return;
-  const submit=form.querySelector('button[type="submit"]');
-  const block=document.createElement("div");
-  block.className="transparency-setting";
-  block.innerHTML='<label class="field-label" for="settingTransparency">TRANSPARENCE DE L’INTERFACE <output id="settingTransparencyValue">46 %</output></label><input id="settingTransparency" type="range" min="0" max="85" step="1" value="46"><p class="muted">0 % garde les panneaux opaques. Réglage administrateur appliqué dès l’ouverture de FUSAA.</p>';
-  block.querySelector("input").addEventListener("input",event=>applyAppTransparency(event.target.value));
-  submit?.before(block);
+  return;
 }
-ensureTransparencySettings();
-applyAppTransparency(workshopSettings?.app_transparency??46);
+document.documentElement.dataset.appGlass="false";
+document.documentElement.style.removeProperty("--fusaa-glass-alpha");
+$("fusaaGlassAppearance")?.remove();
