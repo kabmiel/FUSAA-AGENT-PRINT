@@ -640,9 +640,11 @@ saveSettings=async function(event){
 document.head.insertAdjacentHTML("beforeend",`<style id="fusaaGlassAppearance">
 :root{--fusaa-glass-alpha:.54}
 :root[data-app-glass="true"] body{background:radial-gradient(circle at 84% -8%,#1ab9c45c,transparent 34rem),radial-gradient(circle at -6% 84%,#2571ed46,transparent 31rem),linear-gradient(135deg,#061522,#102944);background-attachment:fixed}
-:root[data-app-glass="true"] .topbar{background:rgb(7 17 31 / var(--fusaa-glass-alpha))!important;backdrop-filter:blur(24px) saturate(155%)}
-:root[data-app-glass="true"] .sidebar{background:rgb(9 21 36 / calc(var(--fusaa-glass-alpha) * .88))!important;backdrop-filter:blur(24px) saturate(150%)}
-:root[data-app-glass="true"] .panel,:root[data-app-glass="true"] .card,:root[data-app-glass="true"] .job,:root[data-app-glass="true"] .arrival,:root[data-app-glass="true"] .chat-shell,:root[data-app-glass="true"] .arrival-popup{background:rgb(12 30 48 / var(--fusaa-glass-alpha))!important;backdrop-filter:blur(22px) saturate(150%)}
+:root[data-app-glass="true"]{background:transparent!important}
+:root[data-app-glass="true"] body,:root[data-app-glass="true"] .shell,:root[data-app-glass="true"] main{background:transparent!important}
+:root[data-app-glass="true"] .topbar{background:rgb(7 17 31 / calc(var(--fusaa-glass-alpha) * .62))!important;backdrop-filter:blur(24px) saturate(155%)}
+:root[data-app-glass="true"] .sidebar{background:rgb(9 21 36 / calc(var(--fusaa-glass-alpha) * .48))!important;backdrop-filter:blur(24px) saturate(150%)}
+:root[data-app-glass="true"] .panel,:root[data-app-glass="true"] .card,:root[data-app-glass="true"] .job,:root[data-app-glass="true"] .arrival,:root[data-app-glass="true"] .chat-shell,:root[data-app-glass="true"] .arrival-popup{background:rgb(12 30 48 / calc(var(--fusaa-glass-alpha) * .52))!important;backdrop-filter:blur(22px) saturate(150%)}
 :root[data-app-glass="true"] #billing .billing-menu,:root[data-app-glass="true"] #billing .billing-panel,:root[data-app-glass="true"] #billing .billing-hero,:root[data-app-glass="true"] #billing .billing-landing,:root[data-app-glass="true"] #billing .billing-glass-card,:root[data-app-glass="true"] #billing .billing-catalog-panel,:root[data-app-glass="true"] #billing .billing-lines-panel,:root[data-app-glass="true"] #billing .billing-assistant-dialog{background:rgb(9 28 46 / var(--fusaa-glass-alpha))!important;backdrop-filter:blur(24px) saturate(155%)}
 :root[data-app-glass="true"] dialog,:root[data-app-glass="true"] .billing-glass-dialog{background:rgb(9 25 42 / max(.76,var(--fusaa-glass-alpha)))!important;backdrop-filter:blur(28px) saturate(160%)}
 :root[data-theme="light"][data-app-glass="true"] body{background:radial-gradient(circle at 84% -8%,#2fc7c64c,transparent 34rem),radial-gradient(circle at -6% 84%,#3f8df443,transparent 31rem),linear-gradient(135deg,#dcebf4,#f8fcff)}
