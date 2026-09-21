@@ -648,4 +648,15 @@ document.head.insertAdjacentHTML("beforeend",`<style id="fusaaGlassAppearance">
 :root[data-theme="light"][data-app-glass="true"] body{background:radial-gradient(circle at 84% -8%,#2fc7c64c,transparent 34rem),radial-gradient(circle at -6% 84%,#3f8df443,transparent 31rem),linear-gradient(135deg,#dcebf4,#f8fcff)}
 :root[data-theme="light"][data-app-glass="true"] .topbar,:root[data-theme="light"][data-app-glass="true"] .sidebar,:root[data-theme="light"][data-app-glass="true"] .panel,:root[data-theme="light"][data-app-glass="true"] .card,:root[data-theme="light"][data-app-glass="true"] .job,:root[data-theme="light"][data-app-glass="true"] .arrival,:root[data-theme="light"][data-app-glass="true"] .chat-shell,:root[data-theme="light"][data-app-glass="true"] #billing .billing-menu,:root[data-theme="light"][data-app-glass="true"] #billing .billing-panel,:root[data-theme="light"][data-app-glass="true"] #billing .billing-hero,:root[data-theme="light"][data-app-glass="true"] #billing .billing-landing,:root[data-theme="light"][data-app-glass="true"] #billing .billing-glass-card{background:rgb(255 255 255 / var(--fusaa-glass-alpha))!important}
 </style>`);
+function ensureTransparencySettings(){
+  const form=$("settingsForm");
+  if(!form||$("settingTransparency"))return;
+  const submit=form.querySelector('button[type="submit"]');
+  const block=document.createElement("div");
+  block.className="transparency-setting";
+  block.innerHTML='<label class="field-label" for="settingTransparency">TRANSPARENCE DE L’INTERFACE <output id="settingTransparencyValue">46 %</output></label><input id="settingTransparency" type="range" min="0" max="85" step="1" value="46"><p class="muted">0 % garde les panneaux opaques. Réglage administrateur appliqué dès l’ouverture de FUSAA.</p>';
+  block.querySelector("input").addEventListener("input",event=>applyAppTransparency(event.target.value));
+  submit?.before(block);
+}
+ensureTransparencySettings();
 applyAppTransparency(workshopSettings?.app_transparency??46);
