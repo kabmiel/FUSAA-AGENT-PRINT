@@ -277,20 +277,14 @@ def _company_lines(header, commercial=False):
 
 
 def _client_lines(customer):
-    if not customer:
-        return ["Client comptant"]
-    first = str(getattr(customer, "name", "") or "Client comptant")
-    if getattr(customer, "phone", None):
-        first += f" / Tel : {customer.phone}"
-    return [first] + [part.strip() for part in str(getattr(customer, "address", "") or "").splitlines() if part.strip()]
+    """Return only the name printed after ``Doit :`` on billing PDFs."""
+    name = str(getattr(customer, "name", "") or "Client comptant").strip() if customer else "Client comptant"
+    return [name or "Client comptant"]
 
 
 def _customer_contact_lines(customer, include_email=False):
-    """Client details in the same order as the Boulangerie standard/modern PDFs."""
-    lines = _client_lines(customer)
-    if include_email and customer and getattr(customer, "email", None):
-        lines.append(f"Email: {customer.email}")
-    return lines
+    """Keep the legacy signature while excluding address and contact details."""
+    return _client_lines(customer)
 
 
 def _total(line):
@@ -349,10 +343,10 @@ def _reference_header(pdf, invoice, header, customer, logo, cfg, width, height, 
         _rule(pdf, left + (available - title_width) / 2, y - 1.2 * mm, left + (available + title_width) / 2)
     y -= 11 * mm
     client = _client_lines(customer)
-    label = cfg.get("client_label", "DOIT")
+    label = "Doit"
     pdf.setFont(_font_variant(font, True), cfg["client"])
     pdf.drawString(left, y, f"{label} : {client[0]}")
-    if cfg.get("client_label_underline", label == "DOIT"):
+    if cfg.get("client_label_underline", True):
         _rule(pdf, left, y - 1 * mm, left + pdfmetrics.stringWidth(label, _font_variant(font, True), cfg["client"]))
     y -= cfg["client"] * 1.25
     y = _draw_text(pdf, client[1:], left + mm, y, available, font, cfg["client"], cfg["client"] * 1.25)
@@ -508,9 +502,9 @@ def _render_ultra_compact(pdf, invoice, header, customer, lines, logo, width, he
             pdf.drawString(left, y, "SUITE DES LIGNES")
             y -= 3.4 * mm
         else:
-            client_text = "Client comptant" if not customer else " / ".join(part for part in (getattr(customer, "name", None), getattr(customer, "phone", None), getattr(customer, "address", None)) if part)
+            client_text = _client_lines(customer)[0]
             pdf.setFillColor(_colour("#162c3b")); pdf.setFont(title_font, 7.1)
-            pdf.drawString(left, y, "CLIENT : " + _fit_text(client_text, table_font, 7.1, available - 20 * mm))
+            pdf.drawString(left, y, "Doit : " + _fit_text(client_text, table_font, 7.1, available - 18 * mm))
             subject = str(getattr(invoice, "subject", "") or "").strip()
             if subject:
                 pdf.setFillColor(_colour("#536879")); pdf.setFont(table_font, 6.3)
@@ -626,17 +620,13 @@ def _modern_header(pdf, invoice, header, customer, logo, cfg, width, height, con
     pdf.drawRightString(card_x + card_w, y - 18 * mm, f"N° {getattr(invoice, 'number', '')}")
     pdf.drawRightString(card_x + card_w, y - 22 * mm, f"Date {date_text}")
     y -= box_h + 6 * mm
-    customer_lines = _customer_contact_lines(customer, include_email=True)
-    customer_detail_lines = customer_lines[1:]
-    # The web template grows this card with its contact details.  Keep the
-    # same behaviour for addresses spanning several lines instead of clipping
-    # telephone or e-mail on the PDF.
+    customer_lines = _customer_contact_lines(customer)
     client_w = available - 33 * mm
-    client_h = max(29 * mm, (18 + min(len(customer_detail_lines), 4) * 3.4) * mm)
+    client_h = 29 * mm
     pdf.setFillColor(colors.white); pdf.setStrokeColor(border); pdf.rect(left, y - client_h, client_w, client_h, fill=1, stroke=1)
-    pdf.setFillColor(_colour(cfg["alt"])); pdf.setFont("Helvetica-Bold", 7.5); pdf.drawString(left + 4 * mm, y - 6 * mm, "CLIENT")
-    pdf.setFillColor(ink); pdf.setFont("Helvetica-Bold", 11); pdf.drawString(left + 4 * mm, y - 12 * mm, customer_lines[0])
-    pdf.setFillColor(muted); _draw_text(pdf, customer_detail_lines, left + 4 * mm, y - 17 * mm, client_w - 8 * mm, "Helvetica", 7.6, 9.2, limit=4)
+    client_text = f"Doit : {customer_lines[0]}"
+    pdf.setFillColor(ink); pdf.setFont("Helvetica-Bold", 11)
+    pdf.drawString(left + 4 * mm, y - 11 * mm, _fit_text(client_text, "Helvetica-Bold", 11, client_w - 8 * mm))
     qr_x = left + client_w + 4 * mm
     _draw_qr(pdf, f"{_document_title(invoice)} - N° {getattr(invoice, 'number', '')} - Montant: {_money(getattr(invoice, 'total_amount', 0))}", qr_x + 2 * mm, y - 25 * mm, 19 * mm)
     pdf.setFillColor(muted); pdf.setFont("Helvetica", 6.8); pdf.drawCentredString(qr_x + 11.5 * mm, y - 28.5 * mm, "Scannez-moi")
@@ -760,13 +750,10 @@ def _render_standard(pdf, invoice, header, customer, lines, logo, width, height)
     y -= 5 * mm
     pdf.drawString(left, y, f"Date: {date_text}")
     y -= 12 * mm
-    client = _customer_contact_lines(customer, include_email=True)
+    client = _customer_contact_lines(customer)
     pdf.setFont("Times-Bold", 10)
-    pdf.drawString(left, y, "Facturé à:")
-    y -= 5 * mm
-    pdf.drawString(left, y, client[0])
-    y -= 5 * mm
-    y = _draw_text(pdf, client[1:], left, y, available, "Times-Roman", 9, 11)
+    pdf.drawString(left, y, _fit_text(f"Doit : {client[0]}", "Times-Bold", 10, available))
+    y -= 7 * mm
     subject = str(getattr(invoice, "subject", "") or "").strip()
     if subject:
         y -= 3 * mm
