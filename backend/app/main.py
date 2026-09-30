@@ -1415,16 +1415,23 @@ def billing_customer_credits(organization_id:str,user:User=Depends(current_user)
     require_member(db,user,organization_id);customers=db.query(Customer).filter_by(organization_id=organization_id).order_by(Customer.name).all();invoices=db.query(Invoice).filter_by(organization_id=organization_id).all()
     payments=db.query(Payment).join(Invoice,Payment.invoice_id==Invoice.id).filter(Invoice.organization_id==organization_id,Payment.status=="CONFIRMED").all();paid={}
     for payment in payments:paid[payment.invoice_id]=paid.get(payment.invoice_id,0)+float(payment.amount)
-    rows=[]
+    rows=[];by_customer={}
+    for item in invoices:
+        if item.document_type=="INVOICE" and item.status not in {"DRAFT","CANCELLED"}:
+            by_customer.setdefault(item.customer_id,[]).append(item)
     for customer in customers:
-        items=[item for item in invoices if item.customer_id==customer.id and item.document_type=="INVOICE" and item.status not in {"DRAFT","CANCELLED"}];total=sum(float(item.total_amount) for item in items);settled=sum(paid.get(item.id,0) for item in items);balance=max(0,total-settled)
+        items=by_customer.get(customer.id,[]);total=sum(float(item.total_amount) for item in items);settled=sum(paid.get(item.id,0) for item in items);balance=max(0,total-settled)
         if items:rows.append({"customer_id":customer.id,"name":customer.name,"phone":customer.phone,"invoiced":total,"paid":settled,"balance":balance,"invoices":len(items)})
     return {"items":sorted(rows,key=lambda item:item["balance"],reverse=True),"total_credit":sum(item["balance"] for item in rows)}
 @app.get("/api/v1/billing/reports/summary")
 def billing_report_summary(organization_id:str,days:int=30,user:User=Depends(current_user),db:Session=Depends(get_db)):
-    require_member(db,user,organization_id);days=min(max(days,1),365);start=datetime.now(timezone.utc)-timedelta(days=days-1);invoices=db.query(Invoice).filter(Invoice.organization_id==organization_id,Invoice.created_at>=start).all();payments=db.query(Payment).join(Invoice,Payment.invoice_id==Invoice.id).filter(Invoice.organization_id==organization_id,Payment.status=="CONFIRMED",Payment.created_at>=start).all()
-    invoiced=sum(float(item.total_amount) for item in invoices if item.document_type=="INVOICE");paid=sum(float(item.amount) for item in payments);by_type={kind:sum(1 for item in invoices if item.document_type==kind) for kind in ("QUOTE","PROFORMA","INVOICE","DELIVERY_NOTE","RECEIPT")}
-    return {"period_days":days,"invoiced":invoiced,"paid":paid,"outstanding":max(0,invoiced-paid),"documents":len(invoices),"by_type":by_type,"payments":len(payments)}
+    require_member(db,user,organization_id);days=min(max(days,1),365);start=datetime.now(timezone.utc)-timedelta(days=days-1)
+    totals=db.query(Invoice.document_type,func.count(Invoice.id),func.coalesce(func.sum(Invoice.total_amount),0)).filter(Invoice.organization_id==organization_id,Invoice.created_at>=start).group_by(Invoice.document_type).all()
+    payment_count,payment_total=db.query(func.count(Payment.id),func.coalesce(func.sum(Payment.amount),0)).join(Invoice,Payment.invoice_id==Invoice.id).filter(Invoice.organization_id==organization_id,Payment.status=="CONFIRMED",Payment.created_at>=start).one()
+    counts={kind:count for kind,count,_ in totals}
+    invoiced=sum(float(total) for kind,_,total in totals if kind=="INVOICE");paid=float(payment_total)
+    by_type={kind:counts.get(kind,0) for kind in ("QUOTE","PROFORMA","INVOICE","DELIVERY_NOTE","RECEIPT")}
+    return {"period_days":days,"invoiced":invoiced,"paid":paid,"outstanding":max(0,invoiced-paid),"documents":sum(counts.values()),"by_type":by_type,"payments":payment_count}
 @app.post("/api/v1/connectors",response_model=ConnectorSecretOut,status_code=201)
 def create_connector(data:ConnectorCreate,user:User=Depends(current_user),db:Session=Depends(get_db)):
     require_org_admin(db,user,data.organization_id);workshop=one(db,Workshop,data.workshop_id)
@@ -1986,7 +1993,11 @@ async def command_result(agent_id:str,command_id:str,data:CommandResultIn,reques
 
 @app.get("/api/v1/dashboard")
 def dashboard(user:User=Depends(current_user),db:Session=Depends(get_db)):
-    jobs=db.query(PrintJob).filter(PrintJob.workshop_id.in_(accessible_workshop_ids(db,user))).all();agents=db.query(ComputerAgent).filter(ComputerAgent.workshop_id.in_(accessible_workshop_ids(db,user))).all();printers=db.query(Printer).join(ComputerAgent,Printer.computer_agent_id==ComputerAgent.id).filter(ComputerAgent.workshop_id.in_(accessible_workshop_ids(db,user))).all();return {"agents_online":sum(bool(a.is_online and a.last_heartbeat_at and utc_datetime(a.last_heartbeat_at)>datetime.now(timezone.utc)-timedelta(seconds=90)) for a in agents),"printers":len(printers),"printers_available":sum(p.status in {"ONLINE","READY","IDLE"} and p.enabled for p in printers),"jobs_waiting":sum(j.status==JobStatus.WAITING_APPROVAL for j in jobs),"jobs_printing":sum(j.status==JobStatus.PRINTING for j in jobs),"jobs_completed":sum(j.status==JobStatus.COMPLETED for j in jobs),"jobs_failed":sum(j.status==JobStatus.FAILED for j in jobs)}
+    workshop_ids=accessible_workshop_ids(db,user)
+    counts=dict(db.query(PrintJob.status,func.count(PrintJob.id)).filter(PrintJob.workshop_id.in_(workshop_ids)).group_by(PrintJob.status).all())
+    online=db.query(func.count(ComputerAgent.id)).filter(ComputerAgent.workshop_id.in_(workshop_ids),ComputerAgent.is_online.is_(True),ComputerAgent.last_heartbeat_at>datetime.now(timezone.utc)-timedelta(seconds=90)).scalar() or 0
+    printers=db.query(Printer.status,Printer.enabled,func.count(Printer.id)).join(ComputerAgent,Printer.computer_agent_id==ComputerAgent.id).filter(ComputerAgent.workshop_id.in_(workshop_ids)).group_by(Printer.status,Printer.enabled).all()
+    return {"agents_online":online,"printers":sum(count for _,_,count in printers),"printers_available":sum(count for status,enabled,count in printers if enabled and status in {"ONLINE","READY","IDLE"}),"jobs_waiting":counts.get(JobStatus.WAITING_APPROVAL,0),"jobs_printing":counts.get(JobStatus.PRINTING,0),"jobs_completed":counts.get(JobStatus.COMPLETED,0),"jobs_failed":counts.get(JobStatus.FAILED,0)}
 
 @app.get("/api/v1/supervision")
 def central_supervision(organization_id:str,user:User=Depends(current_user),db:Session=Depends(get_db)):
@@ -2069,6 +2080,10 @@ def app_js():return HTMLResponse((Path(__file__).parent/"web"/"app.js").read_tex
 def billing_workspace_js():return HTMLResponse((Path(__file__).parent/"web"/"billing-workspace.js").read_text(encoding="utf-8"),media_type="application/javascript",headers={"Cache-Control":"no-store, max-age=0"})
 @app.get("/billing-workspace.css",response_class=HTMLResponse)
 def billing_workspace_css():return HTMLResponse((Path(__file__).parent/"web"/"billing-workspace.css").read_text(encoding="utf-8"),media_type="text/css",headers={"Cache-Control":"no-store, max-age=0"})
+
+@app.get("/ui-motion.css",include_in_schema=False)
+def ui_motion_css():
+    return FileResponse(Path(__file__).parent/"web"/"ui-motion.css",media_type="text/css",headers={"Cache-Control":"public, max-age=3600"})
 
 @app.get("/public.js",response_class=HTMLResponse)
 def public_js():return HTMLResponse((Path(__file__).parent/"web"/"public.js").read_text(encoding="utf-8"),media_type="application/javascript")

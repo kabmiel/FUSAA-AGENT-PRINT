@@ -31,7 +31,7 @@ function network(){
 }
 let fusaaOperationDepth=0;
 function showFusaaOperation(label="Traitement en cours…"){let panel=$("fusaaOperation");if(!panel){document.body.insertAdjacentHTML("beforeend",'<div id="fusaaOperation" class="fusaa-operation" role="status" aria-live="polite"><div class="fusaa-operation-card"><i></i><b id="fusaaOperationLabel"></b><span>FUSAA sécurise et enregistre votre action</span><em><u></u></em></div></div>');panel=$("fusaaOperation")}fusaaOperationDepth++;$("fusaaOperationLabel").textContent=label;panel.classList.add("active");return performance.now()}
-async function hideFusaaOperation(start){const remaining=Math.max(0,700-(performance.now()-start));if(remaining)await new Promise(resolve=>setTimeout(resolve,remaining));fusaaOperationDepth=Math.max(0,fusaaOperationDepth-1);if(!fusaaOperationDepth)$("fusaaOperation")?.classList.remove("active")}
+async function hideFusaaOperation(start){fusaaOperationDepth=Math.max(0,fusaaOperationDepth-1);if(!fusaaOperationDepth)$("fusaaOperation")?.classList.remove("active")}
 document.head.insertAdjacentHTML("beforeend",'<style>.fusaa-operation{position:fixed;inset:0;z-index:200;display:grid;place-items:center;padding:20px;background:#03101a70;backdrop-filter:blur(6px);opacity:0;pointer-events:none;transition:opacity .2s ease}.fusaa-operation.active{opacity:1;pointer-events:auto}.fusaa-operation-card{width:min(360px,100%);padding:28px;border:1px solid #46e1ce88;border-radius:24px;background:linear-gradient(145deg,#123149f7,#071522fa);box-shadow:0 28px 90px #000a;text-align:center}.fusaa-operation-card i{display:block;width:58px;height:58px;margin:0 auto 16px;border:5px solid #ffffff18;border-top-color:#36e1c7;border-right-color:#287cf0;border-radius:50%;animation:fusaaOperationSpin .8s linear infinite;box-shadow:0 0 30px #26d2b566}.fusaa-operation-card b{display:block;color:#effbff;font-size:1.05rem}.fusaa-operation-card span{display:block;margin:7px 0 16px;color:#a7c3d3;font-size:.82rem}.fusaa-operation-card em{display:block;height:7px;overflow:hidden;border-radius:99px;background:#ffffff14}.fusaa-operation-card u{display:block;width:48%;height:100%;border-radius:inherit;background:linear-gradient(90deg,#25d3b8,#287cf0);animation:fusaaOperationLoad 1.05s ease-in-out infinite}@keyframes fusaaOperationSpin{to{transform:rotate(360deg)}}@keyframes fusaaOperationLoad{50%{transform:translateX(108%)}}@media(prefers-reduced-motion:reduce){.fusaa-operation-card i,.fusaa-operation-card u{animation:none}}</style>');
 function state(){
   const on=Boolean(token);
@@ -39,9 +39,29 @@ function state(){
   $("auth").classList.toggle("hidden",on);$("app").classList.toggle("hidden",!on);$("sessionLoading")?.classList.add("hidden");
   $("org").textContent=org||"—";$("workshop").textContent=workshop||"—";network();
 }
+const apiPending=new Map(),apiCache=new Map();
+let apiRevision=0;
+function invalidateApiReads(){apiRevision++;apiCache.clear();apiPending.clear()}
+function apiReadLifetime(path){
+  const route=path.split("?")[0];
+  if(["/api/v1/workspaces","/api/v1/settings","/api/v1/push/public-key","/api/v1/billing/headers","/api/v1/billing/categories","/api/v1/customers","/api/v1/shop/admin/categories"].includes(route))return 30000;
+  return 0;
+}
 async function api(path,options={}){
+  const read=String(options.method||"GET").toUpperCase()==="GET";
+  if(!read){invalidateApiReads();try{return await apiFetch(path,options)}finally{invalidateApiReads()}}
+  // Requests with a caller-owned abort signal must retain independent cancellation.
+  if(options.signal)return apiFetch(path,options);
+  const key=JSON.stringify([token,org,workshop,path,options.headers||{}]),ttl=apiReadLifetime(path),cached=apiCache.get(key);
+  if(options.cache!=="no-store"&&cached&&cached.until>Date.now())return structuredClone(cached.data);
+  if(apiPending.has(key))return structuredClone(await apiPending.get(key));
+  const revision=apiRevision,pending=apiFetch(path,options);apiPending.set(key,pending);
+  try{const data=await pending;if(ttl&&revision===apiRevision){if(apiCache.size>=80)apiCache.delete(apiCache.keys().next().value);apiCache.set(key,{data:structuredClone(data),until:Date.now()+ttl})}return data}
+  finally{if(apiPending.get(key)===pending)apiPending.delete(key)}
+}
+async function apiFetch(path,options={}){
   if(!navigator.onLine)throw Error("Connexion absente.");
-  const animated=String(options.method||"GET").toUpperCase()!=="GET",started=animated?showFusaaOperation(options.method==="DELETE"?"Suppression en cours…":"Traitement de votre demande…"):0;
+  const animated=String(options.method||"GET").toUpperCase()!=="GET"&&!document.querySelector(".billing-popup-loading,.billing-import-progress"),started=animated?showFusaaOperation(options.method==="DELETE"?"Suppression en cours…":"Traitement de votre demande…"):0;
   try{const response=await fetch(path,{...options,headers:{...(options.headers||{}),Authorization:"Bearer "+token}});let data={};try{data=await response.json()}catch{}if(response.status===401){logout();throw Error("Session expirée. Reconnectez-vous.")}if(!response.ok)throw Error(friendlyPrintError(readableApiError(data.detail)));return data}finally{if(animated)await hideFusaaOperation(started)}
 }
 async function restoreWorkspace(){
@@ -66,6 +86,7 @@ function registerUser(){
   auth("/api/v1/auth/register",{display_name:name})
 }
 function logout(){
+  invalidateApiReads();
   ["token","org","workshop"].forEach(key=>localStorage.removeItem(key));
   token="";org="";workshop="";jobs=[];docs={};chatHistory=[];aiPlan=null;socket?.close();state();
 }
@@ -158,7 +179,13 @@ async function confirmFinish(id,button){
   finally{if(button?.isConnected)button.disabled=false}
 }
 function selectJob(id){openJobGlass(id,"view")}
-async function refresh(){
+let refreshPending=null,refreshAgain=false;
+function refresh(){
+  if(refreshPending){refreshAgain=true;return refreshPending}
+  refreshPending=(async()=>{try{do{refreshAgain=false;await refreshWorkspace()}while(refreshAgain&&token)}finally{refreshPending=null}})();
+  return refreshPending;
+}
+async function refreshWorkspace(){
   if(!token)return;
   try{
     await restoreWorkspace();state();
@@ -166,7 +193,8 @@ async function refresh(){
     // The print form lives inside the glass dialog. Preserve its in-progress
     // choices before refresh rebuilds the printer list.
     const formValues=$("jobGlass")?.open?Object.fromEntries(["printer","copies","paper","orientation","color","pages","instructions","duplex"].map(id=>[id,$(id).type==="checkbox"?$(id).checked:$(id).value])):null;
-    const results=await Promise.all([api("/api/v1/dashboard"),api("/api/v1/jobs"),api("/api/v1/printers"),api("/api/v1/documents"),api("/api/v1/audit"),api("/api/v1/activities"),api("/api/v1/local-monitor/status"),api("/api/v1/settings"),api("/api/v1/analytics/visitors?organization_id="+encodeURIComponent(org)).catch(()=>null)]);
+    const active=id=>$(id)?.classList.contains("active");
+    const results=await Promise.all([api("/api/v1/dashboard"),api("/api/v1/jobs"),api("/api/v1/printers"),api("/api/v1/documents"),active("history")?api("/api/v1/audit"):null,api("/api/v1/activities"),active("settings")||active("arrivals")?api("/api/v1/local-monitor/status"):null,api("/api/v1/settings"),active("dashboard")?api("/api/v1/analytics/visitors?organization_id="+encodeURIComponent(org)).catch(()=>null):visitorSnapshot]);
     const dashboard=results[0],printers=results[2],documents=results[3];
     dashboardSnapshot=dashboard;dashboardPrinters=printers;
     jobs=results[1];docs=Object.fromEntries(documents.map(item=>[item.id,item]));
@@ -176,7 +204,7 @@ async function refresh(){
     visitorSnapshot=results[8];
     $("stats").classList.add("dashboard-stats");
     $("stats").innerHTML=dashboardStats(dashboard)+(visitorSnapshot?card("Visiteurs aujourd’hui",visitorSnapshot.today_unique,"visitors"):"");
-    renderAuditHistory(results[4]);
+    if(results[4])renderAuditHistory(results[4]);
     if($("processDocument"))$("processDocument").innerHTML=documents.map(item=>'<option value="'+esc(item.id)+'">'+esc(item.original_name)+"</option>").join("");
     if(jobs.some(item=>item.id===savedJob))$("job").value=savedJob;
     if(printers.some(item=>item.id===savedPrinter))$("printer").value=savedPrinter;
@@ -185,7 +213,7 @@ async function refresh(){
       if(id==="printer"&&!printers.some(item=>item.id===value))continue;
       if($(id).type==="checkbox")$(id).checked=value;else $(id).value=value
     }
-    showJob();renderJobCards(jobs,docs);renderActivities(results[5]);renderMonitor(results[6]);checkPushAvailability();loadGuestOrders();
+    showJob();renderJobCards(jobs,docs);renderActivities(results[5]);if(results[6])renderMonitor(results[6]);checkPushAvailability();if($("publicOrders")?.classList.contains("active"))loadGuestOrders();
   }catch(error){tell(error.message)}
 }
 async function showJob(){
@@ -254,10 +282,16 @@ async function loadMonitor(){try{renderMonitor(await api("/api/v1/local-monitor/
 function b64(value){return Uint8Array.from(atob(value.replace(/-/g,"+").replace(/_/g,"/")),item=>item.charCodeAt(0))}
 async function enablePush(){try{const key=(await api("/api/v1/push/public-key")).public_key,reg=await navigator.serviceWorker.ready,sub=await reg.pushManager.subscribe({userVisibleOnly:true,applicationServerKey:b64(key)}),value=sub.toJSON();await api("/api/v1/push/subscriptions",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({endpoint:value.endpoint,p256dh:value.keys.p256dh,auth:value.keys.auth})});tell("Notifications activées.")}catch(error){tell("Notifications indisponibles : "+error.message)}}
 async function checkPushAvailability(){const button=globalThis.document.querySelector('button[onclick="enablePush()"]');if(!button)return;try{await api("/api/v1/push/public-key");button.hidden=false}catch(error){if(String(error.message).includes("not configured")){button.hidden=true;button.title="Les alertes locales FUSAA restent actives"}else button.hidden=false}}
+let eventRefreshTimer=0,eventRefreshPending=false;
+function scheduleEventRefresh(){
+  eventRefreshPending=true;if(document.hidden||eventRefreshTimer)return;
+  eventRefreshTimer=setTimeout(()=>{eventRefreshTimer=0;if(document.hidden)return;eventRefreshPending=false;refresh()},350);
+}
+document.addEventListener("visibilitychange",()=>{if(!document.hidden&&eventRefreshPending)scheduleEventRefresh()});
 function connectEvents(){
-  if(!token)return;socket?.close();const protocol=location.protocol==="https:"?"wss":"ws";
+  if(!token)return;if(socket){socket.onclose=null;socket.close()}const protocol=location.protocol==="https:"?"wss":"ws";
   socket=new WebSocket(protocol+"://"+location.host+"/ws/events?token="+encodeURIComponent(token));
-  socket.onmessage=event=>{const item=JSON.parse(event.data);if(item.event==="LOCAL_ACTIVITY")loadActivities();else refresh()};
+  socket.onmessage=()=>scheduleEventRefresh();
   socket.onclose=event=>{if(event.code===1008){logout();tell("Session expirée. Reconnectez-vous.");return}if(token)setTimeout(connectEvents,5000)};
 }
 function selectView(view){
@@ -607,8 +641,8 @@ function bootApplication(){
 }
 bootApplication();
 document.head.insertAdjacentHTML("beforeend",'<style>button:not(:disabled),.secondary:not(:disabled){transition:transform .2s ease,filter .2s ease,box-shadow .25s ease!important;transform-origin:center}button.fusaa-clicked:not(:disabled){animation:fusaaButtonClick .62s cubic-bezier(.2,.8,.25,1);filter:brightness(1.12);box-shadow:0 0 0 5px #35dfc236,0 0 26px #2d9bf066!important}@keyframes fusaaButtonClick{0%{transform:scale(1)}26%{transform:translateY(2px) scale(.94)}58%{transform:translateY(-1px) scale(1.025)}100%{transform:scale(1)}}@media(prefers-reduced-motion:reduce){button.fusaa-clicked:not(:disabled){animation:none}}</style>');
-function animateFusaaButton(button){if(!button||button.disabled)return;button.classList.remove("fusaa-clicked");void button.offsetWidth;button.classList.add("fusaa-clicked");setTimeout(()=>button.classList.remove("fusaa-clicked"),650)}
-document.addEventListener("click",event=>animateFusaaButton(event.target.closest("button")),true);document.addEventListener("submit",event=>animateFusaaButton(event.target.querySelector('button[type="submit"],button:not(.secondary)')),true);
+// One press response for mouse, touch and keyboard; no click/submit duplication.
+document.head.insertAdjacentHTML("beforeend", '<link rel="stylesheet" href="/ui-motion.css?v=20260930">');
 
 /* Apparence liquid glass : réglage conservé dans les paramètres de l'atelier. */
 function mountTransparencyControl(){

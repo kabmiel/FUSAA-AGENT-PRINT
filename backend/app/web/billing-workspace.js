@@ -43,15 +43,15 @@ async function billingEditProductLocal(index){const item=billingState.products[i
 async function billingRemoveProductLocal(index){const item=billingState.products[index];if(!item||item.source!=="FACTURATION"||!confirm("Archiver ce produit de facturation ?"))return;try{await api("/api/v1/billing/products/"+item.id,{method:"DELETE"});billingState.productCatalogLoaded=false;tell("Produit archivé.");await billingProducts()}catch(error){tell(error.message)}}
 
 const billingProductSearchBase=billingProductSearchLocal;
-billingProductSearch=async function(...args){const started=showFusaaOperation("Mise a jour du catalogue…");try{return await billingProductSearchBase(...args)}finally{await hideFusaaOperation(started)}};
-async function billingLoading(label,work){const started=showFusaaOperation(label);try{return await work()}finally{await hideFusaaOperation(started)}}
+billingProductSearch=async function(...args){return billingProductSearchBase(...args)};
+async function billingLoading(label,work){return work()}
 const billingRequestTimeout=12000;
 async function billingRequest(path,options={},timeout=billingRequestTimeout){
   const controller=new AbortController();let timer=0;
   try{return await Promise.race([api(path,{...options,signal:controller.signal}),new Promise((_,reject)=>{timer=setTimeout(()=>{controller.abort();reject(Error("Le chargement prend trop de temps. Vérifiez la connexion puis réessayez."))},timeout)})])}
   finally{clearTimeout(timer)}
 }
-const billingPause=milliseconds=>new Promise(resolve=>setTimeout(resolve,milliseconds));
+const billingPause=()=>Promise.resolve();
 function billingLoadingContent(title){return billingHero(title,"Préparation sécurisée de votre espace de facturation…")+'<section class="billing-panel billing-popup-loading" aria-live="polite"><span class="billing-loader-orbit"><i></i></span><div><b>Chargement en cours</b><p>FUSAA récupère vos données et prépare les actions.</p></div><em><u></u></em></section>'}
 function billingImportProgress(label,percent=8){return '<section class="billing-import-progress" style="--billing-import-progress:'+Math.max(4,Math.min(100,percent))+'%" aria-live="polite"><span class="billing-loader-orbit"><i></i></span><div><b id="billingImportProgressLabel">'+esc(label)+'</b><p>Vos données sont enregistrées de façon sécurisée.</p></div><em><u></u></em></section>'}
 function billingImportProgressAt(target,label,percent,detail=""){
@@ -177,7 +177,7 @@ async function billingOpen(tab){
   }catch(error){billingSet(billingHero(billingMenuLabels[tab],"Une erreur empêche le chargement.")+'<div class="billing-panel billing-load-error"><i>!</i><div><b>La fenêtre n’a pas pu se charger</b><p>'+esc(error.message)+'</p><button type="button" onclick="billingPopup(\''+esc(tab)+'\')">Réessayer</button></div></div>');tell(error.message)}
 }
 const billingOpenBase=billingOpen;
-billingOpen=async function(tab){const label=billingMenuLabels[tab]||"Facturation",started=showFusaaOperation("Chargement · "+label+"…");try{return await billingOpenBase(tab)}finally{await hideFusaaOperation(started)}};
+billingOpen=async function(tab){return billingOpenBase(tab)};
 async function billingExport(kind){const started=showFusaaOperation("Preparation de l export…");try{const url="/api/v1/billing/export/"+kind+".csv?organization_id="+encodeURIComponent(org),response=await fetch(url,{headers:{Authorization:"Bearer "+token}});if(!response.ok)throw Error("Export impossible");const blob=await response.blob(),link=document.createElement("a");link.href=URL.createObjectURL(blob);link.download="fusaa-"+kind+".csv";link.click();setTimeout(()=>URL.revokeObjectURL(link.href),1000)}catch(error){tell(error.message)}finally{await hideFusaaOperation(started)}}
 function billingEnsureExport(tab){const kinds={documents:"documents",clients:"clients",products:"products",headers:"headers"};const kind=kinds[tab];if(!kind)return;const host=document.getElementById("billingGlassContent");const action=host?.querySelector(".billing-hero .billing-actions");if(action&&!action.querySelector("[data-billing-export]")){action.insertAdjacentHTML("beforeend",'<button class="secondary" type="button" data-billing-export onclick="billingExport(\''+kind+'\')">Exporter CSV</button>');if(tab==="clients")action.insertAdjacentHTML("beforeend",'<input id="billingClientsCsv" class="hidden" type="file" accept=".csv,text/csv" onchange="billingImportClients()"><button class="secondary" type="button" onclick="document.getElementById(\'billingClientsCsv\').click()">Importer Boulangerie</button>')}}
 async function billingImportClients(){const file=document.getElementById("billingClientsCsv")?.files[0];if(!file)return;const body=new FormData();body.append("file",file);const started=showFusaaOperation("Importation des clients…");try{const result=await api("/api/v1/customers/import?organization_id="+encodeURIComponent(org),{method:"POST",body});tell(result.created+" client(s) importé(s)"+(result.errors?.length?" · "+result.errors.length+" ligne(s) ignorée(s)":""));billingClosePopup();await billingOpen("dashboard")}catch(error){tell(error.message)}finally{await hideFusaaOperation(started)}}

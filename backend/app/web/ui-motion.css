@@ -1,0 +1,24 @@
+/* Shared motion: one discreet indicator per operation, no artificial delays. */
+:root{--fusaa-motion:160ms;--fusaa-loader:#27cbbb}
+button:not(:disabled),.secondary:not(:disabled){transition:background-color var(--fusaa-motion) ease,border-color var(--fusaa-motion) ease,transform 100ms ease!important}
+button:active:not(:disabled){transform:translateY(1px)!important}
+button.fusaa-clicked{animation:none!important}
+.fusaa-operation,.shop-operation,.public-operation{backdrop-filter:blur(3px)!important;transition:opacity var(--fusaa-motion) ease!important}
+.fusaa-operation-card,.shop-operation>div,.public-operation>div{border-radius:18px!important;padding:24px!important;box-shadow:0 16px 48px #0005!important}
+.fusaa-operation-card i,.shop-operation i,.public-operation i,.catalogue-loader i,.catalogue-more i,.billing-loader-orbit{width:28px!important;height:28px!important;border:3px solid #8299aa40!important;border-top-color:var(--fusaa-loader)!important;border-radius:50%!important;background:transparent!important;box-shadow:none!important;animation:fusaa-spin .9s linear infinite!important}
+.billing-loader-orbit i,.billing-loader-orbit::before,.billing-loader-orbit::after{display:none!important}
+.fusaa-operation-card em,.shop-operation em,.public-operation em,.billing-popup-loading em{display:none!important}
+.billing-import-progress>.billing-loader-orbit{display:none!important}
+body:has(.billing-popup-loading) .fusaa-operation,body:has(dialog[open] .billing-import-progress) .fusaa-operation{visibility:hidden}
+.print-progress{animation:none!important}
+.progress-track i::after{animation:none!important;display:none!important}
+.job-card,.billing-panel{animation:none!important}
+dialog[open]{animation:fusaa-dialog-in var(--fusaa-motion) ease-out!important}
+dialog[open] .panel,dialog[open] .billing-panel{animation:none!important}
+:root[data-theme="light"] .fusaa-operation-card{background:#f5fafc!important;border-color:#b9d8df!important}
+:root[data-theme="light"] .fusaa-operation-card b{color:#173346!important}
+:root[data-theme="light"] .fusaa-operation-card span{color:#526b7d!important}
+@keyframes fusaa-spin{to{transform:rotate(360deg)}}
+@keyframes fusaa-dialog-in{from{opacity:0;transform:translateY(5px)}to{opacity:1;transform:translateY(0)}}
+@media(prefers-reduced-motion:reduce){html body *,html body *::before,html body *::after{animation:none!important;transition:none!important;scroll-behavior:auto!important}}
+:root[data-reduce-motion="true"] body *,:root[data-reduce-motion="true"] body *::before,:root[data-reduce-motion="true"] body *::after{animation:none!important;transition:none!important;scroll-behavior:auto!important}
