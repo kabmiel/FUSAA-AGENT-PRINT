@@ -19,7 +19,38 @@ function addToCart(id){const product=shopProducts.find(item=>item.id===id),line=
 function changeCartQuantity(id,change){const product=shopProducts.find(item=>item.id===id),line=shopCart.find(item=>item.id===id);if(!product||!line)return;line.quantity=Math.max(0,Math.min(product.stock_quantity,line.quantity+change));shopCart=shopCart.filter(item=>item.quantity>0);saveCart()}
 function renderCart(){shop$("cartCount").textContent=shopCart.reduce((sum,item)=>sum+item.quantity,0);const lines=shopCart.map(line=>({line,product:shopProducts.find(product=>product.id===line.id)})).filter(item=>item.product);const total=lines.reduce((sum,{line,product})=>sum+line.quantity*product.price_xof,0);shop$("cartLines").innerHTML=lines.length?lines.map(({line,product})=>`<div class="line"><span>${shopEsc(product.name)}</span><span class="cart-quantity"><button type="button" class="cart" onclick="changeCartQuantity('${product.id}',-1)">−</button><b>${line.quantity}</b><button type="button" class="cart" onclick="changeCartQuantity('${product.id}',1)" ${line.quantity>=product.stock_quantity?"disabled":""}>+</button></span><span>${money(product.price_xof*line.quantity)} <button type="button" class="cart" onclick="removeCart('${product.id}')">×</button></span></div>`).join(""):'<p class="muted">Votre panier est vide.</p>';shop$("cartTotal").textContent=lines.length?`Total : ${money(total)}`:"";shop$("orderButton").disabled=!lines.length}
 function removeCart(id){shopCart=shopCart.filter(line=>line.id!==id);saveCart()}
-async function loadShop({reset=true}={}){if(shopLoading||(!reset&&!shopHasMore))return;shopLoading=true;if(reset){shopObserver?.disconnect();shopPage=0;shopHasMore=true;shopProducts=[];shop$("products").innerHTML='<p class="empty">Chargement des produits…</p>'}else renderProducts();try{const params=new URLSearchParams({page:String(shopPage+1),page_size:"12"}),term=shop$("search").value.trim(),category=shop$("category").value;if(term)params.set("q",term);if(category)params.set("category",category);const categoryRequest=shopCategoriesLoaded?Promise.resolve(null):shopRequest("/api/v1/shop/public/categories");const [data,categories]=await Promise.all([shopRequest(`/api/v1/shop/public/products/page?${params}`),categoryRequest]);if(categories){shop$("category").innerHTML='<option value="">Toutes les catégories</option>'+categories.map(item=>`<option value="${shopEsc(item.slug)}">${shopEsc(item.name)}</option>`).join("");shopCategoriesLoaded=true}shopPage=data.page;shopHasMore=data.has_more;shopProducts.push(...data.items);renderProducts({reset:true});renderCart()}catch(error){shop$("products").innerHTML=`<p class="empty">${shopEsc(error.message)}</p>`;shopHasMore=false}finally{shopLoading=false;const marker=document.querySelector(".shop-more");if(marker){marker.textContent=shopHasMore?"Faites défiler pour voir plus de produits":"";if(!shopHasMore)marker.remove();else watchNextPage(marker)}}}
+let shopReloadPending=false,shopCategoriesPending=null;
+async function loadShopCategories(){
+  if(shopCategoriesLoaded||shopCategoriesPending)return shopCategoriesPending;
+  shopCategoriesPending=shopRequest("/api/v1/shop/public/categories").then(categories=>{
+    const select=shop$("category"),selected=select.value;
+    select.innerHTML='<option value="">Toutes les catégories</option>'+categories.map(item=>`<option value="${shopEsc(item.slug)}">${shopEsc(item.name)}</option>`).join("");
+    if(categories.some(item=>item.slug===selected))select.value=selected;
+    shopCategoriesLoaded=true;
+  }).catch(()=>{}).finally(()=>{shopCategoriesPending=null});
+  return shopCategoriesPending;
+}
+async function loadShop({reset=true}={}){
+  if(shopLoading){if(reset)shopReloadPending=true;return}
+  if(!reset&&!shopHasMore)return;
+  shopLoading=true;
+  if(reset){shopObserver?.disconnect();shopPage=0;shopHasMore=true;shopProducts=[];shop$("products").innerHTML='<p class="empty">Chargement des produits…</p>'}
+  else renderProducts();
+  try{
+    const params=new URLSearchParams({page:String(shopPage+1),page_size:"12"}),term=shop$("search").value.trim(),category=shop$("category").value;
+    if(term)params.set("q",term);if(category)params.set("category",category);
+    const data=await shopRequest(`/api/v1/shop/public/products/page?${params}`);
+    shopPage=data.page;shopHasMore=data.has_more;shopProducts.push(...data.items);
+    renderProducts({reset:true});renderCart();
+    loadShopCategories();
+  }catch(error){shop$("products").innerHTML=`<p class="empty">${shopEsc(error.message)}</p>`;shopHasMore=false}
+  finally{
+    shopLoading=false;
+    const marker=document.querySelector(".shop-more");
+    if(marker){marker.textContent=shopHasMore?"Faites défiler pour voir plus de produits":"";if(!shopHasMore)marker.remove();else watchNextPage(marker)}
+    if(shopReloadPending){shopReloadPending=false;queueMicrotask(()=>loadShop({reset:true}))}
+  }
+}
 shop$("search").oninput=()=>{clearTimeout(shopSearchTimer);shopSearchTimer=setTimeout(()=>loadShop({reset:true}),280)};shop$("category").onchange=()=>loadShop({reset:true});shop$("cartButton").onclick=()=>{renderCart();shop$("cartDialog").showModal()};shop$("checkout").onsubmit=async event=>{event.preventDefault();const button=shop$("orderButton");button.disabled=true;button.textContent="Envoi…";try{const data=await shopRequest("/api/v1/shop/public/orders",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({customer_name:shop$("customerName").value.trim(),customer_phone:shop$("customerPhone").value.trim(),delivery_address:shop$("address").value.trim()||null,payment_method:shop$("payment").value,items:shopCart.map(item=>({product_id:item.id,quantity:item.quantity}))})});shopCart=[];saveCart();shop$("cartDialog").close();shop$("successTitle").textContent=data.order_number;shop$("successText").textContent=`Commande enregistrée : ${money(data.total_xof)}. FUSAA vous contactera au ${data.customer_phone} pour confirmer.`;shop$("successDialog").showModal();loadShop({reset:true})}catch(error){alert(error.message)}finally{button.textContent="Envoyer la commande";button.disabled=false}};
 try{shopCart=JSON.parse(localStorage.getItem("fusaa-shop-cart")||"[]")}catch{}loadShop();
 

@@ -102,13 +102,37 @@ def _legacy_invoice_pdf(db, invoice: Invoice) -> Path:
     pdf.save();invoice.pdf_key=str(path.relative_to(settings.storage_dir));return path
 
 
+def _pdf_is_current(path: Path, invoice: Invoice, header: BillingHeader, customer: Customer | None) -> bool:
+    """Reuse a PDF only while its invoice, header and client are unchanged."""
+    try:
+        info = path.stat()
+        modified = info.st_mtime
+        if not info.st_size:
+            return False
+    except OSError:
+        return False
+    for item in (invoice, header, customer):
+        changed = getattr(item, "updated_at", None)
+        if changed:
+            if changed.tzinfo is None:
+                changed = changed.replace(tzinfo=timezone.utc)
+            if changed.timestamp() > modified:
+                return False
+    # A remote logo may recover after a network failure without a DB update.
+    return not str(getattr(header, "logo_url", "") or "").startswith("https://")
+
+
 def generate_invoice_pdf(db, invoice: Invoice) -> Path:
     header=db.get(BillingHeader,invoice.billing_header_id) if invoice.billing_header_id else default_billing_header(db,invoice.organization_id)
     customer=db.get(Customer,invoice.customer_id) if invoice.customer_id else None
-    lines=db.query(InvoiceLine).filter_by(invoice_id=invoice.id).order_by(InvoiceLine.display_order,InvoiceLine.id).all()
     path=settings.storage_dir / "invoices" / f"{invoice.number}.pdf"
-    render_invoice_pdf(path,invoice,header,customer,lines)
-    invoice.pdf_key=str(path.relative_to(settings.storage_dir))
+    key=str(path.relative_to(settings.storage_dir))
+    if invoice.pdf_key != key:
+        invoice.pdf_key=key
+        db.flush()
+    if not _pdf_is_current(path,invoice,header,customer):
+        lines=db.query(InvoiceLine).filter_by(invoice_id=invoice.id).order_by(InvoiceLine.display_order,InvoiceLine.id).all()
+        render_invoice_pdf(path,invoice,header,customer,lines)
     return path
 
 
@@ -124,6 +148,9 @@ def generate_invoice_preview_pdf(db, invoice: Invoice, document_type: str) -> Pa
         raise ValueError("Type de document invalide")
     header=db.get(BillingHeader,invoice.billing_header_id) if invoice.billing_header_id else default_billing_header(db,invoice.organization_id)
     customer=db.get(Customer,invoice.customer_id) if invoice.customer_id else None
+    path=settings.storage_dir / "invoices" / "previews" / f"{invoice.number}-{selected.lower()}-preview.pdf"
+    if _pdf_is_current(path,invoice,header,customer):
+        return path
     lines=db.query(InvoiceLine).filter_by(invoice_id=invoice.id).order_by(InvoiceLine.display_order,InvoiceLine.id).all()
     preview=SimpleNamespace(
         number=invoice.number,document_type=selected,document_style=invoice.document_style,issued_on=invoice.issued_on,
@@ -131,6 +158,5 @@ def generate_invoice_preview_pdf(db, invoice: Invoice, document_type: str) -> Pa
         discount_amount=invoice.discount_amount,tax_rate=invoice.tax_rate,
         tax_amount=invoice.tax_amount,isb_amount=invoice.isb_amount,total_amount=invoice.total_amount,
     )
-    path=settings.storage_dir / "invoices" / "previews" / f"{invoice.number}-{selected.lower()}-preview.pdf"
     render_invoice_pdf(path,preview,header,customer,lines)
     return path

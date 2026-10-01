@@ -25,8 +25,23 @@ async function billingProductSearchLocal(reset=false){
   const target=document.getElementById("billingNewCatalog");if(!target)return;
   billingState.productSearch=document.getElementById("billingNewSearch")?.value.trim()||"";
   await billingLoadProductCatalog();
+  if(!target.isConnected)return;
   const items=billingCatalogMatches(billingState.productSearch);billingState.products=items;
-  target.innerHTML=items.length?'<div class="billing-table-wrap billing-catalog-table"><table class="billing-table"><thead><tr><th>Produit</th><th>Prix unitaire</th><th>Unité</th><th>Ajouter</th><th>Modifier</th><th>Supprimer</th></tr></thead><tbody>'+items.map((item,index)=>'<tr><td>'+esc(item.name)+'<small>'+esc(item.source==="BOUTIQUE"?"Boutique":"Facturation")+'</small></td><td>'+billingCurrency(item.price_xof)+'</td><td>'+esc(item.unit||"piece")+'</td><td><button type="button" class="secondary billing-round-action" aria-label="Ajouter à la facture" onclick="billingAddLine(billingState.products['+index+'])">+</button></td><td>'+(item.source==="FACTURATION"?'<button type="button" class="secondary billing-round-action" aria-label="Modifier le produit" onclick="billingQuickEditProduct('+index+')">✎</button>':"—")+'</td><td>'+(item.source==="FACTURATION"?'<button type="button" class="secondary billing-round-action" aria-label="Archiver le produit" onclick="billingQuickDeleteProduct('+index+')">×</button>':"—")+'</td></tr>').join("")+'</tbody></table></div><p class="billing-catalog-count">'+items.length+' produit(s) affiché(s) · chargement unique</p>':'<p class="billing-empty">Aucun produit trouvé. Vous pouvez saisir une ligne libre.</p>';
+  if(!items.length){target.innerHTML='<p class="billing-empty">Aucun produit trouvé. Vous pouvez saisir une ligne libre.</p>';return}
+  target.innerHTML='<div class="billing-table-wrap billing-catalog-table"><table class="billing-table"><thead><tr><th>Produit</th><th>Prix unitaire</th><th>Unité</th><th>Ajouter</th><th>Modifier</th><th>Supprimer</th></tr></thead><tbody></tbody></table></div><p class="billing-catalog-count">'+items.length+' produit(s) affiché(s) · chargement unique</p>';
+  const body=target.querySelector("tbody");
+  let cursor=0;
+  function appendCatalogChunk(){
+    if(!target.isConnected||billingState.products!==items)return;
+    const chunk=items.slice(cursor,cursor+80);
+    body.insertAdjacentHTML("beforeend",chunk.map((item,offset)=>{
+      const index=cursor+offset;
+      return '<tr><td>'+esc(item.name)+'<small>'+esc(item.source==="BOUTIQUE"?"Boutique":"Facturation")+'</small></td><td>'+billingCurrency(item.price_xof)+'</td><td>'+esc(item.unit||"piece")+'</td><td><button type="button" class="secondary billing-round-action" aria-label="Ajouter à la facture" onclick="billingAddLine(billingState.products['+index+'])">+</button></td><td>'+(item.source==="FACTURATION"?'<button type="button" class="secondary billing-round-action" aria-label="Modifier le produit" onclick="billingQuickEditProduct('+index+')">✎</button>':"—")+'</td><td>'+(item.source==="FACTURATION"?'<button type="button" class="secondary billing-round-action" aria-label="Archiver le produit" onclick="billingQuickDeleteProduct('+index+')">×</button>':"—")+'</td></tr>';
+    }).join(""));
+    cursor+=chunk.length;
+    if(cursor<items.length)requestAnimationFrame(appendCatalogChunk);
+  }
+  requestAnimationFrame(appendCatalogChunk);
 }
 let billingProductSearchTimer=0;
 function billingProductSearchDynamic(){clearTimeout(billingProductSearchTimer);billingProductSearchTimer=setTimeout(()=>billingProductSearchBase(true),100)}
@@ -97,8 +112,6 @@ const billingCategoriesBase=billingCategoryPage;
 billingCategoryPage=async function(...args){return billingLoading("Chargement des categories…",()=>billingCategoriesBase(...args))};
 const billingEditDocumentBase=billingEditDocument;
 billingEditDocument=async function(id){const started=showFusaaOperation("Ouverture de la facture…");try{return await billingEditDocumentBase(id)}finally{await hideFusaaOperation(started)}};
-const billingInvoiceDetailBase=window.openBillingInvoice;
-if(billingInvoiceDetailBase)openBillingInvoice=async function(id){const started=showFusaaOperation("Chargement du document…");try{return await billingInvoiceDetailBase(id)}finally{await hideFusaaOperation(started)}};
 var billingState={tab:"dashboard",page:1,productPage:1,productSearch:"",products:[],productCatalog:[],productCatalogLoaded:false,headers:[],customers:[],categories:[],selectedHeader:null,documentType:"INVOICE",editingInvoice:null};
 const billingMenuLabels={dashboard:"Tableau de bord",new:"Nouvelle facture",documents:"Documents",clients:"Clients",products:"Produits",headers:"Entêtes",categories:"Catégories",reports:"Rapports",maintenance:"Maintenance",settings:"Paramètres"};
 var billingLabels=billingMenuLabels;
@@ -161,7 +174,7 @@ function billingClosePopup(){const dialog=document.getElementById("billingGlassD
 async function billingOpen(tab){
   if(!billingMenuLabels[tab])tab="dashboard";
   billingState.tab=tab;billingActive(tab);
-  billingSet(billingLoadingContent(billingMenuLabels[tab]));
+  if(tab!=="dashboard"&&tab!=="new")billingSet(billingLoadingContent(billingMenuLabels[tab]));
   try{
     if(tab==="dashboard")await billingDashboard();
     if(tab==="new")await billingNew();
@@ -183,13 +196,24 @@ function billingEnsureExport(tab){const kinds={documents:"documents",clients:"cl
 async function billingImportClients(){const file=document.getElementById("billingClientsCsv")?.files[0];if(!file)return;const body=new FormData();body.append("file",file);const started=showFusaaOperation("Importation des clients…");try{const result=await api("/api/v1/customers/import?organization_id="+encodeURIComponent(org),{method:"POST",body});tell(result.created+" client(s) importé(s)"+(result.errors?.length?" · "+result.errors.length+" ligne(s) ignorée(s)":""));billingClosePopup();await billingOpen("dashboard")}catch(error){tell(error.message)}finally{await hideFusaaOperation(started)}}
 
 async function billingDashboard(){
-  const data=await api("/api/v1/billing/dashboard?organization_id="+encodeURIComponent(org));
+  const data={invoiced_xof:0,invoices:"…",customers:"…",headers:"…"};
   const cards=[
     ["new","Nouvelle facture","Créer une facture, un devis ou un reçu"],["headers","Entêtes","Nom, logo, adresse et modèle PDF"],["clients","Clients","Coordonnées et comptes clients"],["products","Produits","Catalogue partagé et import CSV"],["documents","Documents","Factures, devis et bons archivés"],["categories","Catégories","Classer les produits de facturation"],["settings","Paramètres facture","TVA, ISB, devise et préférences"],["reports","Rapports","Encaissements et soldes clients"],["maintenance","Maintenance","Contrôler et régénérer les documents"]
     ,["import","Assistant import CSV","Analyser puis importer Boulangerie sans doublons"]
   ];
   billingSet(billingHero("Facturation FUSAA","Choisissez une action. Les outils s’ouvrent dans des cartes liquid glass.",'<span class="billing-total">'+billingCurrency(data.invoiced_xof)+'</span>')+
     '<section class="billing-landing"><div class="billing-landing-intro"><div><span class="billing-eyebrow">ESPACE DE GESTION</span><h2>Tout votre atelier de facturation</h2><p>Les données Boutique et Facturation restent réunies dans le même compte FUSAA.</p></div><div class="billing-mini-stats"><span><b>'+data.invoices+'</b>Documents</span><span><b>'+data.customers+'</b>Clients</span><span><b>'+data.headers+'</b>Entêtes</span></div></div><div class="billing-card-grid">'+cards.map(([key,title,subtitle])=>'<button type="button" class="billing-glass-card '+(key==="new"?"primary":"")+'" onclick="'+(key==="import"?"billingImportAssistantOpen()":key==="new"?'billingOpen(\'new\')':'billingPopup(\''+key+'\')')+'"><i>'+billingIcons[key]+'</i><strong>'+title+'</strong><small>'+subtitle+'</small><em>Ouvrir <span>→</span></em></button>').join("")+'</div></section>');
+  const landing=document.querySelector("#billingWorkspaceContent .billing-landing"),total=document.querySelector("#billingWorkspaceContent .billing-total");
+  if(total)total.textContent="…";
+  if(!landing)return;
+  landing.setAttribute("aria-busy","true");
+  try{
+    const stats=await api("/api/v1/billing/dashboard?organization_id="+encodeURIComponent(org));
+    if(!landing.isConnected)return;
+    if(total)total.textContent=billingCurrency(stats.invoiced_xof);
+    landing.querySelectorAll(".billing-mini-stats b").forEach((node,index)=>node.textContent=[stats.invoices,stats.customers,stats.headers][index]);
+  }catch(error){if(landing.isConnected)landing.insertAdjacentHTML("afterbegin",'<p role="alert">Compteurs indisponibles : '+esc(error.message)+' <button type="button" onclick="billingOpen(\'dashboard\')">Réessayer</button></p>')}
+  finally{landing.removeAttribute("aria-busy")}
 }
 function billingInvoiceTable(items){
   if(!items.length)return '<p class="billing-empty">Aucun document enregistré.</p>';
@@ -298,7 +322,7 @@ async function billingLoadReference(){
   billingState.headers=headers;billingState.customers=customers;
 }
 async function billingNew(){
-  await billingLoadReference();billingState.productPage=1;billingState.productSearch="";const editing=billingState.editingInvoice;
+  billingState.productPage=1;billingState.productSearch="";const editing=billingState.editingInvoice;
   const documentType=billingState.documentType||"INVOICE",documentLabel=billingDocumentLabel(documentType);
   const newDocumentTitle=documentType==="INVOICE"||documentType==="PROFORMA"?"Nouvelle "+documentLabel.toLowerCase():"Nouveau "+documentLabel.toLowerCase();
   billingSet(billingHero(newDocumentTitle,"Créez un document avec l’entête et les produits de votre choix.",'<div class="billing-selected-type"><span>Type choisi</span><b>'+esc(documentLabel)+'</b><button class="secondary" type="button" onclick="billingChooseDocumentType()">Modifier</button></div>')+`
@@ -336,8 +360,30 @@ async function billingNew(){
   billingMoveCustomerFields();
   if(editing){document.querySelector(".billing-selected-type")?.insertAdjacentHTML("beforeend",'<button class="secondary" type="button" onclick="billingCancelDocumentEdit()">Annuler</button>')}
   if(editing?.lines?.length)editing.lines.forEach(line=>billingAddLine({id:line.product_id||line.shop_product_id||line.billing_product_id||"",name:line.description,quantity:line.quantity,price_xof:line.unit_amount,unit:line.unit||"piece"}));else billingAddLine();
-  if(billingState.pendingAssistantDraft){const draft=billingState.pendingAssistantDraft;billingState.pendingAssistantDraft=null;billingApplyAssistantDraftToForm(draft)}
-  await billingProductSearch(true);
+  const pendingDraft=billingState.pendingAssistantDraft;
+  if(pendingDraft){billingState.pendingAssistantDraft=null;billingApplyAssistantDraftToForm(pendingDraft)}
+  const form=document.getElementById("billingNewForm"),headerSelect=document.getElementById("billingNewHeader"),customerSelect=document.getElementById("billingNewCustomer"),catalog=document.getElementById("billingNewCatalog");
+  catalog.innerHTML='<p class="muted" role="status">Chargement des produits…</p>';
+  headerSelect.setAttribute("aria-busy","true");customerSelect.setAttribute("aria-busy","true");
+  if(!billingState.headers.length)headerSelect.innerHTML='<option value="">Chargement des entêtes…</option>';
+  if(!billingState.customers.length)customerSelect.innerHTML='<option value="">Chargement des clients…</option>';
+  // Paint the usable form before starting independent data loads.
+  await new Promise(resolve=>requestAnimationFrame(()=>setTimeout(resolve,0)));
+  if(!form.isConnected)return;
+  const loadReference=async(kind,select,path,placeholder)=>{
+    try{
+      const items=await api(path);if(!form.isConnected)return;
+      const selected=select.value||(kind==="headers"?(pendingDraft?.billing_header_id||editing?.billing_header_id):(pendingDraft?.customer_id||editing?.customer?.id));
+      billingState[kind]=items;
+      billingReferenceSelect(select.id,items,placeholder,selected||(kind==="headers"?(items.find(item=>item.is_default)?.id||items[0]?.id):""));
+    }catch(error){if(form.isConnected){select.insertAdjacentHTML("afterend",'<span class="muted" role="alert">'+esc(error.message)+'</span>')}}
+    finally{select.removeAttribute("aria-busy")}
+  };
+  await Promise.allSettled([
+    loadReference("headers",headerSelect,"/api/v1/billing/headers?organization_id="+encodeURIComponent(org),"Choisir dans la demande"),
+    loadReference("customers",customerSelect,"/api/v1/customers?organization_id="+encodeURIComponent(org),"Nouveau ou à préciser"),
+    billingProductSearch(true).catch(error=>{if(catalog.isConnected)catalog.innerHTML='<p role="alert">'+esc(error.message)+'</p><button type="button" onclick="billingProductSearch(true)">Réessayer</button>'})
+  ]);
 }
 function billingMoveCustomerFields(){const header=document.getElementById("billingNewHeader"),customer=document.getElementById("billingNewCustomer");if(header&&!document.getElementById("billingAddHeader")){header.insertAdjacentHTML("afterend",'<button id="billingAddHeader" class="secondary billing-quick-reference" type="button" onclick="billingHeaderQuickPopup()">＋ Entête</button>')}if(customer&&!document.getElementById("billingAddCustomer")){customer.insertAdjacentHTML("afterend",'<button id="billingAddCustomer" class="secondary billing-quick-reference" type="button" onclick="billingCustomerPopup()">＋ Client</button>')}}
 function billingChooseDocumentType(){billingPopup("documents")}
@@ -592,18 +638,25 @@ async function billingSaveDocument(event){
   try{const result=await api("/api/v1/billing/documents",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(body)});tell(result.number+" enregistré.");await billingOpen("documents");openBillingInvoice(result.id)}catch(error){tell(error.message)}
 }
 
+let billingDocumentSaving=false;
 billingSaveDocument=async function(event){
-  event.preventDefault();const rows=[...document.querySelectorAll("#billingLines .billing-line")];
+  event.preventDefault();if(billingDocumentSaving)return;const rows=[...document.querySelectorAll("#billingLines .billing-line")];
   const lines=rows.map(row=>({product_id:row.dataset.productId||null,description:row.querySelector(".bill-designation").value.trim(),quantity:Number(row.querySelector(".bill-quantity").value),unit_amount:Number(row.querySelector(".bill-price").value),unit:row.dataset.unit||"piece"})).filter(item=>item.description);
   if(!lines.length){tell("Ajoutez au moins une ligne.");return}
   const headerId=document.getElementById("billingNewHeader").value;if(!headerId){tell("Choisissez une entete d entreprise.");document.getElementById("billingNewHeader").focus();return}
   const customerId=document.getElementById("billingNewCustomer").value,editing=billingState.editingInvoice;
   const body={organization_id:org,billing_header_id:headerId,customer_id:customerId||null,customer_name:null,customer_phone:null,customer_address:null,issued_on:document.getElementById("billingNewDate").value+"T12:00:00Z",document_type:billingState.documentType||"INVOICE",subject:document.getElementById("billingNewSubject").value.trim()||null,notes:document.getElementById("billingNewNotes").value.trim()||null,discount_amount:Number(document.getElementById("billingNewDiscount").value||0),lines};
-  const started=showFusaaOperation(editing?"Mise a jour de la facture...":"Enregistrement de la facture...");
+  billingDocumentSaving=true;
+  const started=showFusaaOperation(editing?"Mise à jour du document…":"Enregistrement du document…");
+  let overlayOpen=true;
   try{
-    const result=await api(editing?"/api/v1/billing/invoices/"+encodeURIComponent(editing.id):"/api/v1/billing/documents",{method:editing?"PUT":"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(body)});
-    billingState.editingInvoice=null;tell(result.number+(editing?" modifiee.":" enregistre."));await billingOpen("documents");openBillingInvoice(result.id);
-  }catch(error){tell(error.message)}finally{await hideFusaaOperation(started)}
+    const result=await api(editing?"/api/v1/billing/invoices/"+encodeURIComponent(editing.id):"/api/v1/billing/documents",{method:editing?"PUT":"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(body),silentOperation:true});
+    billingState.editingInvoice=null;billingState.page=1;
+    tell(result.number+(editing?" modifié.":" enregistré."));
+    await hideFusaaOperation(started);overlayOpen=false;
+    billingOpen("documents");
+    openBillingInvoice(result.id);
+  }catch(error){tell(error.message)}finally{billingDocumentSaving=false;if(overlayOpen)await hideFusaaOperation(started)}
 };
 async function billingDocuments(){
   const documentPageSize=12,items=await api("/api/v1/billing/invoices?organization_id="+encodeURIComponent(org)+"&page="+billingState.page+"&page_size="+documentPageSize);

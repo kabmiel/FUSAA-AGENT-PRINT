@@ -9,8 +9,10 @@ from __future__ import annotations
 
 from datetime import datetime
 from decimal import Decimal, ROUND_HALF_UP
+from functools import lru_cache
 from io import BytesIO
 from pathlib import Path
+from time import monotonic
 from urllib.parse import urlparse
 from urllib.request import Request, urlopen
 
@@ -201,6 +203,21 @@ def _rule(pdf, x1, y, x2, colour="#111111", thickness=.55):
     pdf.line(x1, y, x2, y)
 
 
+@lru_cache(maxsize=16)
+def _remote_logo_content(url, two_minute_bucket):
+    """Reuse a validated remote logo for repeated PDF previews in one worker."""
+    try:
+        request = Request(url, headers={"User-Agent": "FUSAA-PDF/1.0", "Accept": "image/*"})
+        with urlopen(request, timeout=4) as response:
+            content = response.read(2_000_001)
+            content_type = str(response.headers.get("Content-Type", "")).lower()
+        if len(content) > 2_000_000 or (content_type and not content_type.startswith("image/")):
+            return None
+        return content
+    except Exception:
+        return None
+
+
 def _logo_reader(url):
     """Read a logo saved by FUSAA or a public HTTPS logo.
 
@@ -228,13 +245,8 @@ def _logo_reader(url):
     if parsed.scheme != "https" or not parsed.hostname:
         return None
     try:
-        request = Request(value, headers={"User-Agent": "FUSAA-PDF/1.0", "Accept": "image/*"})
-        with urlopen(request, timeout=4) as response:
-            content = response.read(2_000_001)
-            content_type = str(response.headers.get("Content-Type", "")).lower()
-        if len(content) > 2_000_000 or (content_type and not content_type.startswith("image/")):
-            return None
-        return ImageReader(BytesIO(content))
+        content = _remote_logo_content(value, int(monotonic() // 120))
+        return ImageReader(BytesIO(content)) if content else None
     except Exception:
         return None
 

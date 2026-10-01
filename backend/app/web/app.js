@@ -1,4 +1,4 @@
-let token=localStorage.token||"",org=localStorage.org||"",workshop=localStorage.workshop||"";
+let token=localStorage.token||"",org=localStorage.org||"",workshop=localStorage.workshop||"",workspaceReady=false;
 let docs={},jobs=[],socket,aiPlan=null,aiBusy=false,chatHistory=[],flushing=false,workshopSettings={},knownActivityIds=new Set(),activityPrimed=false,dashboardSnapshot={},dashboardPrinters=[];
 const $=id=>document.getElementById(id);
 function newId(){if(globalThis.crypto?.randomUUID)return globalThis.crypto.randomUUID();const bytes=globalThis.crypto?.getRandomValues?globalThis.crypto.getRandomValues(new Uint8Array(16)):Array.from({length:16},()=>Math.floor(Math.random()*256));bytes[6]=(bytes[6]&15)|64;bytes[8]=(bytes[8]&63)|128;const hex=Array.from(bytes,b=>b.toString(16).padStart(2,"0")).join("");return `${hex.slice(0,8)}-${hex.slice(8,12)}-${hex.slice(12,16)}-${hex.slice(16,20)}-${hex.slice(20)}`}
@@ -59,10 +59,30 @@ async function api(path,options={}){
   try{const data=await pending;if(ttl&&revision===apiRevision){if(apiCache.size>=80)apiCache.delete(apiCache.keys().next().value);apiCache.set(key,{data:structuredClone(data),until:Date.now()+ttl})}return data}
   finally{if(apiPending.get(key)===pending)apiPending.delete(key)}
 }
-async function apiFetch(path,options={}){
+const apiQueue=[];
+let apiActive=0;
+function drainApiQueue(){
+  while(apiQueue.length&&(apiActive<2||(apiActive<3&&apiQueue[0].urgent))){
+    const task=apiQueue.shift();
+    if(task.session!==token||task.options.signal?.aborted){task.reject(new DOMException("Demande annulée","AbortError"));continue}
+    apiActive++;
+    apiFetchNow(task.path,task.options).then(task.resolve,task.reject).finally(()=>{apiActive--;drainApiQueue()});
+  }
+}
+function apiFetch(path,options={}){
+  return new Promise((resolve,reject)=>{
+    const urgent=String(options.method||"GET").toUpperCase()!=="GET";
+    const task={path,options,session:token,resolve,reject,urgent};
+    if(urgent)apiQueue.unshift(task);else apiQueue.push(task);
+    drainApiQueue();
+  });
+}
+async function apiFetchNow(path,options={}){
   if(!navigator.onLine)throw Error("Connexion absente.");
-  const animated=String(options.method||"GET").toUpperCase()!=="GET"&&!document.querySelector(".billing-popup-loading,.billing-import-progress"),started=animated?showFusaaOperation(options.method==="DELETE"?"Suppression en cours…":"Traitement de votre demande…"):0;
-  try{const response=await fetch(path,{...options,headers:{...(options.headers||{}),Authorization:"Bearer "+token}});let data={};try{data=await response.json()}catch{}if(response.status===401){logout();throw Error("Session expirée. Reconnectez-vous.")}if(!response.ok)throw Error(friendlyPrintError(readableApiError(data.detail)));return data}finally{if(animated)await hideFusaaOperation(started)}
+  const requestSession=token;
+  const {silentOperation,...requestOptions}=options;
+  const animated=String(options.method||"GET").toUpperCase()!=="GET"&&!silentOperation&&!document.querySelector(".billing-popup-loading,.billing-import-progress"),started=animated?showFusaaOperation(options.method==="DELETE"?"Suppression en cours…":"Traitement de votre demande…"):0;
+  try{const response=await fetch(path,{...requestOptions,headers:{...(options.headers||{}),Authorization:"Bearer "+requestSession}});if(token!==requestSession)throw new DOMException("Session remplacée","AbortError");let data={};try{data=await response.json()}catch{}if(response.status===401&&!path.startsWith("/api/v1/auth/")){logout();throw Error("Session expirée. Reconnectez-vous.")}if(!response.ok)throw Error(friendlyPrintError(readableApiError(data.detail)));return data}finally{if(animated)await hideFusaaOperation(started)}
 }
 async function restoreWorkspace(){
   if(!token)return;
@@ -71,11 +91,15 @@ async function restoreWorkspace(){
   if(!item){org="";workshop="";localStorage.removeItem("org");localStorage.removeItem("workshop");return}
   org=localStorage.org=item.organization_id;workshop=localStorage.workshop=item.workshop_id;
 }
+let authPending=false;
 async function auth(path,extra){
+  if(authPending)return;
+  authPending=true;
   try{
     const data=await api(path,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({email:$("email").value,password:$("password").value,...extra})});
-    token=localStorage.token=data.access_token;await restoreWorkspace();state();await refresh();connectEvents();
-  }catch(error){alert(error.message)}
+    token=localStorage.token=data.access_token;workspaceReady=false;state();
+    restoreWorkspace().then(()=>{workspaceReady=true;state();syncViewFromHash();connectEvents();const view=location.hash.slice(1);if(!view||view==="dashboard")refresh().finally(()=>flushUploads());else flushUploads()}).catch(error=>tell("Chargement de l’atelier : "+error.message));
+  }catch(error){alert(error.message)}finally{authPending=false}
 }
 function login(){auth("/api/v1/auth/login",{})}
 function registerUser(){
@@ -87,8 +111,13 @@ function registerUser(){
 }
 function logout(){
   invalidateApiReads();
+  apiQueue.splice(0).forEach(task=>task.reject(new DOMException("Session terminée","AbortError")));
+  clearTimeout(eventRefreshTimer);eventRefreshTimer=0;pendingEventNames.clear();
+  printDataLoaded=false;pushAvailabilityChecked=false;
+  previewLoadId++;if(previewUrl)URL.revokeObjectURL(previewUrl);previewUrl="";previewDocumentId="";previewPendingDocumentId="";
+  workspaceReady=false;
   ["token","org","workshop"].forEach(key=>localStorage.removeItem(key));
-  token="";org="";workshop="";jobs=[];docs={};chatHistory=[];aiPlan=null;socket?.close();state();
+  token="";org="";workshop="";jobs=[];docs={};dashboardSnapshot={};dashboardPrinters=[];visitorSnapshot=null;workshopSettings={};activityPrimed=false;knownActivityIds.clear();chatHistory=[];aiPlan=null;socket?.close();state();
 }
 async function createOrg(){
   try{const item=await api("/api/v1/organizations",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({name:$("orgName").value})});org=localStorage.org=item.id;await restoreWorkspace();state();tell("Organisation créée.")}catch(error){tell(error.message)}
@@ -179,7 +208,7 @@ async function confirmFinish(id,button){
   finally{if(button?.isConnected)button.disabled=false}
 }
 function selectJob(id){openJobGlass(id,"view")}
-let refreshPending=null,refreshAgain=false;
+let refreshPending=null,refreshAgain=false,printDataLoaded=false,previewDocumentId="",previewPendingDocumentId="",previewUrl="",previewLoadId=0;
 function refresh(){
   if(refreshPending){refreshAgain=true;return refreshPending}
   refreshPending=(async()=>{try{do{refreshAgain=false;await refreshWorkspace()}while(refreshAgain&&token)}finally{refreshPending=null}})();
@@ -187,18 +216,30 @@ function refresh(){
 }
 async function refreshWorkspace(){
   if(!token)return;
+  const refreshSession=token;
   try{
-    await restoreWorkspace();state();
+    if(!org||!workshop)await restoreWorkspace();
+    state();
+    if(token!==refreshSession)return;
     const savedJob=$("job").value,savedPrinter=$("printer").value;
     // The print form lives inside the glass dialog. Preserve its in-progress
     // choices before refresh rebuilds the printer list.
     const formValues=$("jobGlass")?.open?Object.fromEntries(["printer","copies","paper","orientation","color","pages","instructions","duplex"].map(id=>[id,$(id).type==="checkbox"?$(id).checked:$(id).value])):null;
     const active=id=>$(id)?.classList.contains("active");
-    const results=await Promise.all([api("/api/v1/dashboard"),api("/api/v1/jobs"),api("/api/v1/printers"),api("/api/v1/documents"),active("history")?api("/api/v1/audit"):null,api("/api/v1/activities"),active("settings")||active("arrivals")?api("/api/v1/local-monitor/status"):null,api("/api/v1/settings"),active("dashboard")?api("/api/v1/analytics/visitors?organization_id="+encodeURIComponent(org)).catch(()=>null):visitorSnapshot]);
-    const dashboard=results[0],printers=results[2],documents=results[3];
-    dashboardSnapshot=dashboard;dashboardPrinters=printers;
+    const dashboard=await api("/api/v1/dashboard");
+    if(token!==refreshSession)return;
+    dashboardSnapshot=dashboard;
+    $("stats").classList.add("dashboard-stats");
+    $("stats").innerHTML=dashboardStats(dashboard)+(visitorSnapshot?card("Visiteurs aujourd’hui",visitorSnapshot.today_unique,"visitors"):"");
+    if(!document.hidden)await new Promise(resolve=>requestAnimationFrame(resolve));
+    const printActive=active("print")||active("upload")||Boolean($("jobGlass")?.open);
+    const settled=await Promise.allSettled([Promise.resolve(dashboard),printActive?api("/api/v1/jobs"):jobs,printActive?api("/api/v1/printers"):dashboardPrinters,printActive?api("/api/v1/documents"):Object.values(docs),active("history")?api("/api/v1/audit"):null,!activityPrimed||active("arrivals")?api("/api/v1/activities"):null,active("settings")?api("/api/v1/local-monitor/status"):null,Object.keys(workshopSettings).length&&!printActive&&!active("settings")?workshopSettings:api("/api/v1/settings"),active("dashboard")?api("/api/v1/analytics/visitors?organization_id="+encodeURIComponent(org)).catch(()=>null):visitorSnapshot]);
+    if(token!==refreshSession)return;
+    const fallback=[dashboard,jobs,dashboardPrinters,Object.values(docs),null,null,null,workshopSettings,visitorSnapshot];
+    const results=settled.map((item,index)=>item.status==="fulfilled"?item.value:fallback[index]);
+    const printers=results[2],documents=results[3];
+    dashboardSnapshot=dashboard;dashboardPrinters=printers;if(printActive&&settled.slice(1,4).every(item=>item.status==="fulfilled"))printDataLoaded=true;
     jobs=results[1];docs=Object.fromEntries(documents.map(item=>[item.id,item]));
-    $("stats").innerHTML=card("Agents",dashboard.agents_online)+card("Imprimantes",dashboard.printers_available)+card("À valider",dashboard.jobs_waiting)+card("En cours",dashboard.jobs_printing)+card("Terminés",dashboard.jobs_completed)+card("Erreurs",dashboard.jobs_failed);
     $("job").innerHTML=jobs.map(item=>'<option value="'+esc(item.id)+'">'+esc(item.status)+" · "+esc(docs[item.document_id]?.original_name||item.id)+"</option>").join("");
     $("printer").innerHTML=printers.map(item=>'<option value="'+esc(item.id)+'" '+(["ONLINE","PRINTING","READY","IDLE"].includes(item.status)?"":"disabled")+">"+esc(item.name)+" — "+esc(item.status)+"</option>").join("");
     visitorSnapshot=results[8];
@@ -213,7 +254,7 @@ async function refreshWorkspace(){
       if(id==="printer"&&!printers.some(item=>item.id===value))continue;
       if($(id).type==="checkbox")$(id).checked=value;else $(id).value=value
     }
-    showJob();renderJobCards(jobs,docs);renderActivities(results[5]);if(results[6])renderMonitor(results[6]);checkPushAvailability();if($("publicOrders")?.classList.contains("active"))loadGuestOrders();
+    if(printActive){showJob();renderJobCards(jobs,docs)}if(results[5])renderActivities(results[5]);if(results[6])renderMonitor(results[6]);checkPushAvailability();
   }catch(error){tell(error.message)}
 }
 async function showJob(){
@@ -227,14 +268,23 @@ async function showJob(){
   if(prepareButton){prepareButton.disabled=!job||job.status!=="WAITING_APPROVAL";prepareButton.title=prepareButton.disabled?"Ce travail est déjà préparé ou envoyé":"Choisissez les réglages puis préparez le travail"}
   if(confirmButton){confirmButton.id="confirmPrintBtn";confirmButton.disabled=!job||job.status!=="READY";confirmButton.title=confirmButton.disabled?"Préparez d’abord le travail":"Confirmer l’impression"}
   if(deleteButton)deleteButton.classList.toggle("hidden",!job||!["WAITING_APPROVAL","READY","FAILED","CANCELLED","COMPLETED","IGNORED"].includes(job.status));
-  if(!document){$("inspection").textContent="Aucun travail sélectionné.";$("preview").classList.add("hidden");return}
+  if(!document){previewLoadId++;previewPendingDocumentId="";$("inspection").textContent="Aucun travail sélectionné.";$("preview").classList.add("hidden");return}
   const meta=document.metadata_json||{};
   const details=[document.original_name,meta.pages?`${meta.pages} page(s)`:null,meta.orientation?`Orientation : ${meta.orientation.toLowerCase()}`:null,meta.width_points&&meta.height_points?`Format detecte : ${Math.round(meta.width_points)} x ${Math.round(meta.height_points)} pt`:null,meta.direct_printable===false?`Format ${meta.format_extension||document.mime_type} : conversion atelier requise avant impression.`:null,...(meta.warnings||[])].filter(Boolean);
   $("inspection").textContent=details.join("\n")||"Document pret a etre configure.";
+  if(!$("jobGlass")?.open)return;
+  if(previewDocumentId===document.id&&previewUrl){$("preview").src=previewUrl;$("preview").classList.remove("hidden");return}
+  if(previewPendingDocumentId===document.id)return;
+  previewPendingDocumentId=document.id;
+  const loadId=++previewLoadId,requestSession=token;
   try{
-    const response=await fetch("/api/v1/documents/"+encodeURIComponent(document.id)+"/preview",{headers:{Authorization:"Bearer "+token}});
-    if(!response.ok)throw Error();$("preview").src=URL.createObjectURL(await response.blob());$("preview").classList.remove("hidden");
-  }catch{$("preview").classList.add("hidden")}
+    const response=await fetch("/api/v1/documents/"+encodeURIComponent(document.id)+"/preview",{headers:{Authorization:"Bearer "+requestSession}});
+    if(!response.ok)throw Error();const blob=await response.blob();
+    if(loadId!==previewLoadId||requestSession!==token)return;
+    if(previewUrl)URL.revokeObjectURL(previewUrl);
+    previewUrl=URL.createObjectURL(blob);previewDocumentId=document.id;$("preview").src=previewUrl;$("preview").classList.remove("hidden");
+  }catch{if(loadId===previewLoadId)$("preview").classList.add("hidden")}
+  finally{if(loadId===previewLoadId)previewPendingDocumentId=""}
 }
 function printOptions(){return {printer_id:$("printer").value,copies:Number($("copies").value),paper_size:$("paper").value||null,orientation:$("orientation").value||null,color_mode:$("color").value||null,duplex:$("duplex").checked,pages:$("pages").value||null,instructions:$("instructions").value||null}}
 async function prepare(){const job=jobs.find(item=>item.id===$("job").value);if(!job||job.status!=="WAITING_APPROVAL"){tell(job?.status==="QUEUED"?"Ce travail est déjà envoyé à l’agent Windows.":"Ce travail n’est plus en attente de préparation.");return}setPrintProgress("busy",45,"Préparation des réglages","Vérification de l’imprimante et du format…");try{await api("/api/v1/jobs/"+encodeURIComponent($("job").value)+"/prepare",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(printOptions())});setPrintProgress("busy",58,"Travail prêt","Réglages acceptés. Confirmation requise.");tell("Travail préparé. Vérifiez-le puis confirmez l’impression.");await refresh()}catch(error){operationError(error,"Préparation du travail")}}
@@ -277,21 +327,42 @@ function renderMonitor(item){
 }
 async function startPairing(){try{await restoreWorkspace();if(!workshop)throw Error("Choisissez d’abord un atelier.");const result=await api("/api/v1/browser-link/start",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({workshop_id:workshop})});$("pairCode").textContent=result.code;$("pairCodeBox").classList.remove("hidden");tell("Copiez ce code dans l’extension Brave dans les 10 minutes.")}catch(error){tell(error.message)}}
 async function revokePairing(){try{await api("/api/v1/browser-link/revoke",{method:"POST"});tell("La liaison Brave est désactivée.");await refresh()}catch(error){tell(error.message)}}
-async function loadActivities(){try{renderActivities(await api("/api/v1/activities"));await loadMonitor()}catch(error){tell(error.message)}}
+async function loadActivities(){try{renderActivities(await api("/api/v1/activities"))}catch(error){tell(error.message)}}
 async function loadMonitor(){try{renderMonitor(await api("/api/v1/local-monitor/status"))}catch(error){tell(error.message)}}
 function b64(value){return Uint8Array.from(atob(value.replace(/-/g,"+").replace(/_/g,"/")),item=>item.charCodeAt(0))}
 async function enablePush(){try{const key=(await api("/api/v1/push/public-key")).public_key,reg=await navigator.serviceWorker.ready,sub=await reg.pushManager.subscribe({userVisibleOnly:true,applicationServerKey:b64(key)}),value=sub.toJSON();await api("/api/v1/push/subscriptions",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({endpoint:value.endpoint,p256dh:value.keys.p256dh,auth:value.keys.auth})});tell("Notifications activées.")}catch(error){tell("Notifications indisponibles : "+error.message)}}
-async function checkPushAvailability(){const button=globalThis.document.querySelector('button[onclick="enablePush()"]');if(!button)return;try{await api("/api/v1/push/public-key");button.hidden=false}catch(error){if(String(error.message).includes("not configured")){button.hidden=true;button.title="Les alertes locales FUSAA restent actives"}else button.hidden=false}}
-let eventRefreshTimer=0,eventRefreshPending=false;
-function scheduleEventRefresh(){
-  eventRefreshPending=true;if(document.hidden||eventRefreshTimer)return;
-  eventRefreshTimer=setTimeout(()=>{eventRefreshTimer=0;if(document.hidden)return;eventRefreshPending=false;refresh()},350);
+let pushAvailabilityChecked=false;
+async function checkPushAvailability(){const button=globalThis.document.querySelector('button[onclick="enablePush()"]');if(!button||pushAvailabilityChecked)return;pushAvailabilityChecked=true;try{await api("/api/v1/push/public-key");button.hidden=false}catch(error){if(String(error.message).includes("not configured")){button.hidden=true;button.title="Les alertes locales FUSAA restent actives"}else{button.hidden=false;pushAvailabilityChecked=false}}}
+let eventRefreshTimer=0,lastAgentRefresh=0;
+const pendingEventNames=new Set();
+const printEventNames=new Set(["NEW_DOCUMENT","NEW_PRINT_JOB","PRINT_JOB_UPDATED","PRINT_STARTED","PRINT_COMPLETED","PRINT_FAILED","PRINTERS_UPDATED"]);
+function scheduleEventRefresh(name=""){
+  if(printEventNames.has(name))printDataLoaded=false;
+  pendingEventNames.add(name);
+  if(document.hidden||eventRefreshTimer)return;
+  eventRefreshTimer=setTimeout(()=>{
+    eventRefreshTimer=0;
+    if(document.hidden)return;
+    const names=new Set(pendingEventNames);pendingEventNames.clear();
+    const view=document.querySelector(".view.active")?.id;
+    if(names.has("LOCAL_ACTIVITY"))loadActivities();
+    const hasPrint=[...names].some(item=>printEventNames.has(item));
+    const hasOrder=[...names].some(item=>item.startsWith("GUEST_")||item.startsWith("SHOP_ORDER_"));
+    if(view==="dashboard"||view==="print"||view==="upload"){
+      const onlyHeartbeat=[...names].every(item=>item==="AGENT_ONLINE");
+      if(onlyHeartbeat&&Date.now()-lastAgentRefresh<15000)return;
+      if(onlyHeartbeat)lastAgentRefresh=Date.now();
+      if(hasPrint||hasOrder||names.has("AGENT_ONLINE")||names.has(""))refresh();
+    }else if(view==="production"&&hasOrder)loadProduction();
+    else if(view==="publicOrders"&&[...names].some(item=>item.startsWith("GUEST_")))loadGuestOrders();
+    else if(view==="shopAdmin"&&[...names].some(item=>item.startsWith("SHOP_ORDER_")))loadShopAdmin();
+  },350);
 }
-document.addEventListener("visibilitychange",()=>{if(!document.hidden&&eventRefreshPending)scheduleEventRefresh()});
+document.addEventListener("visibilitychange",()=>{if(!document.hidden&&pendingEventNames.size)scheduleEventRefresh()});
 function connectEvents(){
   if(!token)return;if(socket){socket.onclose=null;socket.close()}const protocol=location.protocol==="https:"?"wss":"ws";
   socket=new WebSocket(protocol+"://"+location.host+"/ws/events?token="+encodeURIComponent(token));
-  socket.onmessage=()=>scheduleEventRefresh();
+  socket.onmessage=event=>{let name="";try{name=JSON.parse(event.data).event||""}catch{}scheduleEventRefresh(name)};
   socket.onclose=event=>{if(event.code===1008){logout();tell("Session expirée. Reconnectez-vous.");return}if(token)setTimeout(connectEvents,5000)};
 }
 function selectView(view){
@@ -433,8 +504,8 @@ function openJobGlass(id,mode="view"){
     if(job[key]!=null)$(field).value=job[key];
   }
   if(job.duplex!=null)$("duplex").checked=job.duplex;
-  showJob();
   if(!$("jobGlass").open)$("jobGlass").showModal();
+  showJob();
   document.body.classList.add("glass-open");
 }
 async function executeGlassAction(){
@@ -458,6 +529,12 @@ function closeDashboardIndicator(){$("dashboardIndicator")?.close()}
 function openDashboardIndicator(kind){const sets={waiting:["A valider",["WAITING_APPROVAL"],"print"],progress:["Travaux en cours",["READY","QUEUED","PRINTING"],"print"],completed:["Travaux terminés",["COMPLETED"],"print"],failed:["Erreurs à traiter",["FAILED","CANCELLED","IGNORED"],"print"]};let title="",value=0,items=[],view="settings";if(kind==="agents"){title="Agents FUSAA";value=dashboardSnapshot.agents_online||0;items=value?["Agent Windows connecté et synchronisé."]:['Aucun agent connecté. Vérifiez le PC FUSAA dans Settings.']}else if(kind==="printers"){title="Imprimantes";value=dashboardSnapshot.printers_available||0;items=dashboardPrinters.map(item=>item.name+" - "+item.status);view="print"}else{const set=sets[kind];if(!set)return;title=set[0];view=set[2];const rows=jobs.filter(item=>set[1].includes(item.status));value=rows.length;items=rows.map(item=>(docs[item.document_id]?.original_name||item.id)+" - "+item.status)}$("indicatorTitle").textContent=title;$("indicatorValue").textContent=value;$("indicatorItems").innerHTML=items.length?items.map(item=>'<div class="indicator-item">'+esc(item)+'</div>').join(""):'<p class="indicator-empty">Aucun élément pour cet indicateur.</p>';$("indicatorOpen").onclick=()=>{closeDashboardIndicator();selectView(view)};const dialog=$("dashboardIndicator");if(!dialog.open)dialog.showModal()}
 const openDashboardIndicatorDefault=openDashboardIndicator;
 openDashboardIndicator=function(kind){
+  if(kind!=="visitors"&&kind!=="agents"&&!printDataLoaded){
+    const dialog=$("dashboardIndicator");$("indicatorTitle").textContent="Chargement de l’indicateur";$("indicatorValue").textContent="…";$("indicatorItems").textContent="Récupération des données…";
+    if(!dialog.open)dialog.showModal();
+    Promise.all([api("/api/v1/jobs"),api("/api/v1/printers"),api("/api/v1/documents")]).then(([items,printers,documents])=>{jobs=items;dashboardPrinters=printers;docs=Object.fromEntries(documents.map(item=>[item.id,item]));printDataLoaded=true;if(dialog.open)openDashboardIndicatorDefault(kind)}).catch(error=>{if(dialog.open)$("indicatorItems").textContent=error.message});
+    return;
+  }
   if(kind!=="visitors")return openDashboardIndicatorDefault(kind);
   if(!visitorSnapshot)return;
   const names={shop:"Boutique",print:"Impression",tracking:"Suivi de commande"};
@@ -567,7 +644,7 @@ function mountBilling(){if($("billing"))return;$("nav").insertAdjacentHTML("befo
 async function loadBilling(){if(!org)return;try{const [profile,invoices]=await Promise.all([api("/api/v1/billing/profile?organization_id="+encodeURIComponent(org)),api("/api/v1/billing/invoices?organization_id="+encodeURIComponent(org))]);$("billCompany").value=profile.company_name||"";$("billPhone").value=profile.phone||"";$("billEmail").value=profile.email||"";$("billNif").value=profile.nif||"";$("billRccm").value=profile.rccm||"";$("billAddress").value=profile.address||"";$("billTaxEnabled").checked=Boolean(profile.tax_enabled);$("billTaxRate").value=profile.tax_rate||0;$("billStyle").value=profile.document_style||"moderne";const paid=invoices.filter(item=>item.status==="PAID").reduce((sum,item)=>sum+Number(item.total_amount||0),0);$("billingStats").innerHTML=card("Factures",invoices.length)+card("À confirmer",invoices.filter(item=>item.status!=="PAID").length)+card("Encaissement",money(paid));$("billingInvoices").innerHTML=invoices.length?invoices.map(item=>'<article class="billing-row"><div><b>'+esc(item.number)+'</b><small>'+esc(item.subject||"Facture FUSAA")+' · '+esc(item.status)+' · '+money(item.total_amount)+'</small></div><button class="secondary" type="button" onclick="downloadBillingInvoice(\''+esc(item.id)+'\',\''+esc(item.number)+'\')">PDF</button></article>').join(""):'<p class="muted">Aucune facture pour le moment.</p>'}catch(error){tell(error.message)}}
 async function saveBillingProfile(event){event.preventDefault();try{await api("/api/v1/billing/profile?organization_id="+encodeURIComponent(org),{method:"PUT",headers:{"Content-Type":"application/json"},body:JSON.stringify({company_name:$("billCompany").value.trim(),phone:$("billPhone").value.trim()||null,email:$("billEmail").value.trim()||null,nif:$("billNif").value.trim()||null,rccm:$("billRccm").value.trim()||null,address:$("billAddress").value.trim()||null,tax_enabled:$("billTaxEnabled").checked,tax_rate:Number($("billTaxRate").value||0),document_style:$("billStyle").value})});tell("Informations de facturation enregistrées.");loadBilling()}catch(error){tell(error.message)}}
 async function downloadBillingInvoice(id,number,documentType=null){const selected=documentType?String(documentType).toUpperCase():"",started=showFusaaOperation(selected?"Génération du PDF · "+({INVOICE:"Facture",QUOTE:"Devis",PROFORMA:"Facture proforma",DELIVERY_NOTE:"Bon de livraison",RECEIPT:"Reçu"}[selected]||selected)+"…":"Génération du PDF…");try{const suffix=selected?"?document_type="+encodeURIComponent(selected):"",response=await fetch("/api/v1/billing/invoices/"+encodeURIComponent(id)+"/pdf"+suffix,{headers:{Authorization:"Bearer "+token}});if(!response.ok)throw Error("Téléchargement impossible");const url=URL.createObjectURL(await response.blob()),link=document.createElement("a");link.href=url;link.download=number+(selected?"-"+selected.toLowerCase():"")+".pdf";link.click();setTimeout(()=>URL.revokeObjectURL(url),1000)}catch(error){tell(error.message)}finally{await hideFusaaOperation(started)}}
-const selectBillingView=selectView;selectView=function(view){selectBillingView(view);if(view==="billing"){window.mountBillingWorkspace?.();window.mountBillingHomeBadge?.();loadBilling()}};mountBilling();window.mountBillingWorkspace?.();window.mountBillingHomeBadge?.();
+const selectBillingView=selectView;selectView=function(view){if($(view)?.classList.contains("active"))return;selectBillingView(view);if(view==="dashboard"&&Object.keys(dashboardSnapshot).length)refresh();if(view==="print"||view==="upload")refresh();if(view==="billing"&&workspaceReady){window.mountBillingWorkspace?.();window.mountBillingHomeBadge?.();loadBilling()}};mountBilling();window.mountBillingWorkspace?.();window.mountBillingHomeBadge?.();
 document.querySelector("#billing .view-head")?.insertAdjacentHTML("beforeend",'<button class="secondary" type="button" onclick="openBillingAssistant()">✦ Assistant facturation</button>');
 function openBillingAssistant(){assistantMode="billing";selectView("assistant");newAssistantConversation();const head=document.querySelector("#assistant .view-head");if(head){head.querySelector(".eyebrow").textContent="FUSAA · AGENT SECONDAIRE";head.querySelector("h1").textContent="Assistant Facturation";head.querySelector(".muted").textContent="Factures, paiements, clients, taxes et documents. Les actions restent soumises à validation."}const suggestions=document.querySelector("#assistant .chat-suggestions");if(suggestions)suggestions.innerHTML='<button type="button" class="chip" onclick="chatPrompt(\'Quelles factures sont à confirmer ?\')">Paiements</button><button type="button" class="chip" onclick="chatPrompt(\'Quel est l’encaissement ?\')">Encaissement</button><button type="button" class="chip" onclick="chatPrompt(\'Combien de clients ?\')">Clients</button><button type="button" class="chip" onclick="chatPrompt(\'Comment fonctionne la taxe ?\')">Taxes</button>';appendChatBubble("assistant","Assistant Facturation FUSAA","Mode Facturation activé. Je consulte les données réelles, sans modifier une facture depuis cette conversation.");$("aiMessage").placeholder="Ex. Quelles factures sont à confirmer ?";$("aiMessage").focus()}
 mountJobGlass();
@@ -596,7 +673,7 @@ body.glass-open{overflow:hidden}
 document.querySelector("main").insertAdjacentHTML("afterbegin",'<p id="globalMessage" role="status" hidden></p>');
 document.querySelectorAll("#nav a").forEach(link=>link.addEventListener("click",event=>{event.preventDefault();selectView(link.dataset.view)}));
 window.addEventListener("online",()=>{network();flushUploads();refresh()});window.addEventListener("offline",network);
-function syncViewFromHash(){const view=location.hash.replace(/^#/,"");if(view&&$(view))selectView(view)}
+function syncViewFromHash(){if(!workspaceReady)return;const view=location.hash.replace(/^#/,"");if(view&&$(view)){if(view==="billing"&&$(view).classList.contains("active"))loadBilling();else selectView(view)}}
 window.addEventListener("hashchange",syncViewFromHash);
 syncViewFromHash();
 const mojibakeBytes={0x20ac:0x80,0x201a:0x82,0x192:0x83,0x201e:0x84,0x2026:0x85,0x2020:0x86,0x2021:0x87,0x2c6:0x88,0x2030:0x89,0x160:0x8a,0x2039:0x8b,0x152:0x8c,0x17d:0x8e,0x2018:0x91,0x2019:0x92,0x201c:0x93,0x201d:0x94,0x2022:0x95,0x2013:0x96,0x2014:0x97,0x2dc:0x98,0x2122:0x99,0x161:0x9a,0x203a:0x9b,0x153:0x9c,0x17e:0x9e,0x178:0x9f};
@@ -630,14 +707,27 @@ let billingDocumentProducts=[];
 async function openBillingDocument(){try{const data=await api("/api/v1/billing/products?organization_id="+encodeURIComponent(org));billingDocumentProducts=data.items||[];$("billingDocumentProduct").innerHTML='<option value="">Ligne libre</option>'+billingDocumentProducts.map(item=>'<option value="'+esc(item.id)+'">['+esc(item.source)+'] '+esc(item.name)+' · '+money(item.price_xof)+'</option>').join("");$("billingDocumentProduct").onchange=()=>{const item=billingDocumentProducts.find(value=>value.id===$("billingDocumentProduct").value);if(item){$("billingDocumentPrice").value=item.price_xof;$("billingDocumentSubject").value=$("billingDocumentSubject").value||item.name}};if(!$("billingDocumentDialog").open)$("billingDocumentDialog").showModal()}catch(error){tell(error.message)}}
 $("billingDocumentForm").onsubmit=async event=>{event.preventDefault();try{const product=billingDocumentProducts.find(item=>item.id===$("billingDocumentProduct").value),quantity=Number($("billingDocumentQuantity").value),unitAmount=Number($("billingDocumentPrice").value);if(!product&&!$("billingDocumentSubject").value.trim())throw Error("Renseignez l’objet de la ligne.");if(Number.isNaN(unitAmount))throw Error("Renseignez le prix.");const result=await api("/api/v1/billing/documents",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({organization_id:org,document_type:$("billingDocumentType").value,customer_name:$("billingDocumentCustomer").value.trim(),customer_phone:$("billingDocumentPhone").value.trim()||null,subject:$("billingDocumentSubject").value.trim()||null,notes:$("billingDocumentNotes").value.trim()||null,lines:[{product_id:product?.id||null,description:product?.name||$("billingDocumentSubject").value.trim(),quantity,unit_amount:unitAmount,unit:product?.unit||"piece"}]})});$("billingDocumentDialog").close();tell(result.number+" créé.");await loadBilling();downloadBillingInvoice(result.id,result.number)}catch(error){tell(error.message)}};
 document.body.insertAdjacentHTML("beforeend",'<dialog id="billingInvoiceDialog" class="shop-glass"><header class="glass-header"><div><span class="eyebrow">DOCUMENT COMMERCIAL</span><h2 id="billingInvoiceTitle">Facture</h2></div><button class="secondary glass-close" type="button" onclick="billingInvoiceDialog.close()">×</button></header><div id="billingInvoiceDetail"></div><form id="billingPaymentForm" class="grid"><input id="billingPaymentAmount" type="number" min="1" placeholder="Montant reçu FCFA" required><select id="billingPaymentMethod"><option>ESPÈCES</option><option>WAVE</option><option>MYNITA</option><option>AMANATA</option><option>VIREMENT</option><option>CARTE</option></select><input id="billingPaymentReference" placeholder="Référence (facultatif)"><button>Enregistrer le paiement</button></form></dialog>');
-let openedBillingInvoice=null;
-async function openBillingInvoice(id){try{const item=await api("/api/v1/billing/invoices/"+encodeURIComponent(id));openedBillingInvoice=item;$("billingInvoiceTitle").textContent=item.number+" · "+item.document_type;$("billingInvoiceDetail").innerHTML='<p><b>'+esc(item.customer?.name||"Client non renseigné")+'</b><br><span class="muted">'+esc(item.customer?.phone||"")+'</span></p><div class="billing-invoices">'+item.lines.map(line=>'<article class="billing-row"><div><b>'+esc(line.description)+'</b><small>'+line.quantity+' '+esc(line.unit)+' × '+money(line.unit_amount)+'</small></div><strong>'+money(line.total_amount)+'</strong></article>').join("")+'</div><p><b>Total : '+money(item.total_amount)+'</b> · Payé : '+money(item.paid_amount)+' · Reste : '+money(item.balance_amount)+'</p><p class="muted">'+esc(item.notes||"")+'</p>';$("billingPaymentAmount").value=item.balance_amount||"";$("billingPaymentForm").style.display=item.balance_amount>0?"grid":"none";if(!$("billingInvoiceDialog").open)$("billingInvoiceDialog").showModal()}catch(error){tell(error.message)}}
+let openedBillingInvoice=null,billingInvoiceOpenRequest=0;
+async function openBillingInvoice(id){
+  const requestId=++billingInvoiceOpenRequest,dialog=$("billingInvoiceDialog");
+  openedBillingInvoice=null;$("billingInvoiceTitle").textContent="Chargement du document…";
+  $("billingInvoiceDetail").innerHTML='<p class="muted" role="status">Préparation des détails de la facture…</p>';
+  $("billingPaymentForm").style.display="none";
+  if(!dialog.open)dialog.showModal();
+  try{
+    const item=await api("/api/v1/billing/invoices/"+encodeURIComponent(id));
+    if(requestId!==billingInvoiceOpenRequest)return;
+    openedBillingInvoice=item;$("billingInvoiceTitle").textContent=item.number+" · "+item.document_type;
+    $("billingInvoiceDetail").innerHTML='<p><b>'+esc(item.customer?.name||"Client non renseigné")+'</b><br><span class="muted">'+esc(item.customer?.phone||"")+'</span></p><div class="billing-invoices">'+item.lines.map(line=>'<article class="billing-row"><div><b>'+esc(line.description)+'</b><small>'+line.quantity+' '+esc(line.unit)+' × '+money(line.unit_amount)+'</small></div><strong>'+money(line.total_amount)+'</strong></article>').join("")+'</div><p><b>Total : '+money(item.total_amount)+'</b> · Payé : '+money(item.paid_amount)+' · Reste : '+money(item.balance_amount)+'</p><p class="muted">'+esc(item.notes||"")+'</p>';
+    $("billingPaymentAmount").value=item.balance_amount||"";$("billingPaymentForm").style.display=item.balance_amount>0?"grid":"none";
+  }catch(error){if(requestId===billingInvoiceOpenRequest){$("billingInvoiceTitle").textContent="Document indisponible";$("billingInvoiceDetail").textContent=error.message;tell(error.message)}}
+}
 $("billingPaymentForm").onsubmit=async event=>{event.preventDefault();if(!openedBillingInvoice)return;try{await api("/api/v1/billing/invoices/"+encodeURIComponent(openedBillingInvoice.id)+"/payments",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({amount:Number($("billingPaymentAmount").value),method:$("billingPaymentMethod").value,reference:$("billingPaymentReference").value.trim()||null})});tell("Paiement enregistré.");await openBillingInvoice(openedBillingInvoice.id);await loadBilling()}catch(error){tell(error.message)}};
 const loadBillingWithInvoiceDetails=loadBilling;loadBilling=async function(){await loadBillingWithInvoiceDetails();if(!org||!$("billingInvoices"))return;try{const invoices=await api("/api/v1/billing/invoices?organization_id="+encodeURIComponent(org));$("billingInvoices").innerHTML=invoices.length?invoices.map(item=>'<article class="billing-row"><div><b>'+esc(item.number)+'</b><small>'+esc(item.customer_name||item.subject||"Facture FUSAA")+' · '+esc(item.status)+' · '+money(item.total_amount)+(item.balance_amount>0?' · Reste '+money(item.balance_amount):'')+'</small></div><div><button class="secondary" type="button" onclick="openBillingInvoice(\''+esc(item.id)+'\')">Détails</button><button class="secondary" type="button" onclick="downloadBillingInvoice(\''+esc(item.id)+'\',\''+esc(item.number)+'\')">PDF</button></div></article>').join(""):'<p class="muted">Aucune facture pour le moment.</p>'}catch(error){tell(error.message)}};
 function bootApplication(){
   if(!token){state();return}
-  $("auth").classList.add("hidden");$("app").classList.add("hidden");$("sessionLoading").classList.remove("hidden");
-  restoreWorkspace().then(()=>{state();refresh();connectEvents();flushUploads();syncViewFromHash()}).catch(error=>{$("sessionLoadingDetail").textContent="Connexion au serveur indisponible. Réessayez dans un instant.";tell(error.message)})
+  state();
+  restoreWorkspace().then(()=>{workspaceReady=true;state();syncViewFromHash();connectEvents();const view=location.hash.slice(1);if(!view||view==="dashboard")refresh().finally(()=>flushUploads());else flushUploads()}).catch(error=>{tell("Chargement de l’atelier : "+error.message)})
 }
 bootApplication();
 document.head.insertAdjacentHTML("beforeend",'<style>button:not(:disabled),.secondary:not(:disabled){transition:transform .2s ease,filter .2s ease,box-shadow .25s ease!important;transform-origin:center}button.fusaa-clicked:not(:disabled){animation:fusaaButtonClick .62s cubic-bezier(.2,.8,.25,1);filter:brightness(1.12);box-shadow:0 0 0 5px #35dfc236,0 0 26px #2d9bf066!important}@keyframes fusaaButtonClick{0%{transform:scale(1)}26%{transform:translateY(2px) scale(.94)}58%{transform:translateY(-1px) scale(1.025)}100%{transform:scale(1)}}@media(prefers-reduced-motion:reduce){button.fusaa-clicked:not(:disabled){animation:none}}</style>');
