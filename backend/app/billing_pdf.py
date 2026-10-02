@@ -44,7 +44,7 @@ MODERN_STYLES = {
     "moderne_minimal": dict(accent="#334155", soft="#eef7f4", alt="#0f766e", ink="#0f172a", muted="#64748b", panel="#ffffff", table_head="#edf2f7", table_text="#0f172a", border="#d7dee8", watermark="PDF"),
 }
 
-DOCUMENT_NAMES = {"INVOICE": "FACTURE", "QUOTE": "DEVIS", "PROFORMA": "FACTURE PROFORMA", "DELIVERY_NOTE": "BON DE LIVRAISON", "RECEIPT": "REÇU"}
+DOCUMENT_NAMES = {"INVOICE": "FACTURE", "QUOTE": "DEVIS", "PROFORMA": "FACTURE PROFORMA", "DELIVERY_NOTE": "BON DE LIVRAISON", "RECEIPT": "REÇU", "CREDIT_STATEMENT": "ÉTAT DE CRÉDIT CLIENT"}
 FONT_NAMES = {"times": "Times-Roman", "arial": "Helvetica", "calibri": "Helvetica", "segoe": "Helvetica", "courier": "Courier", "trebuchet": "Helvetica"}
 ULTRA_COMPACT_STYLE = "ultra_compact"
 
@@ -737,14 +737,12 @@ def _render_modern(pdf, invoice, header, customer, lines, logo, style, width, he
     pdf.drawCentredString(left + available / 2, max(bottom + 2 * mm, y - 12 * mm), f"Généré le {(getattr(invoice, 'issued_on', None) or datetime.now()):%d/%m/%Y} - Merci pour votre confiance")
 
 
-def _render_standard(pdf, invoice, header, customer, lines, logo, width, height):
-    """Boulangerie's original classic layout, preserved for 'standard' headers."""
+def _standard_header(pdf, invoice, header, customer, logo, width, height):
+    """Shared original header: invoices and credit statements stay identical."""
     left, right, top, bottom = 20 * mm, 20 * mm, 12.7 * mm, 12.7 * mm
     available, y = width - left - right, height - top
     _draw_logo(pdf, logo, left, y, 32 * mm, 25 * mm)
     company_x, company_width = left + 39 * mm, available - 39 * mm
-    table_font = FONT_NAMES.get(getattr(header, "table_font_family", None) or "", "Times-Roman")
-    table_size = min(14, max(8, float(getattr(header, "table_font_size", None) or 9)))
     pdf.setFillColor(_colour("#333333"))
     company_y = _draw_text(pdf, _wrap(getattr(header, "company_name", ""), "Times-Bold", 14, company_width), company_x, y, company_width, "Times-Bold", 14, 16, limit=2)
     details = [part.strip() for part in str(getattr(header, "address", "") or "").splitlines() if part.strip()]
@@ -770,6 +768,15 @@ def _render_standard(pdf, invoice, header, customer, lines, logo, width, height)
     if subject:
         y -= 3 * mm
         y = _draw_text(pdf, _wrap(subject, "Times-Bold", 10, available), left, y, available, "Times-Bold", 10, 12, "center")
+    return y, left, available, bottom
+
+
+def _render_standard(pdf, invoice, header, customer, lines, logo, width, height):
+    """Boulangerie's original classic layout, preserved for 'standard' headers."""
+    y, left, available, bottom = _standard_header(pdf, invoice, header, customer, logo, width, height)
+    top = 12.7 * mm
+    table_font = FONT_NAMES.get(getattr(header, "table_font_family", None) or "", "Times-Roman")
+    table_size = min(14, max(8, float(getattr(header, "table_font_size", None) or 9)))
     delivery = str(getattr(invoice, "document_type", "")) == "DELIVERY_NOTE"
     labels, parts = (["N°", "Désignation", "Quantité"], [8, 63, 29]) if delivery else (["N°", "Désignation", "Quantité", "Prix unitaire", "Total"], [8, 42, 14, 18, 18])
     columns = [available * part / 100 for part in parts]
@@ -883,3 +890,104 @@ def render_invoice_pdf(path: Path, invoice, header, customer, lines):
     else:
         _render_standard(pdf, invoice, header, customer, lines, logo, width, height)
     pdf.save()
+
+
+def render_credit_statement_pdf(document, header, customer, operations, balance):
+    """Same company headers, dated product lines, and a full immutable ledger."""
+    stream = BytesIO()
+    pdf = canvas.Canvas(stream, pagesize=A4, pageCompression=1)
+    pdf.setTitle("État de crédit - " + str(customer.name))
+    width, height = A4
+    style = getattr(header, "document_style", "standard") or "standard"
+    logo = _logo_reader(getattr(header, "logo_url", None))
+    ref_style = "scan_compact" if style == ULTRA_COMPACT_STYLE else style
+    font = FONT_NAMES.get(getattr(header, "table_font_family", None) or "", "Helvetica")
+    size = min(10, max(8, float(getattr(header, "table_font_size", None) or 9)))
+    page = 1
+
+    def page_header(continued=False):
+        if ref_style in REFERENCE_STYLES:
+            cfg = dict(REFERENCE_STYLES[ref_style])
+            y, left, available = _reference_header(pdf, document, header, customer, logo, cfg, width, height, continued)
+            bottom = cfg["margins"][2] * mm
+        elif style in MODERN_STYLES:
+            y, left, available, bottom = _modern_header(pdf, document, header, customer, logo, MODERN_STYLES[style], width, height, continued)
+        else:
+            y, left, available, bottom = _standard_header(pdf, document, header, customer, logo, width, height)
+        cols = [available * p for p in (.43, .14, .14, .15, .14)]
+        y -= 3 * mm
+        pdf.setFillColor(_colour("#e8eef3")); pdf.rect(left, y - 8 * mm, available, 8 * mm, fill=1, stroke=0)
+        pdf.setFillColor(_colour("#152b3c")); pdf.setFont("Helvetica-Bold", 8)
+        x = left
+        for i, label in enumerate(("Désignation", "Date", "Achat FCFA", "Remb. FCFA", "Solde FCFA")):
+            if i < 2: pdf.drawString(x + 1.5 * mm, y - 5 * mm, label)
+            else: pdf.drawRightString(x + cols[i] - 1.5 * mm, y - 5 * mm, label)
+            x += cols[i]
+        return y - 8 * mm, left, available, bottom, cols
+
+    def footer():
+        pdf.setFillColor(_colour("#64748b")); pdf.setFont("Helvetica", 7)
+        pdf.drawString(left, 7 * mm, "Historique conservé - montants en FCFA")
+        pdf.drawRightString(left + available, 7 * mm, f"Page {page}")
+
+    y, left, available, bottom, cols = page_header()
+    running = Decimal("0")
+    purchase_total, repayment_total = Decimal("0"), Decimal("0")
+    rows = []
+    for op in operations:
+        date = op["date"].strftime("%d/%m/%Y")
+        amount = _decimal(op["amount"])
+        if op["kind"] == "PURCHASE":
+            purchase_total += amount
+            entries = [(f"{_quantity(line['quantity'])} x {line['description']} ({op['number']})", _decimal(line["total_amount"])) for line in op["lines"]]
+            difference = amount - sum((value for _, value in entries), Decimal("0"))
+            if not entries: entries = [("Achat " + str(op["number"] or ""), amount)]
+            elif difference: entries.append(("Taxes / remise - " + str(op["number"] or ""), difference))
+            for text, value in entries:
+                running += value
+                rows.append((text, date, value, None, running))
+        else:
+            repayment_total += amount
+            running -= amount
+            label = "Remboursement - " + str(op["method"] or "")
+            if op["note"]: label += " : " + str(op["note"])
+            rows.append((label, date, None, amount, running))
+    for index, (designation, date, debit, paid, current) in enumerate(rows):
+        wrapped = _wrap(designation, font, size, cols[0] - 3 * mm)
+        first_fragment = True
+        # Split very long notes instead of ever drawing beyond the page.
+        while wrapped:
+            capacity = int((y - bottom - 12 * mm - 3 * mm) / (size * 1.25))
+            if capacity < 1:
+                footer(); pdf.showPage(); page += 1
+                y, left, available, bottom, cols = page_header(True)
+                continue
+            part, wrapped = wrapped[:capacity], wrapped[capacity:]
+            row_h = max(7 * mm, len(part) * size * 1.25 + 3 * mm)
+            pdf.setFillColor(_colour("#f4f7fa" if index % 2 == 0 else "#ffffff"))
+            pdf.rect(left, y - row_h, available, row_h, fill=1, stroke=0)
+            pdf.setFillColor(_colour("#17202a"))
+            _draw_text(pdf, part, left + 1.5 * mm, y - 4 * mm, cols[0] - 3 * mm, font, size, size * 1.25)
+            x = left + cols[0]
+            values = [date, "" if debit is None else _money(debit), "" if paid is None else _money(paid), _money(current)] if first_fragment else [date, "", "", ""]
+            pdf.setFont(font, size)
+            for i, value in enumerate(values, 1):
+                value_size = min(size, max(5.5, size * (cols[i] - 3 * mm) / max(1, pdfmetrics.stringWidth(value, font, size))))
+                pdf.setFont(font, value_size)
+                if i == 1: pdf.drawString(x + 1.5 * mm, y - 4 * mm, value)
+                else: pdf.drawRightString(x + cols[i] - 1.5 * mm, y - 4 * mm, value)
+                x += cols[i]
+            _rule(pdf, left, y - row_h, left + available, "#d9e2ec", .4)
+            y -= row_h
+            first_fragment = False
+    summary = [f"Total achats : {_money(purchase_total)} - Total remboursé : {_money(repayment_total)}",
+               f"Solde à payer : {_money(balance)}" if _decimal(balance) else "Compte soldé - archivé automatiquement",
+               "Solde en lettres : " + _amount_words(balance)]
+    summary_lines = [line for text in summary for line in _wrap(text, "Helvetica-Bold", 9, available)]
+    if y - len(summary_lines) * 12 < bottom + 14 * mm:
+        footer(); pdf.showPage(); page += 1
+        y, left, available, bottom, cols = page_header(True)
+    pdf.setFillColor(_colour("#152b3c"))
+    _draw_text(pdf, summary_lines, left, y - 8 * mm, available, "Helvetica-Bold", 9, 12)
+    footer(); pdf.save()
+    return stream.getvalue()

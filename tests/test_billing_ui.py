@@ -44,6 +44,51 @@ async function api(path,options={}){
 </script><script src="/billing-workspace.js"></script></body></html>"""
 
 
+def test_credit_workspace_purchase_form_and_repayment_popup(tmp_path):
+    extra = """
+function newId(){return 'credit-ui-request-0001'}
+const originalBillingApi=api;
+api=async function(path,options={}){
+ if(path.includes('/credit-accounts/c'))return {customer_id:'c',customer_name:'Client exemple',balance:300,total_purchases:300,total_repaid:0,archived:false,operations:[{kind:'PURCHASE',date:'2026-10-02',number:'INV-TEST',invoice_id:'new-invoice',amount:300,allocations:[],lines:[{quantity:1,description:'Ramette'}]}],page:1,has_more:false,operation_count:1};
+ if(path.includes('/credit-accounts'))return {items:[],total:0,active_count:0,balance:0,has_more:false};
+ if(path==='/api/v1/billing/documents'&&options.method==='POST'){window.creditSent=JSON.parse(options.body);return {id:'new-invoice',number:'INV-TEST',customer_id:'c'}};
+ return originalBillingApi(path,options);
+};
+"""
+    html = HTML.replace('</script><script src="/billing-workspace.js">', extra + '</script><script src="/billing-workspace.js">')
+    with playwright.sync_playwright() as driver:
+        try:
+            browser=driver.chromium.launch(headless=True)
+        except Exception as exc:
+            pytest.skip(f"Chromium indisponible : {exc}")
+        page=browser.new_page(viewport={"width":1440,"height":1000})
+        page.set_default_timeout(5000)
+        errors=[];page.on("pageerror",lambda error:errors.append(str(error)))
+        def serve(route):
+            path=route.request.url.split('?',1)[0]
+            if path.endswith('/admin'): route.fulfill(content_type='text/html; charset=utf-8',body=html)
+            elif path.endswith('.js'): route.fulfill(content_type='application/javascript',body=(WEB/'billing-workspace.js').read_text(encoding='utf-8'))
+            elif path.endswith('.css'): route.fulfill(content_type='text/css',body=(WEB/'billing-workspace.css').read_text(encoding='utf-8'))
+            else: route.fulfill(status=404)
+        page.route('**/*',serve);page.goto('http://credit-ui.test/admin')
+        page.locator('#billingHomeBadge').click()
+        page.locator('[data-billtab="credits"]').click()
+        page.get_by_role('button',name='＋ Nouvel achat à crédit',exact=True).click()
+        page.locator('#billingNewCustomer option[value="c"]').wait_for(state='attached')
+        page.locator('#billingNewCustomer').select_option('c')
+        page.locator('.bill-designation').fill('Ramette')
+        page.locator('.bill-price').fill('300')
+        page.get_by_role('button',name='Enregistrer l’achat à crédit',exact=True).click()
+        page.get_by_role('heading',name='Client exemple',exact=True).wait_for()
+        assert page.evaluate('window.creditSent.on_credit') is True
+        assert page.evaluate('window.creditSent.request_id') == 'credit-ui-request-0001'
+        page.get_by_role('button',name='Rembourser',exact=True).click()
+        assert page.locator('#billingCreditRepaymentDialog').is_visible()
+        page.screenshot(path=str(tmp_path/'credits-ui.png'),full_page=True)
+        assert not errors
+        browser.close()
+
+
 def test_billing_badges_and_invoice_editor_are_visible_on_desktop_and_mobile():
     with playwright.sync_playwright() as driver:
         try:
@@ -69,7 +114,7 @@ def test_billing_badges_and_invoice_editor_are_visible_on_desktop_and_mobile():
         page.goto("http://fusaa-ui.test/admin")
         assert page.locator("#billingHomeBadge").is_visible()
         page.locator("#billingHomeBadge").click()
-        assert page.locator("#billing .billing-menu [data-billtab]").count() == 10
+        assert page.locator("#billing .billing-menu [data-billtab]").count() == 11
         assert not page.locator(".workspace > .sidebar").is_visible()
         page.locator('[data-billtab="clients"]').click()
         assert page.locator("#billingGlassDialog").is_visible()

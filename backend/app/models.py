@@ -1,7 +1,7 @@
 import enum
 import uuid
 from datetime import datetime, timezone
-from sqlalchemy import Boolean, DateTime, Enum, Float, ForeignKey, Integer, JSON, Numeric, String, Text, UniqueConstraint, func
+from sqlalchemy import Boolean, CheckConstraint, DateTime, Enum, Float, ForeignKey, Integer, JSON, Numeric, String, Text, UniqueConstraint, func
 from sqlalchemy.orm import Mapped, mapped_column
 from .database import Base
 
@@ -311,6 +311,41 @@ class Workshop(Timestamped, Base):
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=uid)
     organization_id: Mapped[str] = mapped_column(ForeignKey("organizations.id"), index=True)
     name: Mapped[str] = mapped_column(String(160))
+
+class CustomerCreditAccount(Timestamped, Base):
+    __tablename__ = "customer_credit_accounts"
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=uid)
+    organization_id: Mapped[str] = mapped_column(ForeignKey("organizations.id"), index=True)
+    customer_id: Mapped[str] = mapped_column(ForeignKey("customers.id"), unique=True)
+    balance: Mapped[float] = mapped_column(Numeric(12, 2), default=0)
+    total_purchases: Mapped[float] = mapped_column(Numeric(12, 2), default=0)
+    total_repaid: Mapped[float] = mapped_column(Numeric(12, 2), default=0)
+    settled_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    __table_args__ = (CheckConstraint("balance >= 0", name="ck_credit_balance"),)
+
+
+class CustomerCreditOperation(Timestamped, Base):
+    """Append-only ledger: one purchase per invoice, one entry per repayment."""
+    __tablename__ = "customer_credit_operations"
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=uid)
+    account_id: Mapped[str] = mapped_column(ForeignKey("customer_credit_accounts.id"), index=True)
+    organization_id: Mapped[str] = mapped_column(ForeignKey("organizations.id"))
+    kind: Mapped[str] = mapped_column(String(12))
+    amount: Mapped[float] = mapped_column(Numeric(12, 2))
+    invoice_id: Mapped[str | None] = mapped_column(ForeignKey("invoices.id"), unique=True, nullable=True)
+    request_id: Mapped[str] = mapped_column(String(128))
+    request_hash: Mapped[str] = mapped_column(String(64))
+    occurred_on: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    actor_id: Mapped[str] = mapped_column(ForeignKey("users.id"))
+    method: Mapped[str | None] = mapped_column(String(40), nullable=True)
+    note: Mapped[str | None] = mapped_column(Text, nullable=True)
+    allocations: Mapped[list] = mapped_column(JSON, default=list)
+    __table_args__ = (
+        UniqueConstraint("organization_id", "request_id", name="uq_credit_request"),
+        CheckConstraint("amount > 0", name="ck_credit_amount"),
+        CheckConstraint("kind IN ('PURCHASE', 'REPAYMENT')", name="ck_credit_kind"),
+    )
+
 
 class ComputerAgent(Timestamped, Base):
     __tablename__="computer_agents"

@@ -295,3 +295,13 @@ dialog.billing-assistant-products .billing-assistant-product-row{background:#fff
 @media(max-width:500px){#billing .billing-menu-grid{grid-template-columns:repeat(3,minmax(0,1fr))}#billingHomeBadge b{display:none}}
 @media(max-width:800px){#billing .billing-ai-fields{grid-template-columns:1fr}#billing .billing-ai-fields button{width:100%}#billing .billing-catalog-tools input{flex:1;min-width:145px}#billing .billing-lines-panel{overflow-x:auto}#billing .billing-line-head,#billing .billing-line{grid-template-columns:30px minmax(150px,2fr) 75px 90px 35px 35px;min-width:500px}#billing .billing-submit-row button{width:100%}}
 @media(max-width:800px){body:has(#billing.active) .workspace main{padding:12px}}
+#billing .billing-credit-stats{display:grid;grid-template-columns:repeat(auto-fit,minmax(160px,1fr));gap:12px;margin:0 0 20px}
+#billing .billing-credit-stats article{padding:16px;border:1px solid var(--bill-border,rgba(130,210,225,.22));border-radius:18px;background:rgba(120,190,210,.06);display:grid;gap:7px}
+#billing .billing-credit-stats strong{font-size:1.3rem;color:var(--bill-accent,#32d9d0)}
+#billing .billing-credit-stats small{color:inherit;opacity:.75}
+#billing .billing-credit-cards{display:grid;grid-template-columns:repeat(auto-fit,minmax(240px,1fr));gap:14px}
+#billing .billing-credit-products{padding-left:18px;margin:8px 0;line-height:1.6}
+#billing #billingCreditAccounts{min-height:180px}
+#billing #billingCreditStatementHeader{min-width:200px}
+#billing .billing-actions>button>svg{height:18px;width:18px;vertical-align:middle}
+#billing .billing-reference-dialog [data-error]:empty{display:none}

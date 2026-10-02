@@ -1,4 +1,5 @@
 from datetime import datetime
+from decimal import Decimal
 from pydantic import BaseModel, ConfigDict, Field
 class CustomerIn(BaseModel): organization_id:str; name:str=Field(min_length=1,max_length=160); phone:str|None=None; email:str|None=None; address:str|None=None; notes:str|None=None
 class CustomerOut(CustomerIn): model_config=ConfigDict(from_attributes=True); id:str
@@ -41,6 +42,16 @@ class BillingDocumentIn(BaseModel):
     notes:str|None=Field(default=None,max_length=2000)
     discount_amount:float=Field(default=0,ge=0)
     lines:list[BillingLineIn]=Field(min_length=1,max_length=100)
+    on_credit:bool=False
+    initial_payment:Decimal=Field(default=Decimal("0"),ge=0,max_digits=12,decimal_places=2)
+    request_id:str|None=Field(default=None,min_length=16,max_length=120)
+
+class CreditRepaymentIn(BaseModel):
+    amount:Decimal=Field(gt=0,max_digits=12,decimal_places=2)
+    request_id:str=Field(min_length=16,max_length=120)
+    occurred_on:datetime|None=None
+    method:str=Field(default="ESPECES",min_length=1,max_length=40)
+    note:str|None=Field(default=None,max_length=2000)
 class BillingAssistantIn(BaseModel):
     """Context sent only to the billing assistant, never to the shop assistant."""
     organization_id:str

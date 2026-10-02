@@ -18,6 +18,11 @@ from fastapi.middleware.trustedhost import TrustedHostMiddleware
 from fastapi.responses import FileResponse, HTMLResponse, PlainTextResponse, StreamingResponse
 from sqlalchemy.orm import Session
 from sqlalchemy import text, or_, JSON, func
+from sqlalchemy.exc import IntegrityError
+from decimal import Decimal
+from . import credit_accounts
+from .credit_routes import router as credit_router
+from .models import CustomerCreditOperation
 from .config import settings
 from .database import Base, SessionLocal, engine, get_db
 from .events import agent_hub, hub
@@ -51,6 +56,7 @@ async def lifespan(_app):
 
 app=FastAPI(title="FUSAA PRINT AGENT",version="0.1.0",docs_url=None if settings.environment.lower()=="production" else "/docs",redoc_url=None if settings.environment.lower()=="production" else "/redoc",lifespan=lifespan)
 app.include_router(local_monitor_router)
+app.include_router(credit_router)
 assistant_provider=OllamaProvider(settings.ollama_base_url,settings.ollama_model) if settings.ai_provider.lower()=="ollama" else DeterministicProvider()
 document_processor=DocumentProcessor()
 layout_engine=LayoutEngine()
@@ -801,6 +807,9 @@ def create_invoice(data:InvoiceCreate,user:User=Depends(current_user),db:Session
     invoice.total_amount=total;audit(db,user.id,"INVOICE_CREATED","Invoice",invoice.id,parameters={"jobs":data.job_ids,"total":total},result="SUCCESS");db.commit();db.refresh(invoice);return invoice
 @app.post("/api/v1/invoices/{invoice_id}/payments",status_code=201)
 def record_payment(invoice_id:str,data:PaymentIn,user:User=Depends(current_user),db:Session=Depends(get_db)):
+    credit_invoice=one(db,Invoice,invoice_id);require_member(db,user,credit_invoice.organization_id)
+    if db.query(CustomerCreditOperation).filter_by(invoice_id=invoice_id).first():
+        raise HTTPException(409,"Enregistrez le remboursement depuis le compte crédit du client pour préserver son historique.")
     invoice=one(db,Invoice,invoice_id);require_member(db,user,invoice.organization_id);payment=Payment(invoice_id=invoice.id,**data.model_dump());db.add(payment);db.flush();paid=sum(float(p.amount) for p in db.query(Payment).filter_by(invoice_id=invoice.id,status="CONFIRMED").all());invoice.status="PAID" if paid>=float(invoice.total_amount) else "PARTIALLY_PAID";audit(db,user.id,"PAYMENT_RECORDED","Payment",payment.id,parameters={"invoice_id":invoice.id,"amount":data.amount},result="SUCCESS");db.commit();return {"payment_id":payment.id,"invoice_status":invoice.status,"paid_amount":paid}
 @app.get("/api/v1/billing/profile")
 def get_billing_profile(organization_id:str,user:User=Depends(current_user),db:Session=Depends(get_db)):
@@ -905,14 +914,16 @@ async def upload_billing_header_logo(header_id:str,file:UploadFile=File(...),use
     return billing_header_out(item)
 @app.get("/api/v1/billing/invoices")
 def list_billing_invoices(organization_id:str,page:int=1,page_size:int=0,user:User=Depends(current_user),db:Session=Depends(get_db)):
-    require_member(db,user,organization_id);query=db.query(Invoice).filter_by(organization_id=organization_id).order_by(Invoice.created_at.desc())
-    items=query.offset((max(1,page)-1)*min(page_size,100)).limit(min(page_size,100)).all() if page_size>0 else query.all()
+    require_member(db,user,organization_id)
+    query=db.query(Invoice,CustomerCreditOperation.invoice_id).outerjoin(CustomerCreditOperation,CustomerCreditOperation.invoice_id==Invoice.id).filter(Invoice.organization_id==organization_id).order_by(Invoice.created_at.desc())
+    rows=query.offset((max(1,page)-1)*min(page_size,100)).limit(min(page_size,100)).all() if page_size>0 else query.all()
+    items=[row[0] for row in rows];credit_ids={row[1] for row in rows if row[1]}
     customer_ids={item.customer_id for item in items if item.customer_id}
     customers={item.id:item for item in db.query(Customer).filter(Customer.id.in_(customer_ids)).all()} if customer_ids else {}
     invoice_ids=[item.id for item in items]
     payments=db.query(Payment).filter(Payment.invoice_id.in_(invoice_ids),Payment.status=="CONFIRMED").all() if invoice_ids else [];settled={}
     for payment in payments:settled[payment.invoice_id]=settled.get(payment.invoice_id,0)+float(payment.amount)
-    return [{"id":item.id,"number":item.number,"status":item.status,"document_type":item.document_type,"document_style":item.document_style,"subject":item.subject,"total_amount":float(item.total_amount),"paid_amount":settled.get(item.id,0),"balance_amount":max(0,float(item.total_amount)-settled.get(item.id,0)),"customer_name":customers.get(item.customer_id).name if item.customer_id in customers else None,"currency":item.currency,"created_at":item.created_at,"source_shop_order_id":item.source_shop_order_id,"competition_source_invoice_id":item.competition_source_invoice_id,"competition_margin_percent":float(item.competition_margin_percent) if item.competition_margin_percent is not None else None} for item in items]
+    return [{"id":item.id,"on_credit":item.id in credit_ids,"number":item.number,"status":item.status,"document_type":item.document_type,"document_style":item.document_style,"subject":item.subject,"total_amount":float(item.total_amount),"paid_amount":settled.get(item.id,0),"balance_amount":max(0,float(item.total_amount)-settled.get(item.id,0)),"customer_name":customers.get(item.customer_id).name if item.customer_id in customers else None,"currency":item.currency,"created_at":item.created_at,"source_shop_order_id":item.source_shop_order_id,"competition_source_invoice_id":item.competition_source_invoice_id,"competition_margin_percent":float(item.competition_margin_percent) if item.competition_margin_percent is not None else None} for item in items]
 @app.get("/api/v1/billing/dashboard")
 def billing_dashboard(organization_id:str,user:User=Depends(current_user),db:Session=Depends(get_db)):
     require_member(db,user,organization_id);default_billing_header(db,organization_id)
@@ -1065,7 +1076,7 @@ def get_billing_invoice(invoice_id:str,user:User=Depends(current_user),db:Sessio
     invoice=one(db,Invoice,invoice_id);require_member(db,user,invoice.organization_id);customer=db.get(Customer,invoice.customer_id) if invoice.customer_id else None
     lines=db.query(InvoiceLine).filter_by(invoice_id=invoice.id).order_by(InvoiceLine.display_order,InvoiceLine.id).all();payments=db.query(Payment).filter_by(invoice_id=invoice.id).order_by(Payment.created_at.desc()).all();paid=sum(float(item.amount) for item in payments if item.status=="CONFIRMED")
     header=db.get(BillingHeader,invoice.billing_header_id) if invoice.billing_header_id else None
-    return {"id":invoice.id,"number":invoice.number,"document_type":invoice.document_type,"document_style":invoice.document_style or (header.document_style if header else "standard"),"status":invoice.status,"subject":invoice.subject,"notes":invoice.notes,"currency":invoice.currency,"issued_on":invoice.issued_on,"billing_header_id":invoice.billing_header_id,"header_name":header.company_name if header else None,"source_shop_order_id":invoice.source_shop_order_id,"competition_source_invoice_id":invoice.competition_source_invoice_id,"competition_margin_percent":float(invoice.competition_margin_percent) if invoice.competition_margin_percent is not None else None,"subtotal_amount":float(invoice.subtotal_amount or 0),"discount_amount":float(invoice.discount_amount or 0),"tax_rate":float(invoice.tax_rate or 0),"tax_amount":float(invoice.tax_amount or 0),"isb_amount":float(invoice.isb_amount or 0),"total_amount":float(invoice.total_amount),"paid_amount":paid,"balance_amount":max(0,float(invoice.total_amount)-paid),"customer":{"id":customer.id,"name":customer.name,"phone":customer.phone,"email":customer.email,"address":customer.address} if customer else None,"lines":[{"id":line.id,"shop_product_id":line.shop_product_id,"billing_product_id":line.billing_product_id,"product_id":line.shop_product_id or line.billing_product_id,"description":line.description,"unit":line.unit,"quantity":line.quantity,"unit_amount":float(line.unit_amount),"total_amount":float(line.total_amount)} for line in lines],"payments":[{"id":payment.id,"amount":float(payment.amount),"method":payment.method,"status":payment.status,"reference":payment.reference,"created_at":payment.created_at} for payment in payments]}
+    return {"id":invoice.id,"on_credit":bool(db.query(CustomerCreditOperation.id).filter_by(invoice_id=invoice.id).first()),"number":invoice.number,"document_type":invoice.document_type,"document_style":invoice.document_style or (header.document_style if header else "standard"),"status":invoice.status,"subject":invoice.subject,"notes":invoice.notes,"currency":invoice.currency,"issued_on":invoice.issued_on,"billing_header_id":invoice.billing_header_id,"header_name":header.company_name if header else None,"source_shop_order_id":invoice.source_shop_order_id,"competition_source_invoice_id":invoice.competition_source_invoice_id,"competition_margin_percent":float(invoice.competition_margin_percent) if invoice.competition_margin_percent is not None else None,"subtotal_amount":float(invoice.subtotal_amount or 0),"discount_amount":float(invoice.discount_amount or 0),"tax_rate":float(invoice.tax_rate or 0),"tax_amount":float(invoice.tax_amount or 0),"isb_amount":float(invoice.isb_amount or 0),"total_amount":float(invoice.total_amount),"paid_amount":paid,"balance_amount":max(0,float(invoice.total_amount)-paid),"customer":{"id":customer.id,"name":customer.name,"phone":customer.phone,"email":customer.email,"address":customer.address} if customer else None,"lines":[{"id":line.id,"shop_product_id":line.shop_product_id,"billing_product_id":line.billing_product_id,"product_id":line.shop_product_id or line.billing_product_id,"description":line.description,"unit":line.unit,"quantity":line.quantity,"unit_amount":float(line.unit_amount),"total_amount":float(line.total_amount)} for line in lines],"payments":[{"id":payment.id,"amount":float(payment.amount),"method":payment.method,"status":payment.status,"reference":payment.reference,"created_at":payment.created_at} for payment in payments]}
 @app.put("/api/v1/billing/invoices/{invoice_id}")
 def update_billing_invoice(invoice_id:str,data:BillingDocumentIn,user:User=Depends(current_user),db:Session=Depends(get_db)):
     """Update a manual unpaid document and invalidate its cached PDF.
@@ -1075,6 +1086,8 @@ def update_billing_invoice(invoice_id:str,data:BillingDocumentIn,user:User=Depen
     """
     invoice=one(db,Invoice,invoice_id);require_member(db,user,invoice.organization_id)
     if data.organization_id!=invoice.organization_id:raise HTTPException(422,"Organisation invalide")
+    if data.on_credit or data.initial_payment or db.query(CustomerCreditOperation).filter_by(invoice_id=invoice.id).first():
+        raise HTTPException(409,"Un achat à crédit enregistré ne peut pas être modifié indépendamment du compte client.")
     if invoice.source_shop_order_id:raise HTTPException(409,"La facture d'une commande Boutique ne peut pas etre modifiee ici.")
     if invoice.status not in {"DRAFT","PENDING_PAYMENT"}:raise HTTPException(409,"Seuls les documents en brouillon ou en attente peuvent etre modifies.")
     if db.query(Payment).filter_by(invoice_id=invoice.id,status="CONFIRMED").first():raise HTTPException(409,"Un paiement est deja enregistre pour ce document. Creez un avoir ou un nouveau document.")
@@ -1117,6 +1130,19 @@ def record_billing_payment(invoice_id:str,data:PaymentIn,user:User=Depends(curre
 @app.post("/api/v1/billing/documents",status_code=201)
 def create_billing_document(data:BillingDocumentIn,user:User=Depends(current_user),db:Session=Depends(get_db)):
     require_member(db,user,data.organization_id)
+    request_hash=credit_accounts.fingerprint(data) if data.on_credit else None
+    if not data.on_credit and data.initial_payment:
+        raise HTTPException(422,"L'acompte de ce formulaire est réservé aux achats à crédit")
+    if data.on_credit:
+        require_org_admin(db,user,data.organization_id)
+        if not data.customer_id or data.document_type!="INVOICE" or not data.request_id:
+            raise HTTPException(422,"Un achat à crédit nécessite un client, une facture et un identifiant de demande")
+        credit_accounts.account_for_write(db,data.organization_id,data.customer_id,create=True)
+        existing=credit_accounts.replay(db,data.organization_id,data.request_id,request_hash)
+        if existing:
+            if existing.kind!="PURCHASE":raise HTTPException(409,"Demande déjà utilisée")
+            saved=one(db,Invoice,existing.invoice_id)
+            return {"id":saved.id,"number":saved.number,"document_type":saved.document_type,"total_amount":float(saved.total_amount),"status":saved.status,"on_credit":True,"customer_id":saved.customer_id}
     customer=one(db,Customer,data.customer_id) if data.customer_id else None
     if customer and customer.organization_id!=data.organization_id:raise HTTPException(422,"Client d’une autre organisation")
     if not customer and data.customer_name:
@@ -1135,13 +1161,31 @@ def create_billing_document(data:BillingDocumentIn,user:User=Depends(current_use
     shop_products={item.id:item for item in db.query(ShopProduct).filter(ShopProduct.organization_id==data.organization_id,ShopProduct.id.in_(product_ids)).all()}
     billing_products={item.id:item for item in db.query(Product).filter(Product.organization_id==data.organization_id,Product.id.in_(product_ids),Product.enabled.is_(True)).all()}
     if len(shop_products)+len(billing_products)!=len(set(product_ids)):raise HTTPException(422,"Produit de facturation introuvable")
-    subtotal=sum(line.quantity*line.unit_amount for line in data.lines);discount=min(data.discount_amount,subtotal);tax_amount,isb_amount,total=header_tax(header,subtotal,discount);tax_rate=float(header.tax_rate or 0) if header.tax_enabled else 0
+    credit_values=None
+    if data.on_credit:
+        credit_values=[(credit_accounts.money(line.unit_amount),credit_accounts.money(Decimal(str(line.quantity))*credit_accounts.money(line.unit_amount))) for line in data.lines]
+        subtotal=sum((value[1] for value in credit_values),Decimal("0"))
+        discount=min(credit_accounts.money(data.discount_amount),subtotal)
+    else:
+        subtotal=sum(line.quantity*line.unit_amount for line in data.lines);discount=min(data.discount_amount,subtotal)
+    tax_amount,isb_amount,total=header_tax(header,float(subtotal),float(discount));tax_rate=float(header.tax_rate or 0) if header.tax_enabled else 0
+    if data.on_credit:total=credit_accounts.money(total)
     invoice=Invoice(organization_id=data.organization_id,customer_id=customer.id,billing_header_id=header.id,document_style=header.document_style,issued_on=data.issued_on or datetime.now(timezone.utc),number=f"{data.document_type[:3]}-{datetime.now(timezone.utc):%Y%m%d}-{secrets.token_hex(3).upper()}",status="DRAFT" if data.document_type!="INVOICE" else "PENDING_PAYMENT",currency="XOF",document_type=data.document_type,subject=data.subject,notes=data.notes,subtotal_amount=subtotal,discount_amount=discount,tax_rate=tax_rate,tax_amount=tax_amount,isb_amount=isb_amount,total_amount=total);db.add(invoice);db.flush()
     for position,line in enumerate(data.lines,1):
         shop_product=shop_products.get(line.product_id) if line.product_id else None;billing_product=billing_products.get(line.product_id) if line.product_id else None
-        db.add(InvoiceLine(invoice_id=invoice.id,shop_product_id=shop_product.id if shop_product else None,billing_product_id=billing_product.id if billing_product else None,display_order=position,description=line.description,unit=line.unit,quantity=line.quantity,unit_amount=line.unit_amount,total_amount=line.quantity*line.unit_amount))
-    audit(db,user.id,"BILLING_DOCUMENT_CREATED","Invoice",invoice.id,parameters={"document_type":data.document_type,"total":invoice.total_amount},result="SUCCESS");db.commit()
-    return {"id":invoice.id,"number":invoice.number,"document_type":invoice.document_type,"total_amount":float(invoice.total_amount),"status":invoice.status}
+        unit_amount,line_total=credit_values[position-1] if credit_values else (line.unit_amount,line.quantity*line.unit_amount)
+        db.add(InvoiceLine(invoice_id=invoice.id,shop_product_id=shop_product.id if shop_product else None,billing_product_id=billing_product.id if billing_product else None,display_order=position,description=line.description,unit=line.unit,quantity=line.quantity,unit_amount=unit_amount,total_amount=line_total))
+    audit(db,user.id,"BILLING_DOCUMENT_CREATED","Invoice",invoice.id,parameters={"document_type":data.document_type,"total":float(invoice.total_amount)},result="SUCCESS")
+    try:
+        if data.on_credit:credit_accounts.purchase(db,invoice,user.id,data.request_id,request_hash,data.initial_payment)
+        db.commit()
+    except IntegrityError:
+        db.rollback()
+        if not data.on_credit:raise
+        existing=credit_accounts.replay(db,data.organization_id,data.request_id,request_hash)
+        if not existing or existing.kind!="PURCHASE":raise
+        invoice=one(db,Invoice,existing.invoice_id)
+    return {"id":invoice.id,"number":invoice.number,"document_type":invoice.document_type,"total_amount":float(invoice.total_amount),"status":invoice.status,"on_credit":data.on_credit,"customer_id":invoice.customer_id}
 @app.post("/api/v1/billing/invoices/{invoice_id}/duplicate",status_code=201)
 def duplicate_billing_invoice(invoice_id:str,document_type:str="QUOTE",user:User=Depends(current_user),db:Session=Depends(get_db)):
     original=one(db,Invoice,invoice_id);require_member(db,user,original.organization_id)
