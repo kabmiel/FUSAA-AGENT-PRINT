@@ -83,11 +83,13 @@ def test_workshop_roles_are_admin_managed_and_enforced(setup_db):
     with pytest.raises(HTTPException):require_workshop_write(db,viewer,"a")
 
 def test_team_invitation_is_claimed_on_registration(setup_db):
+    from urllib.parse import urlsplit,parse_qs
     db,_,admin=setup_db
     invitation=assign_workshop_member("a",WorkshopMemberIn(user_email="invite@example.com",role="OPERATOR"),admin,db)
     invited=db.query(User).filter_by(email="invite@example.com").one()
     assert invitation["invited"] and invitation["registration_url"].startswith("/inscription") and not invited.is_active
-    register(RegisterIn(email="invite@example.com",password="a-secure-password",display_name="Invité"),db)
+    proof=parse_qs(urlsplit(invitation["registration_url"]).fragment)["token"][0]
+    register(RegisterIn(email="invite@example.com",password="a-secure-password",display_name="Invité",invitation_token=proof),db)
     db.refresh(invited)
     assert invited.is_active and db.query(WorkshopMember).filter_by(workshop_id="a",user_id=invited.id).one().role=="OPERATOR"
 

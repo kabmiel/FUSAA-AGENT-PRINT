@@ -23,6 +23,19 @@ class User(Timestamped, Base):
     password_hash: Mapped[str] = mapped_column(String(255))
     display_name: Mapped[str] = mapped_column(String(120))
     is_active: Mapped[bool] = mapped_column(Boolean, default=True)
+    auth_version: Mapped[int] = mapped_column(Integer, default=0)
+
+
+class AuthActionToken(Base):
+    __tablename__ = "auth_action_tokens"
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=uid)
+    user_id: Mapped[str] = mapped_column(ForeignKey("users.id"), index=True)
+    purpose: Mapped[str] = mapped_column(String(16))
+    token_hash: Mapped[str] = mapped_column(String(64), unique=True)
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    consumed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc), server_default=func.now())
+    __table_args__ = (CheckConstraint("purpose IN ('ACTIVATE', 'RESET')", name="ck_auth_action_purpose"),)
 
 class Organization(Timestamped, Base):
     __tablename__="organizations"

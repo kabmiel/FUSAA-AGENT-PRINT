@@ -6,21 +6,22 @@ from .models import User, OrganizationMember, PrintJob, ComputerAgent, Workshop,
 from .access import accessible_workshop_ids, accessible_documents
 
 class EventHub:
-    def __init__(self): self.connections={}
-    async def connect(self,ws:WebSocket,organizations:set[str],user_id=None): await ws.accept(); self.connections[ws]=(organizations,user_id)
-    def disconnect(self,ws:WebSocket): self.connections.pop(ws,None)
+    def __init__(self): self.connections={}; self.auth_versions={}
+    async def connect(self,ws:WebSocket,organizations:set[str],user_id=None,auth_version=0): await ws.accept(); self.connections[ws]=(organizations,user_id); self.auth_versions[ws]=auth_version
+    def disconnect(self,ws:WebSocket): self.connections.pop(ws,None); self.auth_versions.pop(ws,None)
     async def publish(self,event:str,payload:dict,organization_id:str):
         for ws,(organizations,user_id) in list(self.connections.items()):
             if organization_id not in organizations: continue
-            if not self.can_receive(user_id,organization_id,payload):continue
+            if not self.can_receive(user_id,organization_id,payload,self.auth_versions.get(ws,0)):continue
             try: await ws.send_json({"event":event,"payload":payload})
             except Exception: self.disconnect(ws)
         if event!="LOCAL_ACTIVITY":await notify_organization(organization_id,event,payload)
     @staticmethod
-    def can_receive(user_id,organization_id,payload):
+    def can_receive(user_id,organization_id,payload,auth_version=None):
         with SessionLocal() as db:
             user=db.get(User,user_id)
             if not user or not user.is_active:return False
+            if auth_version is not None and auth_version!=(user.auth_version or 0):return False
             member=db.query(OrganizationMember).filter_by(user_id=user_id,organization_id=organization_id).first()
             if not member:return False
             if payload.get("activity_id"):

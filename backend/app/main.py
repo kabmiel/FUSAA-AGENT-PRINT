@@ -45,6 +45,8 @@ from .multisite_schemas import RouteJobIn, WorkshopMemberIn, WorkshopMemberRoleI
 from .observability import RequestAuditMiddleware, configure_logging
 from .local_monitor import router as local_monitor_router
 from .access import accessible_workshop_ids, require_workshop_write, accessible_documents, require_document_access, require_document_write, utc_datetime
+from .auth_routes import router as auth_router
+from .auth_actions import issue_link, valid_action, consume_action, require_link_scope
 
 @asynccontextmanager
 async def lifespan(_app):
@@ -56,6 +58,7 @@ async def lifespan(_app):
 
 app=FastAPI(title="FUSAA PRINT AGENT",version="0.1.0",docs_url=None if settings.environment.lower()=="production" else "/docs",redoc_url=None if settings.environment.lower()=="production" else "/redoc",lifespan=lifespan)
 app.include_router(local_monitor_router)
+app.include_router(auth_router)
 app.include_router(credit_router)
 assistant_provider=OllamaProvider(settings.ollama_base_url,settings.ollama_model) if settings.ai_provider.lower()=="ollama" else DeterministicProvider()
 document_processor=DocumentProcessor()
@@ -69,7 +72,7 @@ app.add_middleware(RequestAuditMiddleware)
 @app.middleware("http")
 async def security_headers(request:Request,call_next):
     response=await call_next(request)
-    response.headers["X-Content-Type-Options"]="nosniff";response.headers["X-Frame-Options"]="DENY";response.headers["Referrer-Policy"]="strict-origin-when-cross-origin";response.headers["Permissions-Policy"]="geolocation=(), microphone=(), camera=()"
+    response.headers["X-Content-Type-Options"]="nosniff";response.headers["X-Frame-Options"]="DENY";response.headers.setdefault("Referrer-Policy","strict-origin-when-cross-origin");response.headers["Permissions-Policy"]="geolocation=(), microphone=(), camera=()"
     return response
 
 @app.get("/healthz",include_in_schema=False)
@@ -1593,9 +1596,14 @@ def register(data:RegisterIn,db:Session=Depends(get_db)):
     user=db.query(User).filter_by(email=data.email.lower()).first()
     if user and user.is_active: raise HTTPException(409,"Email already registered")
     if user:
-        # A workshop manager can pre-create a safe inactive invitation. Claim it here.
+        if not data.invitation_token:raise HTTPException(400,"Ouvrez le nouveau lien d'activation fourni par l'administrateur.")
+        action,invited_user=valid_action(db,data.invitation_token,"ACTIVATE")
+        if invited_user.id!=user.id:raise HTTPException(400,"Le lien ne correspond pas à cette adresse e-mail")
+        consume_action(db,action)
         user.password_hash=hash_password(data.password);user.display_name=data.display_name;user.is_active=True
+        user.auth_version=(user.auth_version or 0)+1
     else:
+        if data.invitation_token:raise HTTPException(400,"Invitation invalide. Demandez un nouveau lien.")
         user=User(email=data.email.lower(),password_hash=hash_password(data.password),display_name=data.display_name); db.add(user); db.flush()
     # First registration bootstraps the configured single FUSAA workshop.
     if settings.single_workshop_id:
@@ -1611,13 +1619,13 @@ def register(data:RegisterIn,db:Session=Depends(get_db)):
             if not db.query(WorkshopMember).filter_by(workshop_id=workshop.id,user_id=user.id).first():
                 db.add(WorkshopMember(workshop_id=workshop.id,user_id=user.id,role="OWNER"))
     db.commit(); db.refresh(user)
-    audit(db,user.id,"USER_REGISTERED","User",user.id); db.commit(); return TokenOut(access_token=create_access_token(user.id))
+    audit(db,user.id,"USER_REGISTERED","User",user.id); db.commit(); return TokenOut(access_token=create_access_token(user.id,user.auth_version or 0))
 
 @app.post("/api/v1/auth/login",response_model=TokenOut)
 def login(data:LoginIn,db:Session=Depends(get_db)):
     user=db.query(User).filter_by(email=data.email.lower()).first()
-    if not user or not verify_password(data.password,user.password_hash): raise HTTPException(401,"Incorrect email or password")
-    return TokenOut(access_token=create_access_token(user.id))
+    if not user or not user.is_active or not verify_password(data.password,user.password_hash): raise HTTPException(401,"Adresse e-mail ou mot de passe incorrect, ou compte non activé")
+    return TokenOut(access_token=create_access_token(user.id,user.auth_version or 0))
 
 @app.get("/api/v1/push/public-key")
 def push_public_key(user:User=Depends(current_user)):
@@ -1712,15 +1720,43 @@ def list_workshops(organization_id:str,user:User=Depends(current_user),db:Sessio
 def assign_workshop_member(workshop_id:str,data:WorkshopMemberIn,user:User=Depends(current_user),db:Session=Depends(get_db)):
     workshop=one(db,Workshop,workshop_id);require_org_admin(db,user,workshop.organization_id);target=db.query(User).filter_by(email=data.user_email.lower()).one_or_none()
     if settings.single_workshop_id and workshop.id!=settings.single_workshop_id:raise HTTPException(403,"Only the configured FUSAA workshop may be assigned")
-    invited=False
+    invited=bool(target and not target.is_active)
     if not target:
         target=User(email=data.user_email.lower(),display_name="Invitation FUSAA en attente",password_hash=hash_password(secrets.token_urlsafe(32)),is_active=False)
         db.add(target);db.flush();invited=True
+    if invited:require_link_scope(db,user,target,workshop.organization_id)
     if not db.query(OrganizationMember).filter_by(organization_id=workshop.organization_id,user_id=target.id).first():db.add(OrganizationMember(organization_id=workshop.organization_id,user_id=target.id,role="OPERATOR"))
     member=db.query(WorkshopMember).filter_by(workshop_id=workshop.id,user_id=target.id).one_or_none()
     if member:member.role=data.role
     else:member=WorkshopMember(workshop_id=workshop.id,user_id=target.id,role=data.role);db.add(member)
-    audit(db,user.id,"WORKSHOP_MEMBER_ASSIGNED","Workshop",workshop.id,parameters={"user_id":target.id,"role":data.role,"invited":invited},result="SUCCESS");db.commit();return {"workshop_id":workshop.id,"user_id":target.id,"role":data.role,"invited":invited,"registration_url":f"/inscription?email={target.email}" if invited else None}
+    registration_url=issue_link(db,target,"ACTIVATE") if invited else None
+    audit(db,user.id,"WORKSHOP_MEMBER_ASSIGNED","Workshop",workshop.id,parameters={"user_id":target.id,"role":data.role,"invited":invited},result="SUCCESS");db.commit();return {"workshop_id":workshop.id,"user_id":target.id,"role":data.role,"invited":invited,"registration_url":registration_url}
+
+@app.post("/api/v1/workshops/{workshop_id}/members/{member_user_id}/activation-link")
+def renew_activation_link(workshop_id:str,member_user_id:str,user:User=Depends(current_user),db:Session=Depends(get_db)):
+    workshop=one(db,Workshop,workshop_id);require_org_admin(db,user,workshop.organization_id)
+    if not db.query(WorkshopMember).filter_by(workshop_id=workshop.id,user_id=member_user_id).first():raise HTTPException(404,"Membre introuvable")
+    target=one(db,User,member_user_id)
+    if target.is_active:raise HTTPException(409,"Ce compte est déjà activé")
+    require_link_scope(db,user,target,workshop.organization_id)
+    link=issue_link(db,target,"ACTIVATE")
+    audit(db,user.id,"ACTIVATION_LINK_RENEWED","User",target.id);db.commit()
+    return {"registration_url":link}
+
+@app.post("/api/v1/workshops/{workshop_id}/members/{member_user_id}/reset-link")
+def member_reset_link(workshop_id:str,member_user_id:str,data:PasswordResetLinkIn,user:User=Depends(current_user),db:Session=Depends(get_db)):
+    workshop=one(db,Workshop,workshop_id);require_org_admin(db,user,workshop.organization_id)
+    version=user.auth_version or 0
+    user=db.query(User).filter_by(id=user.id).populate_existing().with_for_update().one()
+    if not user.is_active or (user.auth_version or 0)!=version:raise HTTPException(401,"Session expirée. Reconnectez-vous.")
+    if not verify_password(data.current_password,user.password_hash):raise HTTPException(403,"Mot de passe administrateur incorrect")
+    if not db.query(WorkshopMember).filter_by(workshop_id=workshop.id,user_id=member_user_id).first():raise HTTPException(404,"Membre introuvable")
+    target=one(db,User,member_user_id)
+    if not target.is_active:raise HTTPException(409,"Utilisez un lien d'activation pour ce compte")
+    require_link_scope(db,user,target,workshop.organization_id)
+    link=issue_link(db,target,"RESET")
+    audit(db,user.id,"PASSWORD_RESET_LINK_CREATED","User",target.id);db.commit()
+    return {"reset_url":link}
 
 @app.get("/api/v1/workshops/{workshop_id}/members")
 def list_workshop_members(workshop_id:str,user:User=Depends(current_user),db:Session=Depends(get_db)):
@@ -2059,15 +2095,21 @@ def central_supervision(organization_id:str,user:User=Depends(current_user),db:S
 
 @app.websocket("/ws/events")
 async def events(ws:WebSocket):
-    try:user_id=jwt.decode(ws.query_params.get("token",""),settings.jwt_secret,algorithms=["HS256"])["sub"]
+    try:
+        claims=jwt.decode(ws.query_params.get("token",""),settings.jwt_secret,algorithms=["HS256"])
+        user_id=claims["sub"]
     except Exception:
         # Accepting first makes the policy close code observable by browsers.
         # The client can then stop its reconnect loop and ask for login again.
         await ws.accept();await ws.close(code=1008);return
     db=SessionLocal()
-    try: organizations={member.organization_id for member in db.query(OrganizationMember).filter_by(user_id=user_id).all()}
+    try:
+        user=db.get(User,user_id)
+        if not user or not user.is_active or claims.get("ver",0)!=(user.auth_version or 0):
+            await ws.accept();await ws.close(code=1008);return
+        organizations={member.organization_id for member in db.query(OrganizationMember).filter_by(user_id=user_id).all()}
     finally:db.close()
-    await hub.connect(ws,organizations,user_id)
+    await hub.connect(ws,organizations,user_id,claims.get("ver",0))
     try:
         while True:await ws.receive_text()
     except Exception:hub.disconnect(ws)
@@ -2098,7 +2140,16 @@ def shop_index(number:str|None=None,token:str|None=None):return HTMLResponse((Pa
 def admin_index():return HTMLResponse((Path(__file__).parent/"web"/"index.html").read_text(encoding="utf-8"),headers={"Cache-Control":"no-store, max-age=0"})
 
 @app.get("/inscription",response_class=HTMLResponse)
-def registration_index():return HTMLResponse((Path(__file__).parent/"web"/"register.html").read_text(encoding="utf-8"))
+def registration_index():return HTMLResponse((Path(__file__).parent/"web"/"register.html").read_text(encoding="utf-8"),headers={"Cache-Control":"no-store","Referrer-Policy":"no-referrer"})
+
+@app.get("/reinitialiser",response_class=HTMLResponse)
+def password_reset_index():return HTMLResponse((Path(__file__).parent/"web"/"password-reset.html").read_text(encoding="utf-8"),headers={"Cache-Control":"no-store","Referrer-Policy":"no-referrer"})
+
+@app.get("/auth-links.js")
+def auth_links_js():return HTMLResponse((Path(__file__).parent/"web"/"auth-links.js").read_text(encoding="utf-8"),media_type="application/javascript",headers={"Cache-Control":"no-store"})
+
+@app.get("/auth-links.css")
+def auth_links_css():return HTMLResponse((Path(__file__).parent/"web"/"auth-links.css").read_text(encoding="utf-8"),media_type="text/css",headers={"Cache-Control":"no-store"})
 
 @app.get("/suivi/{number}/{token}",response_class=HTMLResponse)
 def public_tracking_page(number:str,token:str):return HTMLResponse((Path(__file__).parent/"web"/"public.html").read_text(encoding="utf-8"))

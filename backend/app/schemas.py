@@ -1,10 +1,27 @@
 from datetime import datetime
 from typing import Literal
-from pydantic import BaseModel, ConfigDict, EmailStr, Field
+from pydantic import BaseModel, ConfigDict, EmailStr, Field, field_validator
 from .models import JobStatus
 
 class ORM(BaseModel): model_config=ConfigDict(from_attributes=True)
-class RegisterIn(BaseModel): email: EmailStr; password: str = Field(min_length=12); display_name: str = Field(min_length=1,max_length=120)
+class NewPasswordModel(BaseModel):
+    password: str = Field(min_length=4, max_length=128)
+
+    @field_validator("password")
+    @classmethod
+    def nonblank_password(cls, value):
+        if not value.strip(): raise ValueError("Le mot de passe ne peut pas contenir seulement des espaces")
+        return value
+
+class RegisterIn(NewPasswordModel):
+    email: EmailStr
+    display_name: str = Field(min_length=1,max_length=120)
+    invitation_token: str | None = Field(default=None,min_length=40,max_length=128)
+
+class PasswordChangeIn(NewPasswordModel): current_password: str = Field(min_length=1,max_length=128)
+class PasswordResetIn(NewPasswordModel): token: str = Field(min_length=40,max_length=128)
+class AuthActionInspectIn(BaseModel): token: str = Field(min_length=40,max_length=128); purpose: Literal["ACTIVATE","RESET"]
+class PasswordResetLinkIn(BaseModel): current_password: str = Field(min_length=1,max_length=128)
 class LoginIn(BaseModel): email: EmailStr; password: str
 class TokenOut(BaseModel): access_token: str; token_type: str="bearer"
 class PushSubscriptionIn(BaseModel): endpoint: str=Field(min_length=10,max_length=2048); p256dh: str=Field(min_length=10,max_length=255); auth: str=Field(min_length=10,max_length=255)

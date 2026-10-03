@@ -19,6 +19,7 @@ $env:ENVIRONMENT = "development"
 Push-Location $backendRoot
 try {
     py -3.11 -m alembic upgrade head
+    if ($LASTEXITCODE -ne 0) { throw 'La migration locale a échoué. Le serveur ne sera pas démarré.' }
     py -3.11 -m uvicorn app.main:app --reload --host 127.0.0.1 --port $Port
 }
 finally {
