@@ -47,7 +47,7 @@ MODERN_STYLES = {
 DOCUMENT_NAMES = {"INVOICE": "FACTURE", "QUOTE": "DEVIS", "PROFORMA": "FACTURE PROFORMA", "DELIVERY_NOTE": "BON DE LIVRAISON", "RECEIPT": "REÇU", "CREDIT_STATEMENT": "ÉTAT DE CRÉDIT CLIENT"}
 FONT_NAMES = {"times": "Times-Roman", "arial": "Helvetica", "calibri": "Helvetica", "segoe": "Helvetica", "courier": "Courier", "trebuchet": "Helvetica"}
 ULTRA_COMPACT_STYLE = "ultra_compact"
-PDF_LAYOUT_VERSION = "layout-20261007"
+PDF_LAYOUT_VERSION = "layout-20261007-quantities"
 
 
 class _PaginatedCanvas(canvas.Canvas):
@@ -418,6 +418,7 @@ def _render_reference(pdf, invoice, header, customer, lines, logo, style, width,
     else:
         labels, parts = ["N°", "Désignation", "Quantité", cfg["unit_label"], "Montant"], cfg["widths"]
     columns = [available * part / sum(parts) for part in parts]
+    quantity_index = 3 if cfg.get("simple") and not delivery else 2
     table_font = FONT_NAMES.get(getattr(header, "table_font_family", None) or "", cfg["font"])
     size = min(14, max(8, float(getattr(header, "table_font_size", None) or cfg["table"])))
     bottom = cfg["margins"][2] * mm
@@ -443,7 +444,7 @@ def _render_reference(pdf, invoice, header, customer, lines, logo, style, width,
             parts = label.split("\n")
             baseline = _cell_baseline(current_y, h, len(parts), head_font, size, leading)
             for offset, part in enumerate(parts):
-                if index == 0:
+                if index in (0, quantity_index):
                     pdf.drawCentredString(x + col / 2, baseline - offset * leading, part)
                 else:
                     pdf.drawString(x + 2 * mm, baseline - offset * leading, part)
@@ -475,7 +476,7 @@ def _render_reference(pdf, invoice, header, customer, lines, logo, style, width,
             else:
                 pdf.setFont(table_font, size)
                 baseline = _cell_baseline(y, row_h, 1, table_font, size, leading)
-                if index == 0 or (index >= len(values) - 2 and not delivery):
+                if index in (0, quantity_index) or (index >= len(values) - 2 and not delivery):
                     pdf.drawCentredString(x + col / 2, baseline, value)
                 else:
                     pdf.drawString(x + 2 * mm, baseline, value)

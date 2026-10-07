@@ -44,6 +44,80 @@ async function api(path,options={}){
 </script><script src="/billing-workspace.js"></script></body></html>"""
 
 
+def test_compact_invoice_lines_reorder_without_reloading_and_save_in_that_order():
+    extra = """
+const originalLineApi=api;
+api=async function(path,options={}){
+ if(path==='/api/v1/billing/documents'&&options.method==='POST'){
+  window.sentLines=JSON.parse(options.body).lines;return {id:'saved',number:'TEST'};
+ }
+ return originalLineApi(path,options);
+};
+"""
+    html = HTML.replace('</script><script src="/billing-workspace.js">', extra + '</script><script src="/billing-workspace.js">')
+    with playwright.sync_playwright() as driver:
+        try:
+            browser = driver.chromium.launch(headless=True)
+        except Exception as exc:
+            pytest.skip(f"Chromium indisponible : {exc}")
+        page = browser.new_page(viewport={"width": 1440, "height": 900})
+        page.set_default_timeout(5000)
+        errors = []
+        page.on("pageerror", lambda error: errors.append(str(error)))
+        def serve(route):
+            path = route.request.url.split('?', 1)[0]
+            if path.endswith('/admin'): route.fulfill(content_type='text/html; charset=utf-8', body=html)
+            elif path.endswith('.js'): route.fulfill(content_type='application/javascript', body=(WEB/'billing-workspace.js').read_text(encoding='utf-8'))
+            elif path.endswith('.css'): route.fulfill(content_type='text/css', body=(WEB/'billing-workspace.css').read_text(encoding='utf-8'))
+            else: route.fulfill(status=404)
+        page.route('**/*', serve)
+        page.goto('http://lines-ui.test/admin')
+        page.locator('#billingHomeBadge').click()
+        page.locator('[data-billtab="new"]').click()
+        page.locator('#billingNewHeader option[value="h"]').wait_for(state='attached')
+        page.evaluate("""() => {
+          document.getElementById('billingLines').replaceChildren();
+          ['A','B','C'].forEach((name,i)=>billingAddLine({id:name,name,quantity:i+1,price_xof:100,unit:'pièce'}));
+          window.lineNodes=[...document.querySelectorAll('#billingLines .billing-line')];
+          window.initialTotal=document.getElementById('billingDraftTotal').textContent;
+          api=async (path,options={})=>{
+            if(path==='/api/v1/billing/documents'){window.sentLines=JSON.parse(options.body).lines;return {id:'saved',number:'TEST'}};
+            throw new Error('Requête inutile : '+path);
+          };
+          billingOpen=async()=>{};openBillingInvoice=()=>{};
+        }""")
+        names = lambda: page.locator('.bill-designation').evaluate_all('(inputs)=>inputs.map(input=>input.value)')
+        page.locator('.billing-move-up').nth(2).click()
+        assert names() == ['A', 'C', 'B']
+        # Native drag-and-drop, using the handle only (inputs stay editable).
+        page.evaluate("""() => {
+          const rows=document.querySelectorAll('#billingLines .billing-line'),dataTransfer=new DataTransfer();
+          rows[2].querySelector('.billing-line-grip').dispatchEvent(new DragEvent('dragstart',{bubbles:true,dataTransfer}));
+          const y=rows[0].getBoundingClientRect().top+1;
+          rows[0].dispatchEvent(new DragEvent('dragover',{bubbles:true,cancelable:true,dataTransfer,clientY:y}));
+          rows[0].dispatchEvent(new DragEvent('drop',{bubbles:true,cancelable:true,dataTransfer,clientY:y}));
+        }""")
+        assert names() == ['B', 'A', 'C']
+        assert page.evaluate("window.lineNodes.every(row=>document.getElementById('billingLines').contains(row))")
+        assert page.locator('#billingDraftTotal').inner_text() == page.evaluate('window.initialTotal')
+        assert page.locator('.billing-line-number').all_text_contents() == ['1', '2', '3']
+        assert page.locator('.billing-move-up').first.is_disabled()
+        assert page.locator('.billing-move-down').last.is_disabled()
+        assert page.locator('.bill-quantity').first.evaluate('input=>getComputedStyle(input).textAlign') == 'center'
+        assert page.locator('.billing-line').first.evaluate('row=>row.getBoundingClientRect().height') <= 40
+        assert page.locator('.billing-line-actions').first.evaluate('el=>new Set([...el.children].map(b=>b.getBoundingClientRect().top)).size') == 1
+        page.set_viewport_size({"width":390,"height":844})
+        assert page.locator('.billing-line').first.evaluate('row=>getComputedStyle(row).gridTemplateColumns.split(" ").length') == 5
+        assert page.evaluate('document.documentElement.scrollWidth <= innerWidth+1')
+        page.evaluate('billingSaveDocument({preventDefault(){}})')
+        assert [line['product_id'] for line in page.evaluate('window.sentLines')] == ['B','A','C']
+        assert [line['quantity'] for line in page.evaluate('window.sentLines')] == [2,1,3]
+        page.locator('.billing-remove-line').nth(1).click()
+        assert names() == ['B','C']
+        assert not errors
+        browser.close()
+
+
 def test_credit_workspace_purchase_form_and_repayment_popup(tmp_path):
     extra = """
 function newId(){return 'credit-ui-request-0001'}

@@ -87,6 +87,22 @@ def test_cell_padding_is_balanced_without_an_empty_line():
 
 
 @pytest.mark.parametrize("style", STYLES)
+@pytest.mark.parametrize("kind", ["INVOICE", "DELIVERY_NOTE"])
+def test_quantity_contents_are_centered_under_the_column_heading(style, kind, tmp_path):
+    lines = [Record(description="Produit centré", quantity=37, unit_amount=1234,
+                    total_amount=45658, unit="pièce")]
+    path = tmp_path / "quantity.pdf"
+    render_invoice_pdf(path, invoice(lines, kind), header(style), Record(name="CLIENT"), lines)
+    with fitz.open(path) as pdf:
+        spans = [span for block in pdf[0].get_text("dict")["blocks"] if "lines" in block
+                 for line in block["lines"] for span in line["spans"]]
+        heading = next(span for span in spans if span["text"].casefold() in {"quantité", "qté"})
+        quantity = next(span for span in spans if span["text"] == "37" or span["text"].startswith("37 "))
+        center = lambda span: (span["bbox"][0] + span["bbox"][2]) / 2
+        assert center(quantity) == pytest.approx(center(heading), abs=.2)
+
+
+@pytest.mark.parametrize("style", STYLES)
 def test_smaller_font_really_fits_more_products(style, tmp_path):
     company, customer, lines = header(style), Record(name="CLIENT"), rows(60)
     counts, pages = [], []

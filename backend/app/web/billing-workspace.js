@@ -699,14 +699,47 @@ async function billingQuickImportCsv(){
   const file=document.getElementById("billingNewCsv")?.files[0];if(!file)return;
   const started=showFusaaOperation("Importation des produits…");try{const result=await billingImportProductsWithProgress(file,"billingNewImportStatus");tell(result.created+" produit(s) importé(s) pour la facturation.");await billingProductSearch(true)}catch(error){document.getElementById("billingNewImportStatus").innerHTML='<p class="billing-import-error">'+esc(error.message)+'</p>';tell(error.message)}finally{await hideFusaaOperation(started)}
 }
+let billingDraggedLine=null;
+function billingClearLineDrag(){
+  document.querySelectorAll("#billingLines .billing-line").forEach(row=>row.classList.remove("is-dragging","drop-before","drop-after"));
+  billingDraggedLine=null;
+}
+function billingMoveLine(row,direction){
+  const box=row.parentElement;if(!box)return;
+  const neighbour=direction<0?row.previousElementSibling:row.nextElementSibling;
+  if(!neighbour)return;
+  box.insertBefore(row,direction<0?neighbour:neighbour.nextElementSibling);
+  billingUpdateTotal();
+  const button=row.querySelector(direction<0?".billing-move-up":".billing-move-down");
+  (button.disabled?row.querySelector(direction<0?".billing-move-down":".billing-move-up"):button).focus();
+}
 function billingAddLine(item){
   const box=document.getElementById("billingLines");if(!box)return;
   const row=document.createElement("div");row.className="billing-line";row.dataset.productId=item?.id||"";row.dataset.unit=item?.unit||"piece";
-  row.innerHTML='<span class="billing-line-number"></span><input class="bill-designation" placeholder="Désignation" required value="'+esc(item?.name||"")+'"><input class="bill-quantity" type="number" min="0.01" step="0.01" value="'+esc(item?.quantity??1)+'" aria-label="Quantité"><input class="bill-price" type="number" min="0" step="0.01" value="'+esc(item?.price_xof??"")+'" placeholder="Prix" aria-label="Prix unitaire"><button class="danger" type="button" aria-label="Supprimer la ligne">×</button>';
-  const removeButton=row.querySelector("button");removeButton.onclick=()=>{row.remove();billingUpdateTotal()};removeButton.insertAdjacentHTML("beforebegin",'<button class="secondary" type="button" aria-label="Enregistrer ce produit">＋</button>');row.querySelector("button.secondary").onclick=()=>billingSaveLineProduct(row);row.querySelectorAll("input").forEach(input=>input.addEventListener("input",billingUpdateTotal));box.append(row);billingUpdateTotal();
+  row.innerHTML='<span class="billing-line-position"><button class="secondary billing-line-grip" type="button" draggable="true" tabindex="-1" aria-label="Glisser pour déplacer la ligne" title="Glisser pour changer l’ordre">⠿</button><span class="billing-line-number"></span></span><input class="bill-designation" placeholder="Désignation" required value="'+esc(item?.name||"")+'"><input class="bill-quantity" type="number" min="0.01" step="0.01" value="'+esc(item?.quantity??1)+'" aria-label="Quantité"><input class="bill-price" type="number" min="0" step="0.01" value="'+esc(item?.price_xof??"")+'" placeholder="Prix" aria-label="Prix unitaire"><span class="billing-line-actions"><button class="secondary billing-move-up" type="button" aria-label="Monter la ligne" title="Monter">↑</button><button class="secondary billing-move-down" type="button" aria-label="Descendre la ligne" title="Descendre">↓</button><button class="secondary billing-save-product" type="button" aria-label="Enregistrer ce produit" title="Ajouter au catalogue">＋</button><button class="danger billing-remove-line" type="button" aria-label="Supprimer la ligne" title="Supprimer">×</button></span>';
+  row.querySelector(".billing-remove-line").onclick=()=>{if(billingDraggedLine===row)billingClearLineDrag();row.remove();billingUpdateTotal()};
+  row.querySelector(".billing-save-product").onclick=()=>billingSaveLineProduct(row);
+  row.querySelector(".billing-move-up").onclick=()=>billingMoveLine(row,-1);
+  row.querySelector(".billing-move-down").onclick=()=>billingMoveLine(row,1);
+  const grip=row.querySelector(".billing-line-grip");
+  grip.addEventListener("dragstart",event=>{billingClearLineDrag();billingDraggedLine=row;row.classList.add("is-dragging");event.dataTransfer.effectAllowed="move";event.dataTransfer.setData("text/plain",row.querySelector(".bill-designation").value);event.dataTransfer.setDragImage(row,20,15)});
+  grip.addEventListener("dragend",billingClearLineDrag);
+  row.addEventListener("dragover",event=>{
+    if(!billingDraggedLine||billingDraggedLine===row||billingDraggedLine.parentElement!==box)return;
+    event.preventDefault();event.dataTransfer.dropEffect="move";
+    box.querySelectorAll(".drop-before,.drop-after").forEach(item=>item.classList.remove("drop-before","drop-after"));
+    const bounds=row.getBoundingClientRect();row.classList.add(event.clientY<bounds.top+bounds.height/2?"drop-before":"drop-after");
+  });
+  row.addEventListener("dragleave",event=>{if(!row.contains(event.relatedTarget))row.classList.remove("drop-before","drop-after")});
+  row.addEventListener("drop",event=>{
+    if(!billingDraggedLine||billingDraggedLine===row||billingDraggedLine.parentElement!==box)return;
+    event.preventDefault();const bounds=row.getBoundingClientRect(),before=event.clientY<bounds.top+bounds.height/2;
+    box.insertBefore(billingDraggedLine,before?row:row.nextElementSibling);billingClearLineDrag();billingUpdateTotal();
+  });
+  row.querySelectorAll("input").forEach(input=>input.addEventListener("input",billingUpdateTotal));box.append(row);billingUpdateTotal();
 }
 function billingSaveLineProduct(row){const name=row.querySelector(".bill-designation")?.value.trim(),price=Number(row.querySelector(".bill-price")?.value);if(!name||!Number.isFinite(price)){tell("Renseignez la désignation et le prix du produit.");return}billingQuickProduct();const form=document.getElementById("billingQuickProductForm");form.querySelector('[name="name"]').value=name;form.querySelector('[name="unit_price"]').value=price;window.billingLineTarget=row}
-function billingUpdateTotal(){const rows=[...document.querySelectorAll("#billingLines .billing-line")];rows.forEach((row,index)=>row.querySelector(".billing-line-number").textContent=index+1);const sum=rows.reduce((value,row)=>value+Number(row.querySelector(".bill-quantity").value||0)*Number(row.querySelector(".bill-price").value||0),0);const target=document.getElementById("billingDraftTotal");if(target)target.textContent="Total HT : "+billingCurrency(sum)}
+function billingUpdateTotal(){const rows=[...document.querySelectorAll("#billingLines .billing-line")];rows.forEach((row,index)=>{row.querySelector(".billing-line-number").textContent=index+1;row.querySelector(".billing-move-up").disabled=index===0;row.querySelector(".billing-move-down").disabled=index===rows.length-1});const sum=rows.reduce((value,row)=>value+Number(row.querySelector(".bill-quantity").value||0)*Number(row.querySelector(".bill-price").value||0),0);const target=document.getElementById("billingDraftTotal");if(target)target.textContent="Total HT : "+billingCurrency(sum)}
 async function billingProductSearch(reset=false){
   const target=document.getElementById("billingNewCatalog");if(!target)return;
   if(reset)billingState.productPage=1;billingState.productSearch=document.getElementById("billingNewSearch")?.value.trim()||"";
