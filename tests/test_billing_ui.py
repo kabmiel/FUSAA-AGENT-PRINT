@@ -44,6 +44,66 @@ async function api(path,options={}){
 </script><script src="/billing-workspace.js"></script></body></html>"""
 
 
+def test_compact_product_catalog_is_single_line_and_mobile_safe(tmp_path):
+    extra = """
+const productLayoutApi=api;
+window.catalogReads=0;
+api=async function(path,options={}){
+ if(path.startsWith('/api/v1/billing/products?')){
+  window.catalogReads++;
+  return {items:[
+   {id:'p',name:'Carton de papier A4 80 g/m² et fournitures scolaires de grande qualité',price_xof:1234567,unit:'pièce',source:'FACTURATION',stock_quantity:7},
+   {id:'s',name:'Ramette A4',price_xof:3500,unit:'paquet',source:'BOUTIQUE',stock_quantity:5}
+  ]};
+ }
+ return productLayoutApi(path,options);
+};
+"""
+    html = HTML.replace('</script><script src="/billing-workspace.js">', extra + '</script><script src="/billing-workspace.js">')
+    with playwright.sync_playwright() as driver:
+        try:
+            browser = driver.chromium.launch(headless=True)
+        except Exception as exc:
+            pytest.skip(f"Chromium indisponible : {exc}")
+        page = browser.new_page(viewport={"width":1440,"height":1000})
+        page.set_default_timeout(5000)
+        errors=[]
+        page.on('pageerror',lambda error:errors.append(str(error)))
+        def serve(route):
+            path=route.request.url.split('?',1)[0]
+            if path.endswith('/admin'): route.fulfill(content_type='text/html; charset=utf-8',body=html)
+            elif path.endswith('.js'): route.fulfill(content_type='application/javascript',body=(WEB/'billing-workspace.js').read_text(encoding='utf-8'))
+            elif path.endswith('.css'): route.fulfill(content_type='text/css',body=(WEB/'billing-workspace.css').read_text(encoding='utf-8'))
+            else: route.fulfill(status=404)
+        page.route('**/*',serve)
+        page.goto('http://catalog-ui.test/admin')
+        page.locator('#billingHomeBadge').click()
+        page.locator('[data-billtab="new"]').click()
+        page.locator('#billingNewCatalog tbody tr').nth(1).wait_for()
+        table=page.locator('#billingNewCatalog table')
+        assert table.locator('th').all_text_contents()==['Produit','Prix unitaire','Unité','Actions']
+        assert table.locator('small').count()==0
+        assert table.locator('tbody tr').first.get_by_role('button',name='Modifier le produit').count()==1
+        assert table.locator('tbody tr').nth(1).get_by_role('button').count()==1
+        for width in (1440,390,320):
+            page.set_viewport_size({'width':width,'height':1000})
+            assert page.evaluate('document.documentElement.scrollWidth<=innerWidth+1')
+            assert table.locator('tbody tr').first.evaluate('row=>row.getBoundingClientRect().height')<=41
+            assert table.locator('td').nth(1).evaluate('td=>getComputedStyle(td).whiteSpace')=='nowrap'
+            assert table.locator('td').nth(1).evaluate('td=>td.scrollWidth<=td.clientWidth+1')
+            assert table.locator('.billing-catalog-name').first.evaluate('el=>getComputedStyle(el).whiteSpace')=='nowrap'
+            assert table.locator('.billing-catalog-name').first.get_attribute('title').startswith('Carton de papier')
+            page.locator('.billing-catalog-panel').screenshot(path=str(tmp_path/f'catalog-{width}.png'))
+        table.get_by_role('button',name='Ajouter à la facture').first.click()
+        assert page.locator('.bill-designation').last.input_value().startswith('Carton de papier')
+        page.locator('[data-billtab="products"]').click()
+        page.locator('.billing-products-table tbody tr').nth(1).wait_for()
+        assert page.locator('.billing-products-table th').all_text_contents()==['Produit','Prix unitaire','Stock','Actions']
+        assert page.evaluate('window.catalogReads')==1
+        assert not errors
+        browser.close()
+
+
 def test_compact_invoice_lines_reorder_without_reloading_and_save_in_that_order():
     extra = """
 const originalLineApi=api;
