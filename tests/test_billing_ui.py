@@ -44,6 +44,94 @@ async function api(path,options={}){
 </script><script src="/billing-workspace.js"></script></body></html>"""
 
 
+def test_invoice_header_has_search_inside_selectors_and_keeps_context(tmp_path):
+    extra = """
+const selectorApi=api;
+window.assistantCalls=0;
+api=async function(path,options={}){
+ if(path.includes('/billing/assistant'))window.assistantCalls++;
+ if(path.includes('/billing/headers')&&!options.method)return [
+  {id:'h',company_name:'FUSAA',is_default:true},
+  {id:'h2',company_name:'Deuxième entreprise'}];
+ if(path.includes('/customers')&&!options.method)return [
+  {id:'c',name:'Client exemple'}, {id:'c2',name:'Deuxième client'}];
+ return selectorApi(path,options);
+};
+"""
+    html=HTML.replace('</script><script src="/billing-workspace.js">',extra+'</script><script src="/billing-workspace.js">')
+    with playwright.sync_playwright() as driver:
+        try:
+            browser=driver.chromium.launch(headless=True)
+        except Exception as exc:
+            pytest.skip(f"Chromium indisponible : {exc}")
+        page=browser.new_page(viewport={'width':1440,'height':1000})
+        page.set_default_timeout(5000)
+        errors=[]
+        page.on('pageerror',lambda error:errors.append(str(error)))
+        def serve(route):
+            path=route.request.url.split('?',1)[0]
+            if path.endswith('/admin'): route.fulfill(content_type='text/html; charset=utf-8',body=html)
+            elif path.endswith('.js'): route.fulfill(content_type='application/javascript',body=(WEB/'billing-workspace.js').read_text(encoding='utf-8'))
+            elif path.endswith('.css'): route.fulfill(content_type='text/css',body=(WEB/'billing-workspace.css').read_text(encoding='utf-8'))
+            else: route.fulfill(status=404)
+        page.route('**/*',serve);page.goto('http://selector-ui.test/admin')
+        page.locator('#billingHomeBadge').click()
+        page.locator('[data-billtab="new"]').click()
+        page.locator('#billingNewHeader option[value="h2"]').wait_for(state='attached')
+        panel=page.locator('.billing-editor-header')
+        assert panel.count()==1
+        assert page.locator('#billingWorkspaceContent>.billing-hero').count()==0
+        assert panel.get_by_role('button',name='Modifier',exact=True).count()==0
+        assert page.locator('#billingAiPrompt').count()==0
+        assert not page.locator('#billingHeaderSearch').is_visible()
+        page.locator('#billingHeaderSearchToggle').click()
+        page.locator('#billingHeaderSearch').fill('deuxieme')
+        assert page.locator('#billingHeaderSearchOptions [role="option"]').count()==1
+        page.locator('#billingHeaderSearch').press('Enter')
+        assert page.locator('#billingNewHeader').input_value()=='h2'
+        assert page.locator('#billingHeaderSearchToggle').inner_text()=='Deuxième entreprise'
+        page.locator('#billingCustomerSearchToggle').click()
+        page.locator('#billingCustomerSearch').fill('deuxième')
+        page.locator('#billingCustomerSearch').press('ArrowDown')
+        page.keyboard.press('Enter')
+        assert page.locator('#billingNewCustomer').input_value()=='c2'
+        page.get_by_role('button',name='Ouvrir le chat IA',exact=True).click()
+        assert page.locator('#billingFacturationAssistantDialog').is_visible()
+        assert 'Deuxième entreprise' in page.locator('#billingAssistantContext').inner_text()
+        assert 'Deuxième client' in page.locator('#billingAssistantContext').inner_text()
+        assert page.evaluate('window.assistantCalls')==0
+        page.locator('#billingFacturationAssistantDialog button[aria-label="Fermer"]').click()
+        page.locator('#billingAddHeader').click()
+        page.locator('#billingHeaderQuickDialog [name="company_name"]').fill('Nouvelle entête')
+        page.locator('#billingHeaderQuickDialog form').evaluate('form=>form.requestSubmit()')
+        page.wait_for_function("document.getElementById('billingNewHeader').value==='new-h'")
+        assert page.locator('#billingHeaderSearchToggle').inner_text()=='Nouvelle entête'
+        page.locator('#billingAddCustomer').click()
+        page.locator('#billingCustomerDialog [name="name"]').fill('Nouveau client')
+        page.locator('#billingCustomerDialog form').evaluate('form=>form.requestSubmit()')
+        page.wait_for_function("document.getElementById('billingNewCustomer').value==='new-c'")
+        assert page.locator('#billingCustomerSearchToggle').inner_text()=='Nouveau client'
+        for width in (1440,390,320):
+            page.set_viewport_size({'width':width,'height':1000})
+            page.locator('#billingHeaderSearchToggle').click()
+            assert page.evaluate('document.documentElement.scrollWidth<=innerWidth+1')
+            page.locator('#billingHeaderSearch').press('Escape')
+            panel.screenshot(path=str(tmp_path/f'selector-{width}.png'))
+        page.evaluate("""async()=>{
+          billingState.editingInvoice={id:'edit',billing_header_id:'h',document_type:'RECEIPT',customer:{id:'c'},issued_on:'2026-10-07',lines:[{description:'Produit conservé',quantity:2,unit_amount:100}]};
+          billingState.documentType='RECEIPT';await billingNew();
+        }""")
+        assert page.locator('#billingHeaderSearchToggle').inner_text()=='FUSAA'
+        assert page.locator('#billingCustomerSearchToggle').inner_text()=='Client exemple'
+        assert page.locator('.bill-designation').input_value()=='Produit conservé'
+        assert panel.get_by_role('button',name='Annuler',exact=True).is_visible()
+        page.evaluate("async()=>{billingState.editingInvoice=null;billingState.creditMode=true;billingState.creditCustomerId='c';await billingNew()}")
+        assert panel.get_by_role('heading',name='Nouvel achat à crédit').is_visible()
+        assert page.locator('#billingCreditInitial').is_visible()
+        assert not errors
+        browser.close()
+
+
 def test_compact_product_catalog_is_single_line_and_mobile_safe(tmp_path):
     extra = """
 const productLayoutApi=api;
@@ -209,7 +297,8 @@ api=async function(path,options={}){
         page.locator('[data-billtab="credits"]').click()
         page.get_by_role('button',name='＋ Nouvel achat à crédit',exact=True).click()
         page.locator('#billingNewCustomer option[value="c"]').wait_for(state='attached')
-        page.locator('#billingNewCustomer').select_option('c')
+        page.locator('#billingCustomerSearchToggle').click()
+        page.locator('#billingCustomerSearchOptions').get_by_role('option',name='Client exemple',exact=True).click()
         page.locator('.bill-designation').fill('Ramette')
         page.locator('.bill-price').fill('300')
         page.get_by_role('button',name='Enregistrer l’achat à crédit',exact=True).click()
@@ -259,7 +348,7 @@ def test_billing_badges_and_invoice_editor_are_visible_on_desktop_and_mobile():
         assert page.locator("#billingGlassContent h2").first.inner_text() == "Entêtes disponibles"
         page.locator("#billingGlassDialog button[aria-label='Fermer']").click()
         page.locator('[data-billtab="new"]').click()
-        assert page.locator("#billingWorkspaceContent .billing-hero h1").inner_text() == "Nouvelle facture"
+        assert page.locator("#billingWorkspaceContent .billing-editor-heading h1").inner_text() == "Nouvelle facture"
         assert page.locator("#billingNewHeader").input_value() == "h"
         assert page.locator("#billingNewCatalog table tbody tr").count() == 1
         assert page.locator("#billingLines .billing-line").count() == 1
@@ -276,9 +365,10 @@ def test_billing_badges_and_invoice_editor_are_visible_on_desktop_and_mobile():
         page.locator("#billingCustomerDialog [name='name']").fill("Nouveau client")
         page.locator("#billingCustomerDialog form").evaluate("form => form.requestSubmit()")
         assert page.locator("#billingNewCustomer").input_value() == "new-c"
-        page.locator("#billingAiPrompt").fill("Fais une proforma : 2 x Ramette A4 a 3 500")
-        page.locator("button",has_text="Ouvrir le chat IA").click()
+        page.get_by_role("button",name="Ouvrir le chat IA",exact=True).click()
         assert page.locator("#billingFacturationAssistantDialog").is_visible()
+        page.locator("#billingAssistantInput").fill("Fais une proforma : 2 x Ramette A4 a 3 500")
+        page.locator("#billingAssistantForm").evaluate("form=>form.requestSubmit()")
         assert page.locator("#billingFacturationAssistantDialog").get_by_text("Appliquer au brouillon").is_visible()
         page.locator("#billingFacturationAssistantDialog button[aria-label='Fermer']").click()
         page.locator('[data-billtab="dashboard"]').click()

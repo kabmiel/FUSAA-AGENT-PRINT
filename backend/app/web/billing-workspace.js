@@ -131,6 +131,9 @@ const billingEditIcon=billingIcon('<path d="m4 20 4.2-1 10-10a2.1 2.1 0 0 0-3-3l
 const billingDuplicateIcon=billingIcon('<rect x="8" y="8" width="11" height="12" rx="2"/><path d="M16 8V6a2 2 0 0 0-2-2H6a2 2 0 0 0-2 2v10a2 2 0 0 0 2 2h2"/>');
 const billingCompetitionIcon=billingIcon('<path d="M4 18 10 12l4 3 6-8"/><path d="M15 7h5v5"/>');
 const billingApplyIcon=billingIcon('<path d="m5 12 4 4L19 6"/>');
+const billingSearchIcon=billingIcon('<circle cx="10.5" cy="10.5" r="6.5"/><path d="m16 16 4.5 4.5"/>');
+const billingPlusIcon=billingIcon('<path d="M12 5v14M5 12h14"/>');
+const billingAiIcon=billingIcon('<path d="m12 3 2.4 6.6L21 12l-6.6 2.4L12 21l-2.4-6.6L3 12l6.6-2.4L12 3ZM20 3v4m-2-2h4"/>');
 const billingIcons={
   credits:billingIcon('<rect x="3" y="5" width="18" height="14" rx="3"/><path d="M3 10h18M7 15h4M17 14v3m-1.5-1.5h3"/>'),
   dashboard:billingIcon('<rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/>'),
@@ -415,18 +418,46 @@ async function billingLoadReference(){
   const [headers,customers]=await Promise.all([api("/api/v1/billing/headers?organization_id="+encodeURIComponent(org)),api("/api/v1/customers?organization_id="+encodeURIComponent(org))]);
   billingState.headers=headers;billingState.customers=customers;
 }
+function billingEditorReference(kind,label,id,items,placeholder){
+  const isHeader=kind==="header",searchId=isHeader?"billingHeaderSearch":"billingCustomerSearch",addId=isHeader?"billingAddHeader":"billingAddCustomer",searchLabel=isHeader?"Rechercher une entête":"Rechercher un client",addLabel=isHeader?"Ajouter une entête":"Ajouter un client";
+  return '<div class="billing-reference-field" data-reference-kind="'+kind+'"><label id="'+id+'Label" for="'+searchId+'Toggle">'+esc(label)+'</label><div class="billing-reference-controls"><select id="'+id+'" class="billing-native-reference" aria-hidden="true" tabindex="-1" hidden '+(isHeader?'required':'')+'>'+billingSelect(items,placeholder)+'</select><button id="'+searchId+'Toggle" class="secondary billing-reference-combobox" type="button" role="combobox" aria-labelledby="'+id+'Label" aria-haspopup="listbox" aria-controls="'+searchId+'Options" aria-expanded="false" onclick="billingToggleReferenceSearch(\''+kind+'\')"><span class="billing-reference-value">'+esc(placeholder)+'</span>'+billingSearchIcon+'</button><button id="'+addId+'" class="secondary billing-editor-icon" type="button" aria-label="'+addLabel+'" title="'+addLabel+'" onclick="'+(isHeader?'billingHeaderQuickPopup()':'billingCustomerPopup()')+'">'+billingPlusIcon+'</button></div><div id="'+searchId+'Wrap" class="billing-reference-searchbox" hidden><input id="'+searchId+'" type="search" autocomplete="off" placeholder="'+searchLabel+'…" aria-label="'+searchLabel+'" aria-controls="'+searchId+'Options"><div id="'+searchId+'Options" class="billing-reference-options" role="listbox" aria-label="'+esc(label)+'"></div></div></div>';
+}
+function billingSyncReferenceControl(id){
+  if(id!=="billingNewHeader"&&id!=="billingNewCustomer")return;
+  const select=document.getElementById(id),kind=id==="billingNewHeader"?"header":"customer",searchId=kind==="header"?"billingHeaderSearch":"billingCustomerSearch",button=document.getElementById(searchId+"Toggle");
+  if(!select||!button)return;
+  const text=select.selectedOptions[0]?.textContent||"Choisir";
+  button.querySelector(".billing-reference-value").textContent=text;button.title=text;
+  if(!document.getElementById(searchId+"Wrap").hidden)billingRenderReferenceOptions(kind);
+}
+function billingRenderReferenceOptions(kind){
+  const isHeader=kind==="header",id=isHeader?"billingNewHeader":"billingNewCustomer",searchId=isHeader?"billingHeaderSearch":"billingCustomerSearch",target=document.getElementById(searchId+"Options");
+  if(!target)return;
+  const key=isHeader?"company_name":"name",normalize=value=>String(value||"").normalize("NFD").replace(/[\u0300-\u036f]/g,"").toLocaleLowerCase("fr"),needle=normalize(document.getElementById(searchId).value.trim()),selected=document.getElementById(id).value;
+  const items=(isHeader?billingState.headers:billingState.customers).filter(item=>normalize(item[key]).includes(needle));
+  target.innerHTML=items.length?items.map(item=>'<button type="button" role="option" aria-selected="'+(item.id===selected)+'" data-value="'+esc(item.id)+'">'+esc(item[key])+'</button>').join(""):'<span class="billing-reference-empty" role="status">Aucun résultat</span>';
+  target.querySelectorAll("[role='option']").forEach(button=>button.onclick=()=>{document.getElementById(id).value=button.dataset.value;billingSyncReferenceControl(id);billingToggleReferenceSearch(kind,true);document.getElementById(searchId+"Toggle").focus()});
+}
+function billingToggleReferenceSearch(kind,close=false){
+  const isHeader=kind==="header",searchId=isHeader?"billingHeaderSearch":"billingCustomerSearch",wrap=document.getElementById(searchId+"Wrap"),input=document.getElementById(searchId),button=document.getElementById(searchId+"Toggle");
+  if(!wrap||!input||!button)return;
+  if(wrap.hidden&&!close){billingToggleReferenceSearch(isHeader?"customer":"header",true);wrap.hidden=false;button.setAttribute("aria-expanded","true");billingRenderReferenceOptions(kind);input.focus();return}
+  if(wrap.hidden)return;
+  input.value="";
+  wrap.hidden=true;button.setAttribute("aria-expanded","false");if(!close)button.focus();
+}
+document.addEventListener("pointerdown",event=>{if(!event.target.closest?.("#billing .billing-reference-field")){billingToggleReferenceSearch("header",true);billingToggleReferenceSearch("customer",true)}});
 async function billingNew(){
   billingState.productPage=1;billingState.productSearch="";const editing=billingState.editingInvoice;
   const documentType=billingState.creditMode?"INVOICE":billingState.documentType||"INVOICE",documentLabel=billingDocumentLabel(documentType);
   const newDocumentTitle=documentType==="INVOICE"||documentType==="PROFORMA"?"Nouvelle "+documentLabel.toLowerCase():"Nouveau "+documentLabel.toLowerCase();
-  billingSet(billingHero(newDocumentTitle,"Créez un document avec l’entête et les produits de votre choix.",'<div class="billing-selected-type"><span>Type choisi</span><b>'+esc(documentLabel)+'</b><button class="secondary" type="button" onclick="billingChooseDocumentType()">Modifier</button></div>')+`
-    <section class="billing-panel billing-ai">
-      <div class="billing-actions billing-ai-title"><h2>✦ Assistant IA de facturation</h2><span class="muted">Prépare un brouillon, puis attend votre confirmation</span></div>
-      <div class="billing-ai-fields">
-        <label>Entreprise / entête<input id="billingHeaderSearch" placeholder="Rechercher dans entreprise / entête…"><select id="billingNewHeader" required>${billingSelect(billingState.headers,"Choisir dans la demande")}</select></label>
-        <label>Client<input id="billingCustomerSearch" placeholder="Rechercher dans client…"><select id="billingNewCustomer">${billingSelect(billingState.customers,"Nouveau ou à préciser")}</select></label>
-        <label>Demande<input id="billingAiPrompt" placeholder="Ex. 2 × Ramette A4 à 3 500"></label>
-        <button type="button" onclick="billingAskAi()">Ouvrir le chat IA</button>
+  billingSet(`
+    <section class="billing-panel billing-editor-header">
+      <div class="billing-editor-heading"><h1>${esc(newDocumentTitle)}</h1><div class="billing-selected-type"><b>${esc(documentLabel)}</b></div></div>
+      <div class="billing-editor-fields">
+        ${billingEditorReference("header","Entreprise / entête","billingNewHeader",billingState.headers,"Choisir une entête")}
+        ${billingEditorReference("customer","Client","billingNewCustomer",billingState.customers,"Choisir un client")}
+        <button class="billing-editor-icon billing-editor-ai" type="button" aria-label="Ouvrir le chat IA" title="Assistant IA de facturation" onclick="billingAskAi()">${billingAiIcon}</button>
       </div>
     </section>
     <div class="billing-composer">
@@ -442,23 +473,32 @@ async function billingNew(){
         <div class="billing-actions billing-submit-row"><button type="submit" form="billingNewForm">↧ Enregistrer la facture</button></div>
       </section>
     </div>
-    <form id="billingNewForm" class="billing-panel"><h2>Informations générales</h2><p class="billing-note">Le client se crée avec le bouton <b>＋ Client</b> au-dessus. Il est enregistré immédiatement dans le répertoire partagé avant d’être sélectionné pour ce document.</p><div class="billing-form-grid"><label>Date<input id="billingNewDate" type="date"></label><label>Remise FCFA<input id="billingNewDiscount" type="number" min="0" value="0"></label><label class="wide">Pour / objet<input id="billingNewSubject" placeholder="Objet du document"></label><label class="wide">Notes<textarea id="billingNewNotes" placeholder="Mentions complémentaires"></textarea></label></div></form>
+    <form id="billingNewForm" class="billing-panel"><h2>Informations générales</h2><div class="billing-form-grid"><label>Date<input id="billingNewDate" type="date"></label><label>Remise FCFA<input id="billingNewDiscount" type="number" min="0" value="0"></label><label class="wide">Pour / objet<input id="billingNewSubject" placeholder="Objet du document"></label><label class="wide">Notes<textarea id="billingNewNotes" placeholder="Mentions complémentaires"></textarea></label></div></form>
     <dialog id="billingQuickProductDialog" class="billing-quick-dialog"><form method="dialog"><div class="billing-actions billing-lines-title"><h2>Ajouter un produit de facturation</h2><button class="secondary" type="submit" aria-label="Fermer">×</button></div></form><form id="billingQuickProductForm" class="billing-form-grid"><label>Désignation<input name="name" required></label><label>Prix FCFA<input name="unit_price" type="number" min="0" required></label><label>Unité<input name="unit" value="piece"></label><button type="submit">Enregistrer le produit</button></form></dialog>`);
   document.getElementById("billingNewHeader").value=editing?.billing_header_id||billingState.headers.find(item=>item.is_default)?.id||billingState.headers[0]?.id||"";
   document.getElementById("billingNewDate").value=editing?.issued_on?String(editing.issued_on).slice(0,10):new Date().toISOString().slice(0,10);
-  if(editing){document.querySelector("#billingWorkspaceContent .billing-hero h1").textContent="Modifier "+billingDocumentLabel(documentType).toLowerCase();document.querySelector("#billingWorkspaceContent .billing-hero p").textContent="Corrigez les informations puis enregistrez la facture mise a jour.";document.getElementById("billingNewCustomer").value=editing.customer?.id||"";document.getElementById("billingNewSubject").value=editing.subject||"";document.getElementById("billingNewNotes").value=editing.notes||"";document.getElementById("billingNewDiscount").value=editing.discount_amount||0;const submit=document.querySelector("[form='billingNewForm']");if(submit)submit.textContent="Enregistrer les modifications"}
+  if(editing){document.querySelector("#billingWorkspaceContent .billing-editor-heading h1").textContent="Modifier "+billingDocumentLabel(documentType).toLowerCase();document.getElementById("billingNewCustomer").value=editing.customer?.id||"";document.getElementById("billingNewSubject").value=editing.subject||"";document.getElementById("billingNewNotes").value=editing.notes||"";document.getElementById("billingNewDiscount").value=editing.discount_amount||0;const submit=document.querySelector("[form='billingNewForm']");if(submit)submit.textContent="Enregistrer les modifications"}
   document.getElementById("billingNewForm").onsubmit=billingSaveDocument;
   if(billingState.creditMode){
     billingState.documentType="INVOICE";
-    document.querySelector("#billingWorkspaceContent .billing-hero h1").textContent="Nouvel achat à crédit";
-    document.querySelector("#billingWorkspaceContent .billing-hero p").textContent="Même catalogue, même entête. Cet achat s’ajoute au compte client existant.";
+    document.querySelector("#billingWorkspaceContent .billing-editor-heading h1").textContent="Nouvel achat à crédit";
     document.querySelector(".billing-selected-type").innerHTML='<b>Achat à crédit</b><button class="secondary" type="button" onclick="billingOpen(\'credits\')">Annuler</button>';
     document.querySelector("[form='billingNewForm']").textContent="Enregistrer l’achat à crédit";
     document.querySelector("#billingNewForm .billing-form-grid").insertAdjacentHTML("afterbegin",'<label>Acompte facultatif FCFA<input id="billingCreditInitial" type="number" min="0" step="0.01" value="0"></label>');
     document.getElementById("billingNewCustomer").value=billingState.creditCustomerId||"";
   }
-  document.getElementById("billingHeaderSearch").oninput=event=>billingFilterSelect("billingNewHeader",billingState.headers,event.target.value,"company_name");
-  document.getElementById("billingCustomerSearch").oninput=event=>billingFilterSelect("billingNewCustomer",billingState.customers,event.target.value,"name");
+  document.getElementById("billingHeaderSearch").oninput=()=>billingRenderReferenceOptions("header");
+  document.getElementById("billingCustomerSearch").oninput=()=>billingRenderReferenceOptions("customer");
+  for(const kind of ["header","customer"]){
+    const searchId=kind==="header"?"billingHeaderSearch":"billingCustomerSearch",selectId=kind==="header"?"billingNewHeader":"billingNewCustomer";
+    const list=document.getElementById(searchId+"Options"),trigger=document.getElementById(searchId+"Toggle");
+    document.getElementById(searchId).onkeydown=event=>{if(event.key==="Escape"){event.preventDefault();event.stopPropagation();billingToggleReferenceSearch(kind);trigger.focus()}else if(event.key==="ArrowDown"){event.preventDefault();list.querySelector("button")?.focus()}else if(event.key==="Enter"){event.preventDefault();list.querySelector("button")?.click()}};
+    list.onkeydown=event=>{const options=[...list.querySelectorAll("button")],index=options.indexOf(document.activeElement);if(event.key==="Escape"){event.preventDefault();event.stopPropagation();billingToggleReferenceSearch(kind);trigger.focus()}else if(event.key==="ArrowDown"||event.key==="ArrowUp"){event.preventDefault();options[(index+(event.key==="ArrowDown"?1:-1)+options.length)%options.length]?.focus()}};
+    trigger.onkeydown=event=>{if(event.key==="ArrowDown"||event.key==="ArrowUp"){event.preventDefault();if(trigger.getAttribute("aria-expanded")==="false")billingToggleReferenceSearch(kind);else document.getElementById(searchId).focus()}};
+    document.getElementById(selectId).onchange=()=>{billingSyncReferenceControl(selectId);billingToggleReferenceSearch(kind,true)};
+    trigger.closest(".billing-reference-field").onfocusout=event=>{if(event.relatedTarget&&!event.currentTarget.contains(event.relatedTarget))billingToggleReferenceSearch(kind,true)};
+    billingSyncReferenceControl(selectId);
+  }
   document.getElementById("billingQuickProductForm").onsubmit=billingSaveQuickProduct;
   billingMoveCustomerFields();
   if(editing){document.querySelector(".billing-selected-type")?.insertAdjacentHTML("beforeend",'<button class="secondary" type="button" onclick="billingCancelDocumentEdit()">Annuler</button>')}
@@ -483,15 +523,15 @@ async function billingNew(){
     finally{select.removeAttribute("aria-busy")}
   };
   await Promise.allSettled([
-    loadReference("headers",headerSelect,"/api/v1/billing/headers?organization_id="+encodeURIComponent(org),"Choisir dans la demande"),
-    loadReference("customers",customerSelect,"/api/v1/customers?organization_id="+encodeURIComponent(org),"Nouveau ou à préciser"),
+    loadReference("headers",headerSelect,"/api/v1/billing/headers?organization_id="+encodeURIComponent(org),"Choisir une entête"),
+    loadReference("customers",customerSelect,"/api/v1/customers?organization_id="+encodeURIComponent(org),"Choisir un client"),
     billingProductSearch(true).catch(error=>{if(catalog.isConnected)catalog.innerHTML='<p role="alert">'+esc(error.message)+'</p><button type="button" onclick="billingProductSearch(true)">Réessayer</button>'})
   ]);
 }
 function billingMoveCustomerFields(){const header=document.getElementById("billingNewHeader"),customer=document.getElementById("billingNewCustomer");if(header&&!document.getElementById("billingAddHeader")){header.insertAdjacentHTML("afterend",'<button id="billingAddHeader" class="secondary billing-quick-reference" type="button" onclick="billingHeaderQuickPopup()">＋ Entête</button>')}if(customer&&!document.getElementById("billingAddCustomer")){customer.insertAdjacentHTML("afterend",'<button id="billingAddCustomer" class="secondary billing-quick-reference" type="button" onclick="billingCustomerPopup()">＋ Client</button>')}}
 function billingChooseDocumentType(){billingPopup("documents")}
 function billingStartDocument(){const select=document.getElementById("billingDocumentType");billingState.creditMode=false;billingState.creditCustomerId=null;billingState.editingInvoice=null;billingState.documentType=select?.value||"INVOICE";billingClosePopup();billingOpen("new")}
-function billingReferenceSelect(id,items,placeholder,selected){const select=document.getElementById(id);if(!select)return;select.innerHTML=billingSelect(items,placeholder);if(selected&&items.some(item=>item.id===selected))select.value=selected}
+function billingReferenceSelect(id,items,placeholder,selected){const select=document.getElementById(id);if(!select)return;select.innerHTML=billingSelect(items,placeholder);if(selected&&items.some(item=>item.id===selected))select.value=selected;billingSyncReferenceControl(id)}
 function billingAttachReferenceDialog(dialog){
   const root=document.getElementById("billingWorkspace")||document.getElementById("billing");
   if(root&&dialog.parentElement!==root)root.appendChild(dialog);
@@ -507,7 +547,7 @@ function billingCustomerPopup(){
       try{
         const saved=await api("/api/v1/customers",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({organization_id:org,name:String(form.get("name")||"").trim(),phone:String(form.get("phone")||"").trim()||null,email:String(form.get("email")||"").trim()||null,address:String(form.get("address")||"").trim()||null,notes:String(form.get("notes")||"").trim()||null})});
         billingState.customers=[...billingState.customers.filter(item=>item.id!==saved.id),saved].sort((left,right)=>left.name.localeCompare(right.name,"fr"));
-        billingReferenceSelect("billingNewCustomer",billingState.customers,"Nouveau ou à préciser",saved.id);
+        billingReferenceSelect("billingNewCustomer",billingState.customers,"Choisir un client",saved.id);
         dialog.close();event.currentTarget.reset();tell("Client enregistré et sélectionné pour le document.");
       }catch(error){tell(error.message)}finally{await hideFusaaOperation(started)}
     };
@@ -526,7 +566,7 @@ function billingHeaderQuickPopup(){
       try{
         const saved=await api("/api/v1/billing/headers?organization_id="+encodeURIComponent(org),{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({company_name:value("company_name"),address:value("address"),phone:value("phone"),email:value("email"),nif:value("nif"),rccm:value("rccm"),logo_url:value("logo_url"),document_style:form.get("document_style"),table_font_family:value("table_font_family"),table_font_size:value("table_font_size")?Number(value("table_font_size")):null,tax_enabled:form.has("tax_enabled"),tax_rate:Number(form.get("tax_rate")||0),isb_enabled:form.has("isb_enabled"),isb_rate:Number(form.get("isb_rate")||0),is_default:form.has("is_default")})});
         billingState.headers=[...billingState.headers.filter(item=>item.id!==saved.id),saved].sort((left,right)=>left.company_name.localeCompare(right.company_name,"fr"));billingState.selectedHeader=saved.id;
-        billingReferenceSelect("billingNewHeader",billingState.headers,"Choisir dans la demande",saved.id);
+        billingReferenceSelect("billingNewHeader",billingState.headers,"Choisir une entête",saved.id);
         dialog.close();event.currentTarget.reset();tell("Entête enregistrée et sélectionnée pour le document.");
       }catch(error){tell(error.message)}finally{await hideFusaaOperation(started)}
     };
@@ -534,7 +574,7 @@ function billingHeaderQuickPopup(){
   billingAttachReferenceDialog(dialog);dialog.showModal();dialog.querySelector("[name='company_name']")?.focus();
 }
 function billingFacturationAssistantContext(){return {billing_header_id:document.getElementById("billingNewHeader")?.value||null,customer_id:document.getElementById("billingNewCustomer")?.value||null}}
-function billingAskAi(){billingFacturationAssistantOpen(document.getElementById("billingAiPrompt")?.value.trim()||"")}
+function billingAskAi(){billingFacturationAssistantOpen()}
 function billingFacturationAssistantOpen(prefill=""){
   let dialog=document.getElementById("billingFacturationAssistantDialog");
   if(!dialog){
@@ -652,7 +692,7 @@ async function billingFacturationAssistantSend(message){
   finally{document.getElementById("billingAssistantTyping")?.remove();billingState.assistantBusy=false;input.disabled=false;button.disabled=false;if(document.getElementById("billingFacturationAssistantDialog")?.open)input.focus()}
 }
 async function billingFacturationAssistantApplyDraft(index){const draft=index==null?billingState.assistantDraft:billingState.assistantDraftHistory?.[index];if(!draft){tell("Aucun brouillon à appliquer.");return}if(draft.lines.some(line=>!line.product_id||line.unit_amount==null)){tell("Complétez les prix des nouveaux produits avant de continuer.");return}billingState.documentType=draft.document_type||"INVOICE";billingState.pendingAssistantDraft=draft;billingState.editingInvoice=null;document.getElementById("billingFacturationAssistantDialog")?.close();await billingOpen("new");tell("Lignes ajoutées dans l’ordre. Vérifiez le client, l’entête et les prix avant d’enregistrer.")}
-function billingApplyAssistantDraftToForm(draft){if(!draft)return;billingReferenceSelect("billingNewHeader",billingState.headers,"Choisir dans la demande",draft.billing_header_id);billingReferenceSelect("billingNewCustomer",billingState.customers,"Nouveau ou à préciser",draft.customer_id);document.getElementById("billingNewSubject").value=draft.subject||"";document.getElementById("billingNewNotes").value=draft.notes||"";const box=document.getElementById("billingLines");if(box)box.innerHTML="";(draft.lines||[]).forEach(line=>billingAddLine({id:line.product_id,name:line.description,quantity:line.quantity,price_xof:line.unit_amount,unit:line.unit||"piece"}));billingUpdateTotal()}
+function billingApplyAssistantDraftToForm(draft){if(!draft)return;billingReferenceSelect("billingNewHeader",billingState.headers,"Choisir une entête",draft.billing_header_id);billingReferenceSelect("billingNewCustomer",billingState.customers,"Choisir un client",draft.customer_id);document.getElementById("billingNewSubject").value=draft.subject||"";document.getElementById("billingNewNotes").value=draft.notes||"";const box=document.getElementById("billingLines");if(box)box.innerHTML="";(draft.lines||[]).forEach(line=>billingAddLine({id:line.product_id,name:line.description,quantity:line.quantity,price_xof:line.unit_amount,unit:line.unit||"piece"}));billingUpdateTotal()}
 
 const billingImportSlots=[
   ["headers","Entêtes / entreprises","facturation_entreprises.csv","Nom, adresse, téléphone, NIF, RCCM et styles PDF"],
@@ -685,7 +725,7 @@ async function billingImportAssistantExecute(){
 function billingFilterSelect(id,items,search,key){
   const select=document.getElementById(id),previous=select.value,needle=search.trim().toLocaleLowerCase("fr");
   const filtered=items.filter(item=>String(item[key]||"").toLocaleLowerCase("fr").includes(needle));
-  select.innerHTML=billingSelect(filtered,id==="billingNewHeader"?"Choisir dans la demande":"Nouveau ou à préciser");
+  select.innerHTML=billingSelect(filtered,id==="billingNewHeader"?"Choisir une entête":"Choisir un client");
   if(filtered.some(item=>item.id===previous))select.value=previous;
   else if(id==="billingNewHeader"&&filtered.length)select.value=filtered[0].id;
 }
