@@ -8,7 +8,7 @@ from reportlab.lib.pagesizes import A4
 from reportlab.lib.units import mm
 from reportlab.pdfgen import canvas
 from .config import settings
-from .billing_pdf import render_invoice_pdf
+from .billing_pdf import PDF_LAYOUT_VERSION, render_invoice_pdf
 from .models import BillingHeader, BillingProfile, Customer, Invoice, InvoiceLine, ShopOrder, ShopOrderLine
 
 BILLING_DOCUMENT_TYPES=frozenset({"INVOICE","QUOTE","PROFORMA","DELIVERY_NOTE","RECEIPT"})
@@ -125,7 +125,7 @@ def _pdf_is_current(path: Path, invoice: Invoice, header: BillingHeader, custome
 def generate_invoice_pdf(db, invoice: Invoice) -> Path:
     header=db.get(BillingHeader,invoice.billing_header_id) if invoice.billing_header_id else default_billing_header(db,invoice.organization_id)
     customer=db.get(Customer,invoice.customer_id) if invoice.customer_id else None
-    path=settings.storage_dir / "invoices" / f"{invoice.number}.pdf"
+    path=settings.storage_dir / "invoices" / PDF_LAYOUT_VERSION / f"{invoice.number}.pdf"
     key=str(path.relative_to(settings.storage_dir))
     if invoice.pdf_key != key:
         invoice.pdf_key=key
@@ -148,7 +148,7 @@ def generate_invoice_preview_pdf(db, invoice: Invoice, document_type: str) -> Pa
         raise ValueError("Type de document invalide")
     header=db.get(BillingHeader,invoice.billing_header_id) if invoice.billing_header_id else default_billing_header(db,invoice.organization_id)
     customer=db.get(Customer,invoice.customer_id) if invoice.customer_id else None
-    path=settings.storage_dir / "invoices" / "previews" / f"{invoice.number}-{selected.lower()}-preview.pdf"
+    path=settings.storage_dir / "invoices" / PDF_LAYOUT_VERSION / "previews" / f"{invoice.number}-{selected.lower()}-preview.pdf"
     if _pdf_is_current(path,invoice,header,customer):
         return path
     lines=db.query(InvoiceLine).filter_by(invoice_id=invoice.id).order_by(InvoiceLine.display_order,InvoiceLine.id).all()
