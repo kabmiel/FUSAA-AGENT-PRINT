@@ -38,7 +38,8 @@ from .processing_schemas import LayoutRequest, ProcessRequest
 from .connector_schemas import ConnectorCreate, ConnectorOut, ConnectorSecretOut
 from .connectors import IncomingDocument, ingest_incoming_document, verify_meta_signature, whatsapp_media_message_ids
 from .business_schemas import BillingAssistantIn, BillingCategoryIn, BillingCompetitionIn, BillingDocumentIn, BillingHeaderIn, BillingInvoiceStyleIn, BillingProductIn, BillingProfileIn, CatalogIn, CustomerIn, CustomerOut, FinalCostIn, InvoiceCreate, InvoiceOut, PaymentIn, PriceRuleIn, PriceRuleOut, PrintCostOut, ServiceIn, StockMovementIn
-from .shop_schemas import ShopCategoryIn, ShopCloudinaryImageIn, ShopOrderStatusIn, ShopProductIn, ShopPublicOrderIn
+from .shop_schemas import ShopCategoryIn, ShopCloudinaryImageIn, ShopOrderStatusIn, ShopProductIn, ShopPublicOrderIn, ShopProductBulkIn
+from .shop_bulk import validate_shop_bulk, bulk_products_out
 from .business import estimate_print_cost
 from .billing import BILLING_DOCUMENT_TYPES, billing_profile, default_billing_header, header_tax, ensure_shop_invoice, generate_invoice_pdf, generate_invoice_preview_pdf
 from .multisite_schemas import RouteJobIn, WorkshopMemberIn, WorkshopMemberRoleIn
@@ -1357,6 +1358,37 @@ def create_shop_product(organization_id:str,data:ShopProductIn,user:User=Depends
     require_org_admin(db,user,organization_id);item=ShopProduct(organization_id=organization_id,name=data.name,slug="article")
     db.add(item);db.flush();apply_shop_product(db,item,data);audit(db,user.id,"SHOP_PRODUCT_CREATED","ShopProduct",item.id,result="SUCCESS");db.commit();return shop_product_out(db,item,True)
 
+@app.post("/api/v1/shop/admin/products/bulk/validate")
+def validate_shop_product_bulk(organization_id:str,data:ShopProductBulkIn,user:User=Depends(current_user),db:Session=Depends(get_db)):
+    require_org_admin(db,user,organization_id)
+    result=validate_shop_bulk(db,organization_id,data,shop_slug,settings.cloudinary_cloud_name)
+    return {key:result[key] for key in ("errors","already_saved","products")}
+
+@app.post("/api/v1/shop/admin/products/bulk",status_code=201)
+def create_shop_product_bulk(organization_id:str,data:ShopProductBulkIn,user:User=Depends(current_user),db:Session=Depends(get_db)):
+    require_org_admin(db,user,organization_id)
+    result=validate_shop_bulk(db,organization_id,data,shop_slug,settings.cloudinary_cloud_name)
+    if result["already_saved"]:return {"created":len(result["products"]),"already_saved":True,"products":result["products"]}
+    if result["errors"]:raise HTTPException(422," · ".join(f"Ligne {e['line']} : {e['message']}" for e in result["errors"][:12]))
+    products=[]
+    try:
+        for item,product_id,slug in zip(data.items,result["ids"],result["slugs"]):
+            values=item.model_dump(exclude={"client_key","cloudinary_public_id","slug"})
+            values["name"]=values["name"].strip()
+            product=ShopProduct(id=product_id,organization_id=organization_id,slug=slug,
+                                cloudinary_public_id=item.cloudinary_public_id,**values)
+            db.add(product);products.append(product)
+            audit(db,user.id,"SHOP_PRODUCT_BULK_CREATED","ShopProduct",product_id,result="SUCCESS")
+        db.flush()
+        output=bulk_products_out(products,data)
+        db.commit()
+        return {"created":len(output),"already_saved":False,"products":output}
+    except IntegrityError as error:
+        db.rollback()
+        retry=validate_shop_bulk(db,organization_id,data,shop_slug,settings.cloudinary_cloud_name)
+        if retry["already_saved"]:return {"created":len(retry["products"]),"already_saved":True,"products":retry["products"]}
+        raise HTTPException(409,"Un produit a été ajouté entre-temps. Aucun produit de ce lot n’a été enregistré ; relancez la vérification.") from error
+
 @app.patch("/api/v1/shop/admin/products/{product_id}")
 def update_shop_product(product_id:str,data:ShopProductIn,user:User=Depends(current_user),db:Session=Depends(get_db)):
     item=one(db,ShopProduct,product_id);require_org_admin(db,user,item.organization_id);apply_shop_product(db,item,data);audit(db,user.id,"SHOP_PRODUCT_UPDATED","ShopProduct",item.id,result="SUCCESS");db.commit();return shop_product_out(db,item,True)
@@ -2173,6 +2205,10 @@ def manifest(): return {"name":"FUSAA Service","short_name":"FUSAA","start_url":
 def app_js():return HTMLResponse((Path(__file__).parent/"web"/"app.js").read_text(encoding="utf-8"),media_type="application/javascript",headers={"Cache-Control":"no-store, max-age=0"})
 @app.get("/billing-workspace.js",response_class=HTMLResponse)
 def billing_workspace_js():return HTMLResponse((Path(__file__).parent/"web"/"billing-workspace.js").read_text(encoding="utf-8"),media_type="application/javascript",headers={"Cache-Control":"no-store, max-age=0"})
+@app.get("/shop-bulk-import.js",include_in_schema=False)
+def shop_bulk_import_js():return FileResponse(Path(__file__).parent/"web"/"shop-bulk-import.js",media_type="application/javascript",headers={"Cache-Control":"no-store"})
+@app.get("/shop-bulk-import.css",include_in_schema=False)
+def shop_bulk_import_css():return FileResponse(Path(__file__).parent/"web"/"shop-bulk-import.css",media_type="text/css",headers={"Cache-Control":"no-store"})
 @app.get("/billing-workspace.css",response_class=HTMLResponse)
 def billing_workspace_css():return HTMLResponse((Path(__file__).parent/"web"/"billing-workspace.css").read_text(encoding="utf-8"),media_type="text/css",headers={"Cache-Control":"no-store, max-age=0"})
 

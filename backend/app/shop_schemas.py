@@ -1,4 +1,5 @@
 from datetime import datetime
+from uuid import UUID
 from pydantic import BaseModel, Field
 
 class ShopCategoryIn(BaseModel):
@@ -25,6 +26,17 @@ class ShopProductIn(BaseModel):
 class ShopOrderItemIn(BaseModel):
     product_id: str
     quantity: int = Field(ge=1, le=99)
+
+class ShopBulkProductIn(ShopProductIn):
+    price_xof: float = Field(ge=0, le=9999999999.99, allow_inf_nan=False)
+    original_price_xof: float | None = Field(default=None, ge=0, le=9999999999.99, allow_inf_nan=False)
+    stock_quantity: int = Field(default=0, ge=0, le=2147483647)
+    client_key: str = Field(min_length=1, max_length=80)
+    cloudinary_public_id: str | None = Field(default=None, max_length=255)
+
+class ShopProductBulkIn(BaseModel):
+    request_id: UUID
+    items: list[ShopBulkProductIn] = Field(min_length=1, max_length=500)
 
 class ShopPublicOrderIn(BaseModel):
     customer_name: str = Field(min_length=2, max_length=160)
