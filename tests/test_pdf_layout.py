@@ -87,6 +87,38 @@ def test_cell_padding_is_balanced_without_an_empty_line():
 
 
 @pytest.mark.parametrize("style", STYLES)
+def test_paid_stamp_is_red_on_last_receipt_page_only_and_clear_of_content(style, tmp_path):
+    company, customer = header(style), Record(name="CLIENT RECU")
+    for count in (2, 100):
+        lines = rows(count)
+        path = tmp_path / f"receipt-{style}-{count}.pdf"
+        render_invoice_pdf(path, invoice(lines, "RECEIPT"), company, customer, lines)
+        with fitz.open(path) as pdf:
+            assert all("PAYÉ" not in page.get_text() for page in list(pdf)[:-1])
+            page = pdf[-1]
+            spans = [span for block in page.get_text("dict")["blocks"] if "lines" in block
+                     for line in block["lines"] for span in line["spans"]]
+            stamps = [span for span in spans if span["text"] == "PAYÉ"]
+            assert len(stamps) == 1
+            stamp = stamps[0]
+            assert stamp["color"] == 0xdf0715
+            area = fitz.Rect(stamp["bbox"])
+            assert area.x0 > page.rect.width / 2
+            assert area.x1 < page.rect.width - 15
+            assert area.y1 < page.rect.height - 25
+            assert all(not area.intersects(fitz.Rect(span["bbox"])) for span in spans if span is not stamp)
+            assert f"{len(pdf)}/{len(pdf)}" in page.get_text()
+            if count == 2:
+                assert len(pdf) == 1
+                page.get_pixmap(matrix=fitz.Matrix(1.2, 1.2)).save(str(tmp_path / f"receipt-{style}.png"))
+    path = tmp_path / "not-a-receipt.pdf"
+    lines = rows(2)
+    render_invoice_pdf(path, invoice(lines), company, customer, lines)
+    with fitz.open(path) as pdf:
+        assert all("PAYÉ" not in page.get_text() for page in pdf)
+
+
+@pytest.mark.parametrize("style", STYLES)
 @pytest.mark.parametrize("kind", ["INVOICE", "DELIVERY_NOTE"])
 def test_quantity_contents_are_centered_under_the_column_heading(style, kind, tmp_path):
     lines = [Record(description="Produit centré", quantity=37, unit_amount=1234,

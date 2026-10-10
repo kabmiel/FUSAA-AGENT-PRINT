@@ -11,6 +11,7 @@ from datetime import datetime
 from decimal import Decimal, ROUND_HALF_UP
 from functools import lru_cache
 from io import BytesIO
+from math import cos, radians, sin
 from pathlib import Path
 from time import monotonic
 from urllib.parse import urlparse
@@ -47,7 +48,37 @@ MODERN_STYLES = {
 DOCUMENT_NAMES = {"INVOICE": "FACTURE", "QUOTE": "DEVIS", "PROFORMA": "FACTURE PROFORMA", "DELIVERY_NOTE": "BON DE LIVRAISON", "RECEIPT": "REÇU", "CREDIT_STATEMENT": "ÉTAT DE CRÉDIT CLIENT"}
 FONT_NAMES = {"times": "Times-Roman", "arial": "Helvetica", "calibri": "Helvetica", "segoe": "Helvetica", "courier": "Courier", "trebuchet": "Helvetica"}
 ULTRA_COMPACT_STYLE = "ultra_compact"
-PDF_LAYOUT_VERSION = "layout-20261007-quantities"
+PDF_LAYOUT_VERSION = "layout-20261010-paid-receipt"
+
+# Entire rotated stamp and caption fit inside this reserved closing space.
+PAID_STAMP_SPACE = 30 * mm
+
+
+def _draw_paid_stamp(pdf, right, top, caption="Reçu"):
+    """Sharp vector stamp, anchored inside the printable receipt area."""
+    width, height, angle, stroke = 42 * mm, 14 * mm, 12, 1.3 * mm
+    rotation = radians(angle)
+    bounds_width = (width + stroke) * cos(rotation) + (height + stroke) * sin(rotation)
+    bounds_height = (height + stroke) * cos(rotation) + (width + stroke) * sin(rotation)
+    pdf.saveState()
+    pdf.translate(right - bounds_width / 2, top - bounds_height / 2)
+    pdf.rotate(angle)
+    pdf.setStrokeColor(_colour("#df0715"))
+    pdf.setFillColor(_colour("#df0715"))
+    pdf.setLineWidth(stroke)
+    pdf.roundRect(-width / 2, -height / 2, width, height, 2.5 * mm, stroke=1, fill=0)
+    font, size = "Helvetica-Bold", 26
+    ascent, descent = pdfmetrics.getAscentDescent(font, size)
+    pdf.setFont(font, size)
+    pdf.drawCentredString(0, -(ascent + descent) / 2, "PAYÉ")
+    pdf.restoreState()
+    baseline = top - bounds_height - 4 * mm
+    pdf.saveState()
+    pdf.setFillColor(_colour("#333333"))
+    pdf.setFont("Helvetica", 9)
+    pdf.drawRightString(right, baseline, caption)
+    pdf.restoreState()
+    return baseline
 
 
 class _PaginatedCanvas(canvas.Canvas):
@@ -426,7 +457,9 @@ def _render_reference(pdf, invoice, header, customer, lines, logo, style, width,
     totals = _totals(invoice, header, no_tax_label=cfg["total_label"])
     sentence = f"Arrête la présente {_document_label(invoice, cfg)} à la somme de : {_reference_amount_words(amount)} ({_reference_money(amount, cfg['separator'] or ' ')}) FCFA"
     sentence_lines = _wrap(sentence, cfg["font"], cfg["sentence"], available)
-    footer_height = len(totals) * 7 * mm + 3 * mm + (len(sentence_lines) + 1) * cfg["sentence"] * 1.28 + cfg["signature_top"] * mm + cfg["client"]
+    receipt = str(getattr(invoice, "document_type", "")) == "RECEIPT"
+    signature_space = 5 * mm + PAID_STAMP_SPACE if receipt else cfg["signature_top"] * mm + cfg["client"]
+    footer_height = len(totals) * 7 * mm + 3 * mm + (len(sentence_lines) + 1) * cfg["sentence"] * 1.28 + signature_space
 
     def table_head(current_y):
         head_font = _font_variant(table_font, cfg["bold"])
@@ -513,6 +546,9 @@ def _render_reference(pdf, invoice, header, customer, lines, logo, style, width,
         y -= h
     y -= 3 * mm + cfg["sentence"] * 1.28
     y = _draw_text(pdf, sentence_lines, left, y, available, cfg["font"], cfg["sentence"], cfg["sentence"] * 1.28, cfg["sentence_align"])
+    if receipt:
+        _draw_paid_stamp(pdf, left + available, y - 5 * mm)
+        return
     y -= cfg["signature_top"] * mm
     pdf.setFont(_font_variant(cfg["font"], True, cfg["signature"] == "italic"), cfg["client"])
     kind = str(getattr(invoice, "document_type", ""))
@@ -593,7 +629,8 @@ def _render_ultra_compact(pdf, invoice, header, customer, lines, logo, width, he
 
     # ``initial_y`` comes from the exact Compact header above.
     y = table_head(initial_y)
-    footer_space = 31 * mm if not delivery else 15 * mm
+    receipt = str(getattr(invoice, "document_type", "")) == "RECEIPT"
+    footer_space = 49 * mm if receipt else 31 * mm if not delivery else 15 * mm
     for row, line in enumerate(lines, 1):
         values = [str(row), str(getattr(line, "description", "")), _quantity(getattr(line, "quantity", 0))]
         if not delivery:
@@ -625,7 +662,7 @@ def _render_ultra_compact(pdf, invoice, header, customer, lines, logo, width, he
 
     totals = _totals(invoice, header, no_tax_label="TOTAL")
     total_x = left + available - 57 * mm
-    if y - (len(totals) * 5.7 * mm + 22 * mm) < bottom:
+    if y - (len(totals) * 5.7 * mm + (42 if receipt else 22) * mm) < bottom:
         pdf.showPage(); y = _reference_header(pdf, invoice, header, customer, logo, compact_cfg, width, height, True)[0]
     y -= 2 * mm
     for index, (label, amount) in enumerate(totals):
@@ -640,6 +677,9 @@ def _render_ultra_compact(pdf, invoice, header, customer, lines, logo, width, he
     sentence = f"Arrêté {_document_article(invoice)} {_document_label(invoice)} à la somme de : {_reference_amount_words(amount)} ({_reference_money(amount, ' ')}) FCFA."
     pdf.setFillColor(_colour("#536879")); pdf.setFont(table_font, 5.9)
     y = _draw_text(pdf, _wrap(sentence, table_font, 5.9, available), left, y, available, table_font, 5.9, 7.0)
+    if receipt:
+        _draw_paid_stamp(pdf, left + available, y - 5 * mm)
+        return
     y -= 5 * mm; pdf.setFillColor(_colour("#152b3a")); pdf.setFont(title_font, 6.6)
     left_label, right_label = ("Pour acquit", "Le fournisseur") if str(getattr(invoice, "document_type", "")) == "INVOICE" else ("Signature", "Validation")
     pdf.drawString(left, y, left_label); pdf.drawRightString(left + available, y, right_label)
@@ -715,7 +755,9 @@ def _render_modern(pdf, invoice, header, customer, lines, logo, style, width, he
     notes = str(getattr(invoice, "notes", "") or "").strip()
     note_lines = _wrap(notes, "Helvetica", 8, available - 8 * mm) if notes else []
     note_h = len(note_lines) * 4.5 * mm + 8 * mm if notes else 0
-    closing_height = 7 * mm + totals_h + sentence_h + note_h + 45 * mm
+    receipt = str(getattr(invoice, "document_type", "")) == "RECEIPT"
+    signature_space = 58 * mm if receipt else 45 * mm
+    closing_height = 7 * mm + totals_h + sentence_h + note_h + signature_space
 
     def table_head(current_y):
         x = left
@@ -759,7 +801,7 @@ def _render_modern(pdf, invoice, header, customer, lines, logo, style, width, he
         return
     y -= 7 * mm
     totals_x = left + available - 57 * mm
-    if y - (totals_h + sentence_h + note_h + 45 * mm) < bottom:
+    if y - (totals_h + sentence_h + note_h + signature_space) < bottom:
         pdf.showPage(); y, left, available, bottom = _modern_header(pdf, invoice, header, customer, logo, cfg, width, height, True)
     current_y = y
     for index, (label, value) in enumerate(totals):
@@ -775,7 +817,10 @@ def _render_modern(pdf, invoice, header, customer, lines, logo, style, width, he
         pdf.setFillColor(colors.white); pdf.setStrokeColor(border); pdf.rect(left, y - note_h, available, note_h, fill=1, stroke=1)
         pdf.setFillColor(_colour(cfg["alt"])); pdf.setFont("Helvetica-Bold", 7.5); pdf.drawString(left + 4 * mm, y - 4.5 * mm, "NOTES")
         pdf.setFillColor(ink); y = _draw_text(pdf, note_lines, left + 4 * mm, y - 9 * mm, available - 8 * mm, "Helvetica", 8, 10) - 4 * mm
-    y -= 15 * mm
+    if receipt:
+        y = _draw_paid_stamp(pdf, left + available, y - 8 * mm, "Client")
+    else:
+        y -= 15 * mm
     pdf.setFillColor(ink); pdf.setFont("Helvetica-Bold", 8.5); kind = str(getattr(invoice, "document_type", ""))
     if kind == "DELIVERY_NOTE":
         left_label, right_label = "CERTIFIE SERVICE FAIT", "LE FOURNISSEUR"
@@ -787,7 +832,9 @@ def _render_modern(pdf, invoice, header, customer, lines, logo, style, width, he
         left_label, right_label = "Caisse", "Client"
     else:
         left_label, right_label = "Signature", "Validation client"
-    pdf.drawString(left, y, left_label); pdf.drawRightString(left + available, y, right_label)
+    pdf.drawString(left, y, left_label)
+    if not receipt:
+        pdf.drawRightString(left + available, y, right_label)
     _rule(pdf, left, y - mm, left + 34 * mm, cfg["accent"]); _rule(pdf, left + available - 34 * mm, y - mm, left + available, cfg["accent"])
     pdf.setFillColor(_colour(cfg["muted"])); pdf.setFont("Helvetica", 6.8)
     pdf.drawCentredString(left + available / 2, max(bottom + 2 * mm, y - 12 * mm), f"Généré le {(getattr(invoice, 'issued_on', None) or datetime.now()):%d/%m/%Y} - Merci pour votre confiance")
@@ -843,6 +890,9 @@ def _render_standard(pdf, invoice, header, customer, lines, logo, width, height)
     sentence = f"{intro} {_document_label(invoice)} à la somme de : {_amount_words(amount)} ({_money(amount)})"
     sentence_lines = _wrap(sentence, "Times-Bold", 9, available)
     closing_height = 58 * mm if delivery else (68 * mm + len(totals) * 7 * mm + (len(sentence_lines) + 1) * 11)
+    receipt = str(getattr(invoice, "document_type", "")) == "RECEIPT"
+    if receipt:
+        closing_height += PAID_STAMP_SPACE
 
     def table_head(current_y):
         x = left
@@ -901,7 +951,7 @@ def _render_standard(pdf, invoice, header, customer, lines, logo, width, height)
 
     # Boulangerie's original standard template always ends with a QR marker,
     # generation footer and a signature block, including delivery notes.
-    if y - 58 * mm < bottom:
+    if y - (58 * mm + (PAID_STAMP_SPACE if receipt else 0)) < bottom:
         pdf.showPage()
         y = height - top
     qr_y = y - 24 * mm
@@ -932,7 +982,7 @@ def _render_standard(pdf, invoice, header, customer, lines, logo, width, height)
         pdf.drawRightString(left + available, signature_y, "Signature")
         _rule(pdf, left + available - 42 * mm, signature_y - 8 * mm, left + available, "#333333", .5)
     elif kind == "RECEIPT":
-        pdf.drawRightString(left + available, signature_y, f"Reçu le {date_text}")
+        _draw_paid_stamp(pdf, left + available, signature_y + 3 * mm, f"Reçu le {date_text}")
 
 
 def render_invoice_pdf(path: Path, invoice, header, customer, lines):
