@@ -46,6 +46,11 @@ class BillingDocumentIn(BaseModel):
     initial_payment:Decimal=Field(default=Decimal("0"),ge=0,max_digits=12,decimal_places=2)
     request_id:str|None=Field(default=None,min_length=16,max_length=120)
 
+class CreditInvoiceConversionIn(BaseModel):
+    request_id:str=Field(min_length=16,max_length=120)
+    customer_id:str|None=None
+    expected_balance:Decimal=Field(gt=0,max_digits=12,decimal_places=2)
+
 class CreditRepaymentIn(BaseModel):
     amount:Decimal=Field(gt=0,max_digits=12,decimal_places=2)
     request_id:str=Field(min_length=16,max_length=120)

@@ -811,7 +811,9 @@ def create_invoice(data:InvoiceCreate,user:User=Depends(current_user),db:Session
     invoice.total_amount=total;audit(db,user.id,"INVOICE_CREATED","Invoice",invoice.id,parameters={"jobs":data.job_ids,"total":total},result="SUCCESS");db.commit();db.refresh(invoice);return invoice
 @app.post("/api/v1/invoices/{invoice_id}/payments",status_code=201)
 def record_payment(invoice_id:str,data:PaymentIn,user:User=Depends(current_user),db:Session=Depends(get_db)):
-    credit_invoice=one(db,Invoice,invoice_id);require_member(db,user,credit_invoice.organization_id)
+    credit_invoice=db.query(Invoice).filter_by(id=invoice_id).populate_existing().with_for_update().first()
+    if not credit_invoice:raise HTTPException(404,"Facture introuvable")
+    require_member(db,user,credit_invoice.organization_id)
     if db.query(CustomerCreditOperation).filter_by(invoice_id=invoice_id).first():
         raise HTTPException(409,"Enregistrez le remboursement depuis le compte crédit du client pour préserver son historique.")
     invoice=one(db,Invoice,invoice_id);require_member(db,user,invoice.organization_id);payment=Payment(invoice_id=invoice.id,**data.model_dump());db.add(payment);db.flush();paid=sum(float(p.amount) for p in db.query(Payment).filter_by(invoice_id=invoice.id,status="CONFIRMED").all());invoice.status="PAID" if paid>=float(invoice.total_amount) else "PARTIALLY_PAID";audit(db,user.id,"PAYMENT_RECORDED","Payment",payment.id,parameters={"invoice_id":invoice.id,"amount":data.amount},result="SUCCESS");db.commit();return {"payment_id":payment.id,"invoice_status":invoice.status,"paid_amount":paid}
@@ -1088,7 +1090,9 @@ def update_billing_invoice(invoice_id:str,data:BillingDocumentIn,user:User=Depen
     Boutique orders and documents with confirmed payments remain immutable so a
     correction cannot alter a customer order or accounting history.
     """
-    invoice=one(db,Invoice,invoice_id);require_member(db,user,invoice.organization_id)
+    invoice=db.query(Invoice).filter_by(id=invoice_id).populate_existing().with_for_update().first()
+    if not invoice:raise HTTPException(404,"Facture introuvable")
+    require_member(db,user,invoice.organization_id)
     if data.organization_id!=invoice.organization_id:raise HTTPException(422,"Organisation invalide")
     if data.on_credit or data.initial_payment or db.query(CustomerCreditOperation).filter_by(invoice_id=invoice.id).first():
         raise HTTPException(409,"Un achat à crédit enregistré ne peut pas être modifié indépendamment du compte client.")

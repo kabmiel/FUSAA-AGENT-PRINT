@@ -44,6 +44,51 @@ async function api(path,options={}){
 </script><script src="/billing-workspace.js"></script></body></html>"""
 
 
+def test_document_conversion_requires_confirmation_then_opens_credit_account():
+    extra="""
+function newId(){return 'conversion-ui-00001'}
+const creditApi=api;window.creditConversions=0;
+api=async function(path,options={}){
+ if(path.includes('/credit-accounts/from-invoice/')){window.creditConversions++;window.creditPayload=JSON.parse(options.body);return {customer_id:'c',balance:250,already_converted:false}}
+ if(path.includes('/credit-accounts/c'))return {customer_id:'c',customer_name:'Client exemple',balance:250,total_purchases:300,total_repaid:50,archived:false,operations:[],page:1,operation_count:0,has_more:false};
+ if(path.includes('/billing/invoices/i'))return {id:'i',number:'INV-TEST',status:'PARTIALLY_PAID',document_type:'INVOICE',total_amount:300,paid_amount:50,balance_amount:250,customer:{id:'c',name:'Client exemple'}};
+ if(path.includes('/billing/invoices?'))return [{id:'i',number:'INV-TEST',status:'PARTIALLY_PAID',document_type:'INVOICE',total_amount:300,paid_amount:50,customer_name:'Client exemple'},{id:'q',number:'QUOTE-TEST',status:'DRAFT',document_type:'QUOTE',total_amount:300,paid_amount:0}];
+ return creditApi(path,options);
+};
+"""
+    html=HTML.replace('</script><script src="/billing-workspace.js">',extra+'</script><script src="/billing-workspace.js">')
+    with playwright.sync_playwright() as driver:
+        browser=driver.chromium.launch(headless=True)
+        page=browser.new_page(viewport={'width':390,'height':844});page.set_default_timeout(5000)
+        errors=[];page.on('pageerror',lambda error:errors.append(str(error)))
+        def serve(route):
+            path=route.request.url.split('?',1)[0]
+            if path.endswith('/admin'):route.fulfill(content_type='text/html; charset=utf-8',body=html)
+            elif path.endswith('.js'):route.fulfill(content_type='application/javascript',body=(WEB/'billing-workspace.js').read_text(encoding='utf-8'))
+            elif path.endswith('.css'):route.fulfill(content_type='text/css',body=(WEB/'billing-workspace.css').read_text(encoding='utf-8'))
+            else:route.fulfill(status=404)
+        page.route('**/*',serve);page.goto('http://credit-ui.test/admin')
+        page.locator('#billingHomeBadge').click();page.locator('[data-billtab="documents"]').click()
+        action=page.get_by_role('button',name='Mettre cette facture à crédit INV-TEST',exact=True)
+        action.wait_for();assert page.get_by_role('button',name='Mettre cette facture à crédit QUOTE-TEST',exact=True).count()==0
+        action.click();dialog=page.locator('#billingInvoiceCreditDialog')
+        dialog.get_by_role('button',name='Confirmer la mise à crédit').wait_for()
+        assert page.evaluate('window.creditConversions')==0
+        assert '250' in dialog.inner_text() and '50' in dialog.inner_text()
+        assert dialog.evaluate('(node)=>node.getBoundingClientRect().width')<=390
+        dialog.get_by_role('button',name='Confirmer la mise à crédit').click()
+        assert page.evaluate('window.creditConversions')==0
+        dialog.locator('[name="confirmation"]').check()
+        dialog.get_by_role('button',name='Confirmer la mise à crédit').click()
+        page.wait_for_function('window.creditConversions===1')
+        page.get_by_role('heading',name='Client exemple',exact=True).wait_for()
+        assert page.locator('#billingInvoiceCreditDialog').count()==0
+        assert page.evaluate('window.creditPayload.expected_balance')==250
+        assert page.evaluate('window.creditPayload.customer_id')=='c'
+        assert not errors
+        browser.close()
+
+
 def test_invoice_header_has_search_inside_selectors_and_keeps_context(tmp_path):
     extra = """
 const selectorApi=api;

@@ -10,10 +10,10 @@ from sqlalchemy.orm import Session
 
 from .database import get_db
 from .security import current_user
-from .models import BillingHeader, Customer, CustomerCreditAccount as Account, OrganizationMember, User
-from .business_schemas import CreditRepaymentIn
+from .models import BillingHeader, Customer, CustomerCreditAccount as Account, CustomerCreditOperation as Operation, Invoice, OrganizationMember, User
+from .business_schemas import CreditRepaymentIn, CreditInvoiceConversionIn
 from .billing import default_billing_header
-from .credit_accounts import account_for_write, account_data, history, fingerprint, money, repay, replay
+from .credit_accounts import account_for_write, account_data, history, fingerprint, money, repay, replay, convert_invoice
 from .billing_pdf import render_credit_statement_pdf
 
 router = APIRouter(prefix="/api/v1/billing/credit-accounts", tags=["Comptes crédit"])
@@ -31,6 +31,35 @@ def read_account(db, organization_id, customer_id):
     if not row:
         raise HTTPException(404, "Compte crédit introuvable")
     return row
+
+
+@router.post("/from-invoice/{invoice_id}")
+def from_invoice(invoice_id: str, data: CreditInvoiceConversionIn,
+                 user: User = Depends(current_user), db: Session = Depends(get_db)):
+    invoice = db.get(Invoice, invoice_id)
+    if not invoice:
+        raise HTTPException(404, "Facture introuvable")
+    access(db, user, invoice.organization_id, write=True)
+    try:
+        account, already_converted = convert_invoice(db, invoice, data, user.id)
+        db.commit()
+    except IntegrityError:
+        db.rollback()
+        # An invoice is unique in the ledger, including concurrent retries.
+        operation = db.query(Operation).filter_by(invoice_id=invoice_id).first()
+        if not operation:
+            raise HTTPException(409, "Le compte vient de changer. Rouvrez la mise à crédit")
+        invoice = db.get(Invoice, invoice_id)
+        requested = replay(db, invoice.organization_id, data.request_id, fingerprint(data))
+        if (requested and requested.invoice_id != invoice_id) or (data.customer_id and data.customer_id != invoice.customer_id):
+            raise HTTPException(409, "Cette demande concerne un autre compte ou une autre facture")
+        account = db.get(Account, operation.account_id)
+        already_converted = True
+    except HTTPException:
+        db.rollback()
+        raise
+    return {"invoice_id":invoice_id, "customer_id":account.customer_id, "account_id":account.id,
+            "balance":float(account.balance), "already_converted":already_converted}
 
 
 @router.get("")

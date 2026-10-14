@@ -13,10 +13,10 @@ from sqlalchemy.orm import Session
 
 sys.path.insert(0, str(Path(__file__).parents[1] / "backend"))
 from app.database import Base
-from app.models import Customer, CustomerCreditAccount, CustomerCreditOperation, Organization, OrganizationMember, User, BillingHeader, Invoice, Payment, Product, ShopProduct
-from app.business_schemas import BillingDocumentIn, CreditRepaymentIn, PaymentIn
+from app.models import Customer, CustomerCreditAccount, CustomerCreditOperation, Organization, OrganizationMember, User, BillingHeader, Invoice, InvoiceLine, Payment, Product, ShopProduct
+from app.business_schemas import BillingDocumentIn, CreditRepaymentIn, CreditInvoiceConversionIn, PaymentIn
 from app.main import create_billing_document, update_billing_invoice, record_payment
-from app.credit_routes import accounts, repayment, access
+from app.credit_routes import accounts, repayment, access, from_invoice
 from app.credit_accounts import history
 from app.billing_pdf import render_credit_statement_pdf
 
@@ -125,3 +125,65 @@ def test_statement_dates_order_same_header_and_multi_page(ledger, tmp_path):
         assert text.index("Article 00") < text.index("Article 49")
         assert len(reader.pages)>=2
         (tmp_path / (style+".pdf")).write_bytes(content)
+
+
+def test_convert_existing_invoice_adopts_prior_payments_without_copying_and_retries(ledger):
+    db, user = ledger
+    saved = create_billing_document(document("ordinary-conversion1").model_copy(update={"on_credit":False}), user, db)
+    record_payment(saved["id"], PaymentIn(amount=50, method="ESPECES"), user, db)
+    original = db.get(Invoice, saved["id"])
+    lines_before = [(line.id, line.description, line.display_order) for line in db.query(InvoiceLine).filter_by(invoice_id=original.id).order_by(InvoiceLine.display_order)]
+    data = CreditInvoiceConversionIn(request_id="convert-invoice-0001", customer_id="c", expected_balance=250)
+    first = from_invoice(original.id, data, user, db)
+    assert not first["already_converted"] and first["balance"] == 250
+    assert from_invoice(original.id, data, user, db)["already_converted"]
+    assert from_invoice(original.id, data.model_copy(update={"request_id":"convert-new-key-0001"}), user, db)["already_converted"]
+    assert db.query(Invoice).count() == 1 and db.query(Payment).count() == 1
+    assert [(line.id, line.description, line.display_order) for line in db.query(InvoiceLine).filter_by(invoice_id=original.id).order_by(InvoiceLine.display_order)] == lines_before
+    assert original.billing_header_id == "h" and original.number == saved["number"]
+    account = db.query(CustomerCreditAccount).one()
+    assert account.total_purchases == 300 and account.total_repaid == 50
+    ops, _ = history(db, account, all_rows=True)
+    assert [op["kind"] for op in ops] == ["PURCHASE", "REPAYMENT"]
+    assert ops[1]["allocations"][0]["payment_id"] == db.query(Payment).one().id
+    refund(db, user, 250, "converted-repay-0001")
+    assert account.balance == 0 and account.settled_at is not None and original.status == "PAID"
+    create_billing_document(document("converted-next-buy1"), user, db)
+    assert account.balance == 300 and account.settled_at is None
+
+
+def test_conversion_validates_access_balance_type_and_customer_without_partial_writes(ledger):
+    db, user = ledger
+    saved = create_billing_document(document("ordinary-guard-0001").model_copy(update={"on_credit":False}), user, db)
+    data = CreditInvoiceConversionIn(request_id="convert-guard-0001", customer_id="c", expected_balance=299)
+    with pytest.raises(HTTPException) as error:
+        from_invoice(saved["id"], data, user, db)
+    assert error.value.status_code == 409
+    assert db.query(CustomerCreditAccount).count() == 0 and db.query(CustomerCreditOperation).count() == 0
+    data = data.model_copy(update={"expected_balance":Decimal("300")})
+    db.query(OrganizationMember).one().role = "VIEWER";db.commit()
+    with pytest.raises(HTTPException) as error:
+        from_invoice(saved["id"], data, user, db)
+    assert error.value.status_code == 403
+    db.query(OrganizationMember).one().role = "OWNER";db.get(Invoice,saved["id"]).document_type="QUOTE";db.commit()
+    with pytest.raises(HTTPException):from_invoice(saved["id"],data,user,db)
+    assert db.query(CustomerCreditAccount).count() == 0
+    db.get(Invoice,saved["id"]).document_type="INVOICE";db.get(Customer,"c").name="Client comptant";db.commit()
+    with pytest.raises(HTTPException):from_invoice(saved["id"],data,user,db)
+    db.add(Customer(id="identified",organization_id="o",name="Client Identifié"));db.commit()
+    result=from_invoice(saved["id"],data.model_copy(update={"customer_id":"identified"}),user,db)
+    assert result["customer_id"] == "identified" and result["balance"] == 300
+    assert db.get(Invoice,saved["id"]).customer_id == "identified"
+
+
+def test_conversion_appends_to_existing_account_and_rejects_paid_invoice(ledger):
+    db,user=ledger
+    create_billing_document(document("existing-account-01"),user,db)
+    saved=create_billing_document(document("ordinary-account-01").model_copy(update={"on_credit":False}),user,db)
+    data=CreditInvoiceConversionIn(request_id="convert-account-001",expected_balance=300)
+    assert from_invoice(saved["id"],data,user,db)["balance"] == 600
+    assert db.query(CustomerCreditAccount).count() == 1
+    paid=create_billing_document(document("ordinary-paid-0001").model_copy(update={"on_credit":False}),user,db)
+    record_payment(paid["id"],PaymentIn(amount=300,method="ESPECES"),user,db)
+    with pytest.raises(HTTPException):from_invoice(paid["id"],data.model_copy(update={"request_id":"convert-paid-00001"}),user,db)
+    assert db.query(CustomerCreditAccount).one().balance == 600

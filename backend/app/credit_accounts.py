@@ -1,5 +1,5 @@
 """Credit ledger. No commits here: invoice, balance and payments are atomic."""
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from decimal import Decimal, ROUND_HALF_UP
 import hashlib
 import json
@@ -50,6 +50,17 @@ def account_for_write(db, organization_id, customer_id, create=False):
     return account
 
 
+def ledger_time(db, account_id):
+    """Stable registration order even on clocks with coarse time resolution."""
+    latest = db.query(func.max(Operation.created_at)).filter_by(account_id=account_id).scalar()
+    now = datetime.now(timezone.utc)
+    if latest:
+        if latest.tzinfo is None:
+            latest = latest.replace(tzinfo=timezone.utc)
+        now = max(now, latest + timedelta(microseconds=1))
+    return now
+
+
 def purchase(db, invoice, actor_id, request_id, request_hash, initial_payment=0):
     amount, initial = money(invoice.total_amount), money(initial_payment)
     if amount <= 0 or initial > amount:
@@ -57,7 +68,7 @@ def purchase(db, invoice, actor_id, request_id, request_hash, initial_payment=0)
     account = account_for_write(db, invoice.organization_id, invoice.customer_id, create=True)
     operation = Operation(account_id=account.id, organization_id=invoice.organization_id, kind="PURCHASE", amount=amount,
         invoice_id=invoice.id, request_id=request_id, request_hash=request_hash,
-        occurred_on=invoice.issued_on, actor_id=actor_id, allocations=[])
+        occurred_on=invoice.issued_on, actor_id=actor_id, allocations=[], created_at=ledger_time(db, account.id))
     db.add(operation)
     db.flush()  # Claim idempotency key before changing the balance.
     changed = db.query(Account).filter(Account.id == account.id, Account.balance + amount < Decimal("10000000000"),
@@ -74,13 +85,78 @@ def purchase(db, invoice, actor_id, request_id, request_hash, initial_payment=0)
     return account
 
 
+def convert_invoice(db, invoice, data, actor_id):
+    """Adopt an existing invoice without copying its lines or its payments."""
+    request_hash = fingerprint(data)
+    customer_id = data.customer_id or invoice.customer_id
+    if not customer_id:
+        raise HTTPException(422, "Choisissez un client identifié pour le compte crédit")
+    customer = db.query(Customer).filter_by(id=customer_id, organization_id=invoice.organization_id).with_for_update().first()
+    if not customer or customer.name.strip().casefold() == "client comptant":
+        raise HTTPException(422, "Choisissez un client identifié de cette organisation")
+    # Same lock order as repayments: customer, account, then invoice.
+    account = db.query(Account).filter_by(customer_id=customer_id, organization_id=invoice.organization_id).with_for_update().first()
+    invoice = db.query(Invoice).filter_by(id=invoice.id).populate_existing().with_for_update().one()
+    requested = replay(db, invoice.organization_id, data.request_id, request_hash)
+    if requested and (requested.kind != "PURCHASE" or requested.invoice_id != invoice.id):
+        raise HTTPException(409, "Cette demande concerne une autre opération")
+    existing = db.query(Operation).filter_by(invoice_id=invoice.id).first()
+    if existing:
+        if not account or existing.account_id != account.id:
+            raise HTTPException(409, "Cette facture appartient déjà à un autre compte crédit")
+        return account, True
+    if invoice.document_type != "INVOICE" or invoice.source_shop_order_id:
+        raise HTTPException(409, "Seule une facture manuelle peut être mise à crédit, pas un devis, reçu ou une commande Boutique")
+    if invoice.currency != "XOF" or invoice.status not in {"DRAFT", "PENDING_PAYMENT", "PARTIALLY_PAID"}:
+        raise HTTPException(409, "Cette facture n'est pas disponible pour une mise à crédit")
+    original_customer = db.get(Customer, invoice.customer_id) if invoice.customer_id else None
+    if original_customer and original_customer.id != customer_id and original_customer.name.strip().casefold() != "client comptant":
+        raise HTTPException(409, "Le client identifié de la facture ne peut pas être remplacé lors de sa mise à crédit")
+    payments = db.query(Payment).filter_by(invoice_id=invoice.id, status="CONFIRMED").order_by(Payment.created_at, Payment.id).all()
+    if any(money(p.amount) <= 0 for p in payments):
+        raise HTTPException(409, "Vérifiez les paiements de cette facture avant sa conversion")
+    paid = sum((money(p.amount) for p in payments), money(0))
+    remaining = money(invoice.total_amount) - paid
+    if remaining <= 0:
+        raise HTTPException(409, "Cette facture est déjà soldée : aucune dette à transférer")
+    if money(data.expected_balance) != remaining:
+        raise HTTPException(409, "Le montant ou les paiements ont changé. Rouvrez la mise à crédit pour vérifier le nouveau solde")
+    invoice.customer_id = customer_id
+    invoice.issued_on = invoice.issued_on or invoice.created_at or datetime.now(timezone.utc)
+    invoice.status = "PARTIALLY_PAID" if paid else "PENDING_PAYMENT"
+    invoice.pdf_key = None
+    account = purchase(db, invoice, actor_id, data.request_id, request_hash)
+    # Adopt prior payments as ledger entries; never call repay() here because
+    # it would create a second Payment for money already received.
+    purchase_time = db.query(Operation).filter_by(invoice_id=invoice.id).one().created_at
+    for position, payment in enumerate(payments, 1):
+        db.add(Operation(account_id=account.id, organization_id=invoice.organization_id, kind="REPAYMENT",
+            amount=money(payment.amount), request_id="existing-payment-" + payment.id, request_hash=request_hash,
+            occurred_on=payment.created_at, actor_id=actor_id, method=payment.method,
+            created_at=purchase_time + timedelta(microseconds=position),
+            note="Paiement déjà enregistré avant mise à crédit de " + invoice.number,
+            allocations=[{"invoice_id":invoice.id, "number":invoice.number, "amount":str(money(payment.amount)), "payment_id":payment.id}]))
+    if paid:
+        changed = db.query(Account).filter(Account.id == account.id, Account.balance >= paid,
+            Account.total_repaid + paid < Decimal("10000000000")).update({
+                Account.balance:func.round(Account.balance - paid, 2),
+                Account.total_repaid:func.round(Account.total_repaid + paid, 2)}, synchronize_session=False)
+        if not changed:
+            raise HTTPException(422, "Le compte dépasse la limite autorisée")
+        db.refresh(account)
+    audit(db, actor_id, "BILLING_INVOICE_CONVERTED_TO_CREDIT", "Invoice", invoice.id,
+        parameters={"account_id":account.id, "existing_paid":str(paid), "remaining":str(remaining)}, result="SUCCESS")
+    db.flush()
+    return account, False
+
+
 def repay(db, account, amount, actor_id, request_id, request_hash, occurred_on=None, method="ESPECES", note=None, target_invoice_id=None):
     amount = money(amount)
     if amount <= 0 or amount > money(account.balance):
         raise HTTPException(422, "Le remboursement doit être positif et ne peut pas dépasser le solde")
     operation = Operation(account_id=account.id, organization_id=account.organization_id, kind="REPAYMENT", amount=amount,
         request_id=request_id, request_hash=request_hash, occurred_on=occurred_on or datetime.now(timezone.utc),
-        actor_id=actor_id, method=method, note=note, allocations=[])
+        actor_id=actor_id, method=method, note=note, allocations=[], created_at=ledger_time(db, account.id))
     db.add(operation)
     db.flush()
     changed = db.query(Account).filter(Account.id == account.id, Account.balance >= amount).update({

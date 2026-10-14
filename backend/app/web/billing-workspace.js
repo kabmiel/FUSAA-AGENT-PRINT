@@ -323,10 +323,54 @@ billingInvoiceTable=function(items){
   return '<div class="billing-table-wrap"><table class="billing-table"><thead><tr><th>Numero</th><th>Client</th><th>Type</th><th>Style PDF</th><th>Date</th><th>Montant</th><th>Actions</th></tr></thead><tbody>'+items.map(item=>{
     const typeId="billingDocumentType-"+item.id,styleId="billingInvoiceStyle-"+item.id,itemId=esc(item.id),number=esc(item.number),selected=item.document_type||"INVOICE",style=item.document_style||"standard",locked=Boolean(item.source_shop_order_id)||item.on_credit||Number(item.paid_amount||0)>0;
     const competition=item.competition_source_invoice_id?'<small class="billing-competition-mark">Concurrence +'+Number(item.competition_margin_percent||0).toLocaleString("fr-FR",{maximumFractionDigits:2})+' %</small>':"";
-    const edit=locked?'<span class="muted billing-document-locked" title="Commande Boutique ou document deja paye">Verrouillé</span>':'<button class="secondary billing-document-icon" type="button" title="Modifier" aria-label="Modifier '+number+'" onclick="billingEditDocument(\''+itemId+'\')">'+billingEditIcon+'</button>';
-    return '<tr><td><b>'+number+'</b>'+competition+'</td><td>'+esc(item.customer_name||item.customer||"Client comptant")+'</td><td><div class="billing-row-type"><span class="billing-type-badge">'+esc(billingDocumentLabel(item.document_type))+'</span><select id="'+typeId+'" aria-label="Type a generer pour '+number+'">'+billingDocumentTypeOptions(selected)+'</select></div></td><td><div class="billing-row-style"><select id="'+styleId+'" aria-label="Style PDF pour '+number+'">'+billingHeaderStyleOptions(style)+'</select><button class="secondary billing-document-icon" type="button" title="Appliquer le style" aria-label="Appliquer le style PDF" onclick="billingUpdateInvoiceStyle(\''+itemId+'\',document.getElementById(\''+styleId+'\').value)">'+billingApplyIcon+'</button></div></td><td>'+billingDate(item.created_at)+'</td><td>'+billingCurrency(item.total_amount)+'</td><td><div class="billing-document-actions"><button class="secondary billing-document-icon" type="button" title="Visualiser le type sélectionné" aria-label="Visualiser le PDF '+number+'" onclick="previewBillingInvoice(\''+itemId+'\',\''+number+'\',document.getElementById(\''+typeId+'\').value)">'+billingEyeIcon+'</button>'+edit+'<button class="secondary billing-document-icon" type="button" title="Dupliquer" aria-label="Dupliquer '+number+'" onclick="billingDuplicate(\''+itemId+'\',document.getElementById(\''+typeId+'\').value)">'+billingDuplicateIcon+'</button><button class="secondary billing-document-icon" type="button" title="Créer une variante concurrence" aria-label="Créer une variante concurrence pour '+number+'" onclick="billingCompetition(\''+itemId+'\')">'+billingCompetitionIcon+'</button></div></td></tr>'
+    const edit=locked?'<span class="muted billing-document-locked" title="Commande Boutique, compte crédit ou paiement enregistré">Verrouillé</span>':'<button class="secondary billing-document-icon" type="button" title="Modifier" aria-label="Modifier '+number+'" onclick="billingEditDocument(\''+itemId+'\')">'+billingEditIcon+'</button>';
+    return '<tr><td><b>'+number+'</b>'+competition+(item.on_credit?'<small class="billing-competition-mark">À crédit · historique protégé</small>':'')+'</td><td>'+esc(item.customer_name||item.customer||"Client comptant")+'</td><td><div class="billing-row-type"><span class="billing-type-badge">'+esc(billingDocumentLabel(item.document_type))+'</span><select id="'+typeId+'" aria-label="Type a generer pour '+number+'">'+billingDocumentTypeOptions(selected)+'</select></div></td><td><div class="billing-row-style"><select id="'+styleId+'" aria-label="Style PDF pour '+number+'">'+billingHeaderStyleOptions(style)+'</select><button class="secondary billing-document-icon" type="button" title="Appliquer le style" aria-label="Appliquer le style PDF" onclick="billingUpdateInvoiceStyle(\''+itemId+'\',document.getElementById(\''+styleId+'\').value)">'+billingApplyIcon+'</button></div></td><td>'+billingDate(item.created_at)+'</td><td>'+billingCurrency(item.total_amount)+'</td><td><div class="billing-document-actions"><button class="secondary billing-document-icon" type="button" title="Visualiser le type sélectionné" aria-label="Visualiser le PDF '+number+'" onclick="previewBillingInvoice(\''+itemId+'\',\''+number+'\',document.getElementById(\''+typeId+'\').value)">'+billingEyeIcon+'</button>'+edit+billingCreditDocumentAction(item)+'<button class="secondary billing-document-icon" type="button" title="Dupliquer" aria-label="Dupliquer '+number+'" onclick="billingDuplicate(\''+itemId+'\',document.getElementById(\''+typeId+'\').value)">'+billingDuplicateIcon+'</button><button class="secondary billing-document-icon" type="button" title="Créer une variante concurrence" aria-label="Créer une variante concurrence pour '+number+'" onclick="billingCompetition(\''+itemId+'\')">'+billingCompetitionIcon+'</button></div></td></tr>'
   }).join("")+'</tbody></table></div>';
 };
+function billingCreditDocumentAction(item){
+  const eligible=item.document_type==="INVOICE"&&!item.source_shop_order_id&&["DRAFT","PENDING_PAYMENT","PARTIALLY_PAID"].includes(item.status)&&Number(item.total_amount)>Number(item.paid_amount||0);
+  if(!item.on_credit&&!eligible)return "";
+  const title=item.on_credit?"Ouvrir le compte crédit":"Mettre cette facture à crédit";
+  return '<button class="secondary billing-document-icon" type="button" title="'+title+'" aria-label="'+title+' '+esc(item.number)+'" onclick="billingInvoiceCreditPopup(\''+esc(item.id)+'\')">'+billingIcons.credits+'</button>';
+}
+async function billingInvoiceCreditPopup(id){
+  document.getElementById("billingInvoiceCreditDialog")?.remove();
+  const dialog=document.createElement("dialog");dialog.id="billingInvoiceCreditDialog";dialog.className="billing-quick-dialog billing-reference-dialog";
+  dialog.innerHTML='<div class="billing-dialog-heading"><h2>Mettre la facture à crédit</h2><button class="secondary" type="button" data-close aria-label="Fermer">×</button></div>'+billingLoadingContent("Vérification de la facture");
+  billingAttachReferenceDialog(dialog);dialog.showModal();
+  let saving=false;const close=()=>{if(!saving){dialog.close();dialog.remove()}};
+  dialog.querySelector('[data-close]').onclick=close;dialog.oncancel=event=>{event.preventDefault();close()};
+  try{
+    const invoice=await api('/api/v1/billing/invoices/'+encodeURIComponent(id),{silentOperation:true});
+    if(!dialog.open)return;
+    if(invoice.on_credit){close();await billingCreditDetail(invoice.customer.id);return}
+    if(invoice.document_type!=="INVOICE"||invoice.source_shop_order_id||!['DRAFT','PENDING_PAYMENT','PARTIALLY_PAID'].includes(invoice.status)||Number(invoice.balance_amount)<=0)throw Error('Seule une facture manuelle avec un solde à payer peut être mise à crédit.');
+    const identified=invoice.customer&&invoice.customer.name.trim().toLocaleLowerCase('fr')!=="client comptant";
+    const requestId=newId(),balance=Number(invoice.balance_amount),organization=org;
+    dialog.innerHTML='<div class="billing-dialog-heading"><h2>Mettre à crédit · '+esc(invoice.number)+'</h2><button class="secondary" type="button" data-close aria-label="Fermer">×</button></div><p>La facture et ses produits sont conservés. Le solde rejoint le compte du client, existant ou nouveau.</p><div class="billing-credit-stats"><article><small>Montant facture</small><strong>'+billingCurrency(invoice.total_amount)+'</strong></article><article><small>Déjà payé</small><strong>'+billingCurrency(invoice.paid_amount)+'</strong></article><article><small>Dette ajoutée</small><strong>'+billingCurrency(balance)+'</strong></article></div><form class="billing-form-grid"><label class="wide">Client du compte'+(identified?'<input value="'+esc(invoice.customer.name)+'" readonly>':'<select name="customer_id" required disabled><option value="">Chargement des clients…</option></select><button class="secondary" type="button" data-new-client>＋ Nouveau client</button>')+'</label><p class="wide muted">Les paiements déjà enregistrés sont repris dans l’historique sans être débités une seconde fois. Après confirmation : remboursements, nouveaux achats, état PDF et archivage automatique du compte soldé. La facture ne sera plus modifiable hors du compte crédit.</p><label class="wide"><input type="checkbox" required name="confirmation"> Je confirme la mise à crédit de cette facture.</label><p class="wide billing-import-error" role="alert" data-error></p><div class="billing-actions wide"><button type="submit" '+(!identified?'disabled':'')+'>Confirmer la mise à crédit</button><button class="secondary" type="button" data-close>Annuler</button></div></form>';
+    dialog.querySelectorAll('[data-close]').forEach(button=>button.onclick=close);
+    const form=dialog.querySelector('form'),submit=form.querySelector('[type="submit"]'),error=form.querySelector('[data-error]');
+    if(!identified){
+      const select=form.querySelector('select');
+      const customers=await api('/api/v1/customers?organization_id='+encodeURIComponent(organization),{silentOperation:true});
+      if(!dialog.open)return;
+      const eligible=customers.filter(item=>item.name.trim().toLocaleLowerCase('fr')!=="client comptant");
+      select.innerHTML='<option value="">Choisir un client identifié</option>'+eligible.map(item=>'<option value="'+esc(item.id)+'">'+esc(item.name)+'</option>').join('');select.disabled=false;submit.disabled=false;
+      form.querySelector('[data-new-client]').onclick=()=>billingCustomerPopup(saved=>{if(dialog.open){select.insertAdjacentHTML('beforeend','<option value="'+esc(saved.id)+'">'+esc(saved.name)+'</option>');select.value=saved.id}});
+    }
+    form.onsubmit=async event=>{
+      event.preventDefault();if(saving||!form.reportValidity())return;
+      if(org!==organization){error.textContent='Le compte actif a changé. Rouvrez la facture.';return}
+      const customerId=identified?invoice.customer.id:form.querySelector('select').value;
+      saving=true;form.querySelectorAll('button,input,select').forEach(node=>node.disabled=true);error.textContent='';
+      const started=showFusaaOperation('Mise à crédit de la facture…');
+      try{
+        const result=await api('/api/v1/billing/credit-accounts/from-invoice/'+encodeURIComponent(id),{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({request_id:requestId,customer_id:customerId,expected_balance:balance}),silentOperation:true});
+        await hideFusaaOperation(started);saving=false;close();tell(result.already_converted?'Cette facture est déjà dans le compte crédit.':'Facture ajoutée au compte crédit, sans duplication.');await billingCreditDetail(result.customer_id);
+      }catch(failure){error.textContent=failure.message;saving=false;form.querySelectorAll('button,input,select').forEach(node=>node.disabled=false);await hideFusaaOperation(started)}
+    };
+  }catch(error){if(dialog.open)dialog.innerHTML='<div class="billing-dialog-heading"><h2>Mise à crédit indisponible</h2><button class="secondary" type="button" data-close>Fermer</button></div><p role="alert">'+esc(error.message)+'</p>';dialog.querySelector('[data-close]')?.addEventListener('click',close)}
+}
 async function billingEditDocument(id){
   try{
     const invoice=await api("/api/v1/billing/invoices/"+encodeURIComponent(id));
@@ -537,21 +581,23 @@ function billingAttachReferenceDialog(dialog){
   if(root&&dialog.parentElement!==root)root.appendChild(dialog);
   return dialog;
 }
-function billingCustomerPopup(){
+function billingCustomerPopup(onSaved=null){
   let dialog=document.getElementById("billingCustomerDialog");
   if(!dialog){
     document.body.insertAdjacentHTML("beforeend",'<dialog id="billingCustomerDialog" class="billing-quick-dialog billing-reference-dialog"><div class="billing-dialog-heading"><span class="billing-eyebrow">FACTURATION FUSAA</span><button class="secondary" type="button" aria-label="Fermer" onclick="billingCustomerDialog.close()">×</button></div><form id="billingCustomerPopupForm" class="billing-form-grid"><h2 class="wide">Nouveau client</h2><p class="wide muted">La fiche est enregistrée dans le répertoire partagé, puis sélectionnée automatiquement pour cette facture.</p><label>Nom et prénom<input name="name" required maxlength="160" autocomplete="name"></label><label>Téléphone<input name="phone" maxlength="50" autocomplete="tel"></label><label>E-mail<input name="email" type="email" maxlength="320" autocomplete="email"></label><label>Adresse<input name="address" autocomplete="street-address"></label><label class="wide">Notes client<textarea name="notes" placeholder="Informations utiles pour la facturation"></textarea></label><div class="billing-actions wide"><button type="submit">Enregistrer et sélectionner</button><button class="secondary" type="button" onclick="billingCustomerDialog.close()">Annuler</button></div></form></dialog>');
     dialog=document.getElementById("billingCustomerDialog");
     document.getElementById("billingCustomerPopupForm").onsubmit=async event=>{
-      event.preventDefault();const form=new FormData(event.currentTarget),started=showFusaaOperation("Enregistrement du client...");
+      event.preventDefault();const element=event.currentTarget,form=new FormData(element),started=showFusaaOperation("Enregistrement du client...");
       try{
         const saved=await api("/api/v1/customers",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({organization_id:org,name:String(form.get("name")||"").trim(),phone:String(form.get("phone")||"").trim()||null,email:String(form.get("email")||"").trim()||null,address:String(form.get("address")||"").trim()||null,notes:String(form.get("notes")||"").trim()||null})});
         billingState.customers=[...billingState.customers.filter(item=>item.id!==saved.id),saved].sort((left,right)=>left.name.localeCompare(right.name,"fr"));
         billingReferenceSelect("billingNewCustomer",billingState.customers,"Choisir un client",saved.id);
-        dialog.close();event.currentTarget.reset();tell("Client enregistré et sélectionné pour le document.");
+        const callback=dialog.onCustomerSaved;dialog.onCustomerSaved=null;
+        dialog.close();element.reset();if(callback)callback(saved);tell("Client enregistré et sélectionné pour le document.");
       }catch(error){tell(error.message)}finally{await hideFusaaOperation(started)}
     };
   }
+  dialog.onCustomerSaved=onSaved;
   billingAttachReferenceDialog(dialog);dialog.showModal();dialog.querySelector("[name='name']")?.focus();
 }
 function billingHeaderStyleOptions(selected="standard"){const styles={standard:"Standard",scan_gauche:"Référence 1 · gauche",scan_alasko:"Référence 2 · Alasko",scan_centre:"Référence 3 · centre",scan_compact:"Référence 4 · compact",scan_facture_simple:"Référence 5 · facture simple",ultra_compact:"Ultra compact · 30 lignes A4",moderne_clair:"Moderne clair",moderne_bandeau:"Moderne bandeau",moderne_minimal:"Moderne minimal"};return Object.entries(styles).map(([key,label])=>'<option value="'+key+'" '+(selected===key?"selected":"")+'>'+label+'</option>').join("")}
