@@ -16,16 +16,19 @@ from pathlib import Path
 from time import monotonic
 from urllib.parse import urlparse
 from urllib.request import Request, urlopen
+from xml.sax.saxutils import escape
 
 from reportlab.graphics import renderPDF
 from reportlab.graphics.barcode import qr
 from reportlab.graphics.shapes import Drawing
 from reportlab.lib import colors
 from reportlab.lib.pagesizes import A4
+from reportlab.lib.styles import ParagraphStyle
 from reportlab.lib.units import mm
 from reportlab.lib.utils import ImageReader
 from reportlab.pdfbase import pdfmetrics
 from reportlab.pdfgen import canvas
+from reportlab.platypus import Flowable, KeepTogether, Paragraph, SimpleDocTemplate, Spacer, Table, TableStyle
 
 from .config import settings
 
@@ -45,7 +48,7 @@ MODERN_STYLES = {
     "moderne_minimal": dict(accent="#334155", soft="#eef7f4", alt="#0f766e", ink="#0f172a", muted="#64748b", panel="#ffffff", table_head="#edf2f7", table_text="#0f172a", border="#d7dee8", watermark="PDF"),
 }
 
-DOCUMENT_NAMES = {"INVOICE": "FACTURE", "QUOTE": "DEVIS", "PROFORMA": "FACTURE PROFORMA", "DELIVERY_NOTE": "BON DE LIVRAISON", "RECEIPT": "REÇU", "CREDIT_STATEMENT": "ÉTAT DE CRÉDIT CLIENT"}
+DOCUMENT_NAMES = {"INVOICE": "FACTURE", "QUOTE": "DEVIS", "PROFORMA": "FACTURE PROFORMA", "DELIVERY_NOTE": "BON DE LIVRAISON", "RECEIPT": "REÇU", "CREDIT_STATEMENT": "SITUATION DE COMPTE CLIENT"}
 FONT_NAMES = {"times": "Times-Roman", "arial": "Helvetica", "calibri": "Helvetica", "segoe": "Helvetica", "courier": "Courier", "trebuchet": "Helvetica"}
 ULTRA_COMPACT_STYLE = "ultra_compact"
 PDF_LAYOUT_VERSION = "layout-20261010-paid-receipt"
@@ -1007,109 +1010,224 @@ def render_invoice_pdf(path: Path, invoice, header, customer, lines):
 
 
 def render_credit_statement_pdf(document, header, customer, operations, balance):
-    """Same company headers, dated product lines, and a full immutable ledger."""
+    """Courteous account statement, based only on the immutable ledger snapshot.
+
+    The invoice renderers and accounting rules remain independent. Platypus
+    splits long rows and paragraphs, repeating only the operation column heads.
+    """
     stream = BytesIO()
-    pdf = _PaginatedCanvas(stream, pagesize=A4, pageCompression=1)
-    pdf.setTitle("État de crédit - " + str(customer.name))
     width, height = A4
-    style = getattr(header, "document_style", "standard") or "standard"
+    margin = 15 * mm
+    available = width - 2 * margin
+    company = str(getattr(header, "company_name", "") or "Notre entreprise").strip()
+    name = str(getattr(customer, "name", "") or "").strip()
+    issued = getattr(document, "issued_on", None) or datetime.now()
+    issued_text = issued.strftime("%d/%m/%Y")
+    reference = str(getattr(document, "number", "") or "")
+    title = DOCUMENT_NAMES["CREDIT_STATEMENT"]
     logo = _logo_reader(getattr(header, "logo_url", None))
-    ref_style = "scan_compact" if style == ULTRA_COMPACT_STYLE else style
     font = FONT_NAMES.get(getattr(header, "table_font_family", None) or "", "Helvetica")
-    size = min(14, max(8, float(getattr(header, "table_font_size", None) or 9)))
-    page = 1
+    size = min(11, max(9, float(getattr(header, "table_font_size", None) or 9.5)))
+    ink, muted, border = [_colour(value) for value in ("#172b3a", "#526675", "#d8e1e7")]
+    body = ParagraphStyle("account-body", fontName="Helvetica", fontSize=10, leading=13.5,
+                          textColor=ink, spaceAfter=6, splitLongWords=True)
+    cell = ParagraphStyle("account-cell", parent=body, fontName=font, fontSize=size,
+                          leading=size * 1.22, spaceAfter=0)
+    number_cell = ParagraphStyle("account-number", parent=cell, alignment=2)
+    date_cell = ParagraphStyle("account-date", parent=cell, alignment=1)
+    small = ParagraphStyle("account-small", parent=body, fontSize=9, leading=11.5, spaceAfter=0, textColor=muted)
+    heading = ParagraphStyle("account-heading", parent=body, fontName="Helvetica-Bold", fontSize=11,
+                             leading=14, spaceBefore=7, spaceAfter=6, keepWithNext=True)
 
-    def page_header(continued=False):
-        if continued:
-            if ref_style in REFERENCE_STYLES:
-                top, right, bottom, left = [part * mm for part in REFERENCE_STYLES[ref_style]["margins"]]
-                y, available = height - top, width - left - right
-            else:
-                left = (11.5 if style in MODERN_STYLES else 20) * mm
-                top = bottom = (11.5 if style in MODERN_STYLES else 12.7) * mm
-                y, available = height - top, width - 2 * left
-        elif ref_style in REFERENCE_STYLES:
-            cfg = dict(REFERENCE_STYLES[ref_style])
-            y, left, available = _reference_header(pdf, document, header, customer, logo, cfg, width, height, continued)
-            bottom = cfg["margins"][2] * mm
-        elif style in MODERN_STYLES:
-            y, left, available, bottom = _modern_header(pdf, document, header, customer, logo, MODERN_STYLES[style], width, height, continued)
-        else:
-            y, left, available, bottom = _standard_header(pdf, document, header, customer, logo, width, height)
-        cols = [available * p for p in (.43, .14, .14, .15, .14)]
-        y -= 3 * mm
-        pdf.setFillColor(_colour("#e8eef3")); pdf.rect(left, y - 8 * mm, available, 8 * mm, fill=1, stroke=0)
-        pdf.setFillColor(_colour("#152b3c")); pdf.setFont("Helvetica-Bold", 8)
-        x = left
-        for i, label in enumerate(("Désignation", "Date", "Achat FCFA", "Remb. FCFA", "Solde FCFA")):
-            if i < 2: pdf.drawString(x + 1.5 * mm, y - 5 * mm, label)
-            else: pdf.drawRightString(x + cols[i] - 1.5 * mm, y - 5 * mm, label)
-            x += cols[i]
-        return y - 8 * mm, left, available, bottom, cols
+    def text(value, style=body):
+        return Paragraph(escape(str(value or "")).replace("\n", "<br/>"), style)
 
-    def footer():
-        pdf.setFillColor(_colour("#64748b")); pdf.setFont("Helvetica", 7)
-        pdf.drawString(left, 7 * mm, "Historique conservé - montants en FCFA")
+    def amount(value):
+        value = _decimal(value).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+        return _reference_money(value, " ", " FCFA") if value == value.to_integral_value() else _money(value)
 
-    y, left, available, bottom, cols = page_header()
+    class Logo(Flowable):
+        def __init__(self):
+            Flowable.__init__(self)
+            self.width, self.height = 27 * mm, 23 * mm
+
+        def draw(self):
+            _draw_logo(self.canv, logo, 0, self.height, self.width, self.height)
+
+    class StatementQR(Flowable):
+        def __init__(self, value):
+            Flowable.__init__(self)
+            self.value, self.width, self.height = value, 32 * mm, 37 * mm
+
+        def draw(self):
+            self.canv.saveState()
+            _draw_qr(self.canv, self.value, 0, 6 * mm, 30 * mm)
+            self.canv.setFont("Helvetica", 7.5)
+            self.canv.setFillColor(muted)
+            self.canv.drawCentredString(15 * mm, 2 * mm, "Récapitulatif du document")
+            self.canv.restoreState()
+
+    contacts = [str(getattr(header, "address", "") or "").strip()]
+    for field, label in (("phone", "Tél."), ("email", "E-mail"), ("nif", "NIF"), ("rccm", "RCCM")):
+        value = str(getattr(header, field, "") or "").strip()
+        if value:
+            contacts.append(f"{label} : {value}")
+    contacts = [value for value in contacts if value]
+    company_heading = ParagraphStyle("account-company", parent=heading, fontSize=13, leading=16, spaceBefore=0)
+    company_block = [text(company, company_heading), *[text(line, small) for line in contacts]]
+    if logo:
+        company_table = Table([[Logo(), company_block]], colWidths=[33 * mm, available - 33 * mm],
+                              hAlign="LEFT", splitInRow=1)
+    else:
+        company_table = Table([[company_block]], colWidths=[available], hAlign="LEFT", splitInRow=1)
+    company_table.setStyle(TableStyle([("VALIGN", (0, 0), (-1, -1), "TOP"),
+        ("LEFTPADDING", (0, 0), (-1, -1), 0), ("RIGHTPADDING", (0, 0), (-1, -1), 0),
+        ("BOTTOMPADDING", (0, 0), (-1, -1), 7)]))
+    title_style = ParagraphStyle("account-title", parent=heading, fontSize=17, leading=21,
+                                alignment=1, spaceBefore=6, spaceAfter=10)
+    metadata = Table([[text("Client : " + (name or "Non renseigné")),
+                       text("Établi le : " + issued_text, small)],
+                      [text("Référence : " + reference, small), ""]],
+                     colWidths=[available * .65, available * .35], hAlign="LEFT", splitInRow=1)
+    metadata.setStyle(TableStyle([("VALIGN", (0, 0), (-1, -1), "TOP"),
+        ("LEFTPADDING", (0, 0), (-1, -1), 0), ("BOTTOMPADDING", (0, 0), (-1, -1), 4)]))
+    # Do not keep a heading together with the entire ledger Table: for a long
+    # history that would move all operations to the following page.
+    history_heading = ParagraphStyle("account-history", parent=heading, keepWithNext=False)
+    story = [company_table, text(title, title_style), metadata,
+             text("Historique des opérations et règlements", history_heading)]
     running = Decimal("0")
     purchase_total, repayment_total = Decimal("0"), Decimal("0")
-    rows = []
+    ledger_rows = []
     for op in operations:
-        date = op["date"].strftime("%d/%m/%Y")
-        amount = _decimal(op["amount"])
+        date_text = op["date"].strftime("%d/%m/%Y")
+        value = _decimal(op["amount"])
         if op["kind"] == "PURCHASE":
-            purchase_total += amount
-            entries = [(f"{_quantity(line['quantity'])} x {line['description']} ({op['number']})", _decimal(line["total_amount"])) for line in op["lines"]]
-            difference = amount - sum((value for _, value in entries), Decimal("0"))
-            if not entries: entries = [("Achat " + str(op["number"] or ""), amount)]
-            elif difference: entries.append(("Taxes / remise - " + str(op["number"] or ""), difference))
-            for text, value in entries:
-                running += value
-                rows.append((text, date, value, None, running))
+            purchase_total += value
+            entries = [(f"{_quantity(line['quantity'])} x {line['description']} ({op['number']})",
+                        _decimal(line["total_amount"])) for line in op["lines"]]
+            difference = value - sum((entry[1] for entry in entries), Decimal("0"))
+            if not entries:
+                entries = [("Achat " + str(op["number"] or ""), value)]
+            elif difference:
+                entries.append(("Taxes / remise - " + str(op["number"] or ""), difference))
+            for designation, debit in entries:
+                running += debit
+                ledger_rows.append((designation, date_text, debit, None, running))
         else:
-            repayment_total += amount
-            running -= amount
-            label = "Remboursement - " + str(op["method"] or "")
-            if op["note"]: label += " : " + str(op["note"])
-            rows.append((label, date, None, amount, running))
-    for index, (designation, date, debit, paid, current) in enumerate(rows):
-        wrapped = _wrap(designation, font, size, cols[0] - 3 * mm)
-        first_fragment = True
-        # Split very long notes instead of ever drawing beyond the page.
-        while wrapped:
-            capacity = int((y - bottom - 12 * mm - 3 * mm) / (size * 1.25))
-            if capacity < 1:
-                footer(); pdf.showPage(); page += 1
-                y, left, available, bottom, cols = page_header(True)
-                continue
-            part, wrapped = wrapped[:capacity], wrapped[capacity:]
-            row_h, leading = _row_layout(part, font, size)
-            pdf.setFillColor(_colour("#f4f7fa" if index % 2 == 0 else "#ffffff"))
-            pdf.rect(left, y - row_h, available, row_h, fill=1, stroke=0)
-            pdf.setFillColor(_colour("#17202a"))
-            _draw_text(pdf, part, left + 1.5 * mm, _cell_baseline(y, row_h, len(part), font, size, leading), cols[0] - 3 * mm, font, size, leading)
-            x = left + cols[0]
-            values = [date, "" if debit is None else _money(debit), "" if paid is None else _money(paid), _money(current)] if first_fragment else [date, "", "", ""]
-            pdf.setFont(font, size)
-            for i, value in enumerate(values, 1):
-                value_size = min(size, max(5.5, size * (cols[i] - 3 * mm) / max(1, pdfmetrics.stringWidth(value, font, size))))
-                pdf.setFont(font, value_size)
-                baseline = _cell_baseline(y, row_h, 1, font, value_size, leading)
-                if i == 1: pdf.drawString(x + 1.5 * mm, baseline, value)
-                else: pdf.drawRightString(x + cols[i] - 1.5 * mm, baseline, value)
-                x += cols[i]
-            _rule(pdf, left, y - row_h, left + available, "#d9e2ec", .4)
-            y -= row_h
-            first_fragment = False
-    summary = [f"Total achats : {_money(purchase_total)} - Total remboursé : {_money(repayment_total)}",
-               f"Solde à payer : {_money(balance)}" if _decimal(balance) else "Compte soldé - archivé automatiquement",
-               "Solde en lettres : " + _amount_words(balance)]
-    summary_lines = [line for text in summary for line in _wrap(text, "Helvetica-Bold", 9, available)]
-    if y - len(summary_lines) * 12 < bottom + 14 * mm:
-        footer(); pdf.showPage(); page += 1
-        y, left, available, bottom, cols = page_header(True)
-    pdf.setFillColor(_colour("#152b3c"))
-    _draw_text(pdf, summary_lines, left, y - 8 * mm, available, "Helvetica-Bold", 9, 12)
-    footer(); pdf.save()
+            repayment_total += value
+            running -= value
+            designation = "Règlement" + (" - " + str(op["method"]) if op.get("method") else "")
+            references = list(dict.fromkeys(str(a["number"]) for a in op.get("allocations", []) if a.get("number")))
+            if references:
+                designation += " (" + ", ".join(references) + ")"
+            if op.get("note"):
+                designation += " : " + str(op["note"])
+            ledger_rows.append((designation, date_text, None, value, running))
+    # Refuse an incoherent caller snapshot rather than printing contradictory
+    # figures. The route already computes this same balance from these entries.
+    if running != _decimal(balance):
+        raise ValueError("Le solde de la situation ne correspond pas aux opérations fournies")
+    table_head = ParagraphStyle("account-column", parent=small, fontName="Helvetica-Bold",
+                                textColor=colors.white, fontSize=9, leading=11)
+    data = [[text(label, table_head) for label in
+             ("Désignation / référence", "Date", "Achats\n(FCFA)", "Règlements\n(FCFA)", "Solde\n(FCFA)")]]
+    for designation, date_text, debit, paid, current in ledger_rows:
+        # Bound each visual fragment before the Table is laid out. Otherwise
+        # a single multi-page note can push the whole table off page one.
+        pending, fragments = [text(designation, cell)], []
+        while pending:
+            paragraph = pending.pop(0)
+            column_width = available * .40 - 10
+            if paragraph.wrap(column_width, height)[1] <= 35 * mm:
+                fragments.append(paragraph)
+            else:
+                parts = paragraph.split(column_width, 35 * mm)
+                if len(parts) < 2:
+                    fragments.append(paragraph)
+                else:
+                    fragments.append(parts[0])
+                    pending = parts[1:] + pending
+        for index, fragment in enumerate(fragments):
+            values = [fragment, text(date_text, date_cell)]
+            values += [text("" if index or value is None else amount(value).removesuffix(" FCFA"), number_cell)
+                       for value in (debit, paid, current)]
+            data.append(values)
+    if not ledger_rows:
+        data.append([text("Aucune opération enregistrée à la date du document.", cell), "", "", "", ""])
+    table = Table(data, colWidths=[available * part for part in (.40, .14, .15, .16, .15)],
+                  repeatRows=1, splitByRow=1, splitInRow=0, hAlign="LEFT")
+    commands = [("BACKGROUND", (0, 0), (-1, 0), ink), ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+                ("LEFTPADDING", (0, 0), (-1, -1), 5), ("RIGHTPADDING", (0, 0), (-1, -1), 5),
+                ("TOPPADDING", (0, 0), (-1, -1), 4), ("BOTTOMPADDING", (0, 0), (-1, -1), 4),
+                ("ROWBACKGROUNDS", (0, 1), (-1, -1), [colors.white, _colour("#f4f7f9")]),
+                ("LINEBELOW", (0, 1), (-1, -1), .35, border)]
+    if not ledger_rows:
+        commands.append(("SPAN", (0, 1), (-1, 1)))
+    table.setStyle(TableStyle(commands))
+    story.append(table)
+
+    remaining_label = "Solde" if not running else "Solde restant" if running > 0 else "Solde en votre faveur"
+    summary_values = [("Total des achats", purchase_total), ("Total des règlements", repayment_total),
+                      (remaining_label, abs(running))]
+    summary = Table([[text(label, body), text(amount(value), number_cell)] for label, value in summary_values],
+                    colWidths=[available * .67, available * .33], hAlign="LEFT")
+    summary.setStyle(TableStyle([("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+        ("BACKGROUND", (0, 2), (-1, 2), _colour("#eef5f6")),
+        ("LINEABOVE", (0, 2), (-1, 2), .6, border),
+        ("TOPPADDING", (0, 0), (-1, -1), 5), ("BOTTOMPADDING", (0, 0), (-1, -1), 5)]))
+    words = "Solde en lettres : " + _amount_words(abs(running)) + (" en votre faveur." if running < 0 else ".")
+    story.append(KeepTogether([text("Récapitulatif financier", heading), summary, Spacer(1, 4), text(words, small)]))
+
+    # Use only known information; never infer a client's gender from their name.
+    civility = str(getattr(customer, "civilite", None) or getattr(customer, "civility", None) or "").strip()
+    if civility and not name.casefold().startswith(civility.casefold() + " "):
+        name = civility + (" " + name if name else "")
+    greeting = "Bonjour" + (" " + name if name else "") + ","
+    story += [Spacer(1, 9), text(greeting, heading),
+              Paragraph("Nous vous remercions sincèrement pour la confiance que vous accordez à <b>" +
+                        escape(company) + "</b>.", body)]
+    if running > 0:
+        financial_message = ("Après vérification de nos enregistrements et sauf erreur ou omission de notre part, "
+            "votre situation présente un solde restant de <b>" + escape(amount(running)) +
+            "</b>, pour un montant total d'achats de <b>" + escape(amount(purchase_total)) +
+            "</b>, dont <b>" + escape(amount(repayment_total)) + "</b> déjà réglés.")
+    elif not running:
+        financial_message = ("Après vérification de nos enregistrements et sauf erreur ou omission de notre part, "
+            "votre compte est entièrement réglé. <b>Solde : 0 FCFA</b>, pour un montant total d'achats de <b>" +
+            escape(amount(purchase_total)) + "</b> et un montant total de règlements de <b>" +
+            escape(amount(repayment_total)) + "</b>. Aucun règlement complémentaire n'est attendu à cette date.")
+    else:
+        financial_message = ("Après vérification de nos enregistrements et sauf erreur ou omission de notre part, "
+            "votre compte présente un solde de <b>" + escape(amount(abs(running))) +
+            "</b> en votre faveur, pour un montant total d'achats de <b>" + escape(amount(purchase_total)) +
+            "</b> et un montant total de règlements de <b>" + escape(amount(repayment_total)) + "</b>.")
+    story += [Paragraph(financial_message, body),
+              text("Ce récapitulatif vous est transmis à titre informatif, dans un souci de transparence et de bonne tenue de nos comptes."),
+              text("Nous restons à votre disposition pour toute précision ou vérification éventuelle."),
+              text("Nous vous remercions pour votre confiance et votre compréhension.")]
+    qr_value = ("SITUATION COMPTE CLIENT\nReference: " + reference + "\nDate: " + issued_text +
+                "\nAchats: " + str(purchase_total) + " XOF\nReglements: " + str(repayment_total) +
+                " XOF\nSolde: " + str(running) + " XOF")
+    signature = [text(company, heading)]
+    if contacts:
+        signature.append(text("\n".join(contacts), small))
+    closing = Table([[signature, StatementQR(qr_value)]], colWidths=[available - 38 * mm, 38 * mm],
+                    hAlign="LEFT", splitInRow=1)
+    closing.setStyle(TableStyle([("VALIGN", (0, 0), (-1, -1), "TOP"),
+        ("LEFTPADDING", (0, 0), (-1, -1), 0), ("TOPPADDING", (0, 0), (-1, -1), 5)]))
+    story += [Spacer(1, 3), closing]
+
+    def footer(pdf, doc):
+        pdf.saveState()
+        pdf.setFillColor(muted)
+        pdf.setFont("Helvetica", 7)
+        pdf.drawString(margin, 8 * mm, "Document établi à titre informatif - montants en FCFA")
+        pdf.restoreState()
+
+    pdf_doc = SimpleDocTemplate(stream, pagesize=A4, leftMargin=margin, rightMargin=margin,
+                               topMargin=12 * mm, bottomMargin=16 * mm,
+                               title=title + " - " + str(getattr(customer, "name", "") or ""),
+                               author=company, allowSplitting=True)
+    pdf_doc.build(story, onFirstPage=footer, onLaterPages=footer, canvasmaker=_PaginatedCanvas)
     return stream.getvalue()

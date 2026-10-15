@@ -278,14 +278,14 @@ function billingCreditRepaymentPopup(){
 async function billingCreditStatement(download=false){
   const account=billingState.creditSelected;if(!account)return;
   const header=document.getElementById('billingCreditStatementHeader')?.value;
-  const started=showFusaaOperation("Génération de l’état de crédit…");
+  const started=showFusaaOperation("Génération de la situation de compte…");
   try{
     const response=await fetch('/api/v1/billing/credit-accounts/'+encodeURIComponent(account.customer_id)+'/statement.pdf?organization_id='+encodeURIComponent(org)+(header?'&billing_header_id='+encodeURIComponent(header):''),{headers:{Authorization:'Bearer '+token}});
     if(!response.ok){const error=await response.json().catch(()=>({}));throw Error(error.detail||'Génération impossible')}
     const url=URL.createObjectURL(await response.blob());
     const preview=download?null:window.open(url,'_blank');
     if(preview)preview.opener=null;
-    else{const link=document.createElement('a');link.href=url;link.download='etat-credit-'+account.customer_id+'.pdf';link.click()}
+    else{const link=document.createElement('a');link.href=url;link.download='situation-compte-'+account.customer_id+'.pdf';link.click()}
     setTimeout(()=>URL.revokeObjectURL(url),60000);
   }catch(error){tell(error.message)}finally{await hideFusaaOperation(started)}
 }

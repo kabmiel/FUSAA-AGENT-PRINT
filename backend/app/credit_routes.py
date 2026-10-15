@@ -124,8 +124,8 @@ def statement(customer_id: str, organization_id: str, billing_header_id: str | N
     header = db.get(BillingHeader, header_id) if header_id else default_billing_header(db, organization_id)
     if not header or header.organization_id != organization_id: raise HTTPException(422, "Entête introuvable")
     doc = SimpleNamespace(number="CREDIT-" + account.id[:8].upper(), document_type="CREDIT_STATEMENT",
-        issued_on=datetime.now(timezone.utc), subject="Historique des achats à crédit et remboursements", total_amount=balance,
+        issued_on=datetime.now(timezone.utc), subject="Historique des opérations et règlements", total_amount=balance,
         document_style=header.document_style)
     content = render_credit_statement_pdf(doc, header, customer, operations, balance)
     return StreamingResponse(BytesIO(content), media_type="application/pdf",
-        headers={"Content-Disposition": 'inline; filename="etat-credit-' + customer.id + '.pdf"', "Cache-Control": "no-store"})
+        headers={"Content-Disposition": 'inline; filename="situation-compte-' + customer.id + '.pdf"', "Cache-Control": "no-store"})

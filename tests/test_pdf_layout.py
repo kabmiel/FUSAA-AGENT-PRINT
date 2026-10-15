@@ -31,10 +31,10 @@ def rows(count):
     return [Record(description=f"Article {i:03d} pour installation", quantity=2, unit_amount=1000, total_amount=2000, unit="pièce") for i in range(1, count + 1)]
 
 
-def assert_pages(pdf, company):
+def assert_pages(pdf, company, company_in_message=False):
     texts = [page.get_text() for page in pdf]
     assert company in texts[0]
-    assert all(company not in text and "Doit :" not in text for text in texts[1:])
+    assert all((company_in_message or company not in text) and "Doit :" not in text for text in texts[1:])
     for index, text in enumerate(texts, 1):
         assert f"{index}/{len(texts)}" in text
     return texts
@@ -68,7 +68,7 @@ def test_all_templates_have_tight_cells_single_header_and_total_page_count(style
                    "lines": [{"description": f"Produit crédit {i:03d}", "quantity": 1, "total_amount": 1000}]} for i in range(100)]
     with fitz.open(stream=render_credit_statement_pdf(invoice(long, "CREDIT_STATEMENT"), company, customer, operations, 100000), filetype="pdf") as pdf:
         assert len(pdf) > 1
-        text = "\n".join(assert_pages(pdf, company.company_name))
+        text = "\n".join(assert_pages(pdf, company.company_name, company_in_message=True))
         assert "Produit crédit 000" in text and "Produit crédit 099" in text
 
 
