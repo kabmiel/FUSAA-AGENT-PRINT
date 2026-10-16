@@ -1032,7 +1032,8 @@ def render_credit_statement_pdf(document, header, customer, operations, balance)
     body = ParagraphStyle("account-body", fontName="Helvetica", fontSize=10, leading=13.5,
                           textColor=ink, spaceAfter=6, splitLongWords=True)
     cell = ParagraphStyle("account-cell", parent=body, fontName=font, fontSize=size,
-                          leading=size * 1.22, spaceAfter=0)
+                          leading=size * 1.10, spaceAfter=0)
+    group_cell = ParagraphStyle("account-group", parent=cell, fontName=_font_variant(font, bold=True))
     number_cell = ParagraphStyle("account-number", parent=cell, alignment=2)
     date_cell = ParagraphStyle("account-date", parent=cell, alignment=1)
     small = ParagraphStyle("account-small", parent=body, fontSize=9, leading=11.5, spaceAfter=0, textColor=muted)
@@ -1098,19 +1099,21 @@ def render_credit_statement_pdf(document, header, customer, operations, balance)
              text("Historique des opérations et règlements", history_heading)]
     running = Decimal("0")
     purchase_total, repayment_total = Decimal("0"), Decimal("0")
-    ledger_rows = []
+    ledger_rows, purchase_headers = [], {}
     for op in operations:
         date_text = op["date"].strftime("%d/%m/%Y")
         value = _decimal(op["amount"])
         if op["kind"] == "PURCHASE":
             purchase_total += value
-            entries = [(f"{_quantity(line['quantity'])} x {line['description']} ({op['number']})",
+            if op.get("number"):
+                purchase_headers[len(ledger_rows)] = "Facture : " + str(op["number"])
+            entries = [(f"{_quantity(line['quantity'])} x {line['description']}",
                         _decimal(line["total_amount"])) for line in op["lines"]]
             difference = value - sum((entry[1] for entry in entries), Decimal("0"))
             if not entries:
-                entries = [("Achat " + str(op["number"] or ""), value)]
+                entries = [("Achat", value)]
             elif difference:
-                entries.append(("Taxes / remise - " + str(op["number"] or ""), difference))
+                entries.append(("Taxes / remise", difference))
             for designation, debit in entries:
                 running += debit
                 ledger_rows.append((designation, date_text, debit, None, running))
@@ -1131,14 +1134,19 @@ def render_credit_statement_pdf(document, header, customer, operations, balance)
     table_head = ParagraphStyle("account-column", parent=small, fontName="Helvetica-Bold",
                                 textColor=colors.white, fontSize=9, leading=11)
     data = [[text(label, table_head) for label in
-             ("Désignation / référence", "Date", "Achats\n(FCFA)", "Règlements\n(FCFA)", "Solde\n(FCFA)")]]
-    for designation, date_text, debit, paid, current in ledger_rows:
+             ("Désignation", "Date", "Achats\n(FCFA)", "Règlements\n(FCFA)", "Solde\n(FCFA)")]]
+    column_widths = [available * part for part in (.44, .13, .14, .15, .14)]
+    group_rows = []
+    for row_index, (designation, date_text, debit, paid, current) in enumerate(ledger_rows):
+        if row_index in purchase_headers:
+            group_rows.append(len(data))
+            data.append([text(purchase_headers[row_index], group_cell), "", "", "", ""])
         # Bound each visual fragment before the Table is laid out. Otherwise
         # a single multi-page note can push the whole table off page one.
         pending, fragments = [text(designation, cell)], []
         while pending:
             paragraph = pending.pop(0)
-            column_width = available * .40 - 10
+            column_width = column_widths[0] - 7
             if paragraph.wrap(column_width, height)[1] <= 35 * mm:
                 fragments.append(paragraph)
             else:
@@ -1155,13 +1163,19 @@ def render_credit_statement_pdf(document, header, customer, operations, balance)
             data.append(values)
     if not ledger_rows:
         data.append([text("Aucune opération enregistrée à la date du document.", cell), "", "", "", ""])
-    table = Table(data, colWidths=[available * part for part in (.40, .14, .15, .16, .15)],
+    table = Table(data, colWidths=column_widths,
                   repeatRows=1, splitByRow=1, splitInRow=0, hAlign="LEFT")
     commands = [("BACKGROUND", (0, 0), (-1, 0), ink), ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
-                ("LEFTPADDING", (0, 0), (-1, -1), 5), ("RIGHTPADDING", (0, 0), (-1, -1), 5),
-                ("TOPPADDING", (0, 0), (-1, -1), 4), ("BOTTOMPADDING", (0, 0), (-1, -1), 4),
+                ("LEFTPADDING", (0, 0), (-1, -1), 3.5), ("RIGHTPADDING", (0, 0), (-1, -1), 3.5),
+                ("TOPPADDING", (0, 0), (-1, -1), 2), ("BOTTOMPADDING", (0, 0), (-1, -1), 2),
                 ("ROWBACKGROUNDS", (0, 1), (-1, -1), [colors.white, _colour("#f4f7f9")]),
-                ("LINEBELOW", (0, 1), (-1, -1), .35, border)]
+                ("GRID", (0, 0), (-1, -1), .55, _colour("#718694")),
+                ("BOX", (0, 0), (-1, -1), .8, _colour("#526675"))]
+    for row in group_rows:
+        commands += [("SPAN", (0, row), (-1, row)),
+                     ("BACKGROUND", (0, row), (-1, row), _colour("#e7eef3")),
+                     ("LINEABOVE", (0, row), (-1, row), .7, _colour("#526675")),
+                     ("NOSPLIT", (0, row), (-1, row + 1))]
     if not ledger_rows:
         commands.append(("SPAN", (0, 1), (-1, 1)))
     table.setStyle(TableStyle(commands))

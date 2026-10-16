@@ -96,7 +96,7 @@ def test_statement_splits_very_long_operations_and_long_client_names(logo_and_qr
         assert "01/10/2026" in text and "12/10/2026" in text
         for number,page in enumerate(pdf,1):
             assert f"{number}/{len(pdf)}" in page.get_text()
-            assert page.get_text().count("Désignation / référence")<=1
+            assert page.get_text().splitlines().count("Désignation")<=1
             for block in page.get_text("dict")["blocks"]:
                 if "lines" not in block:continue
                 for line in block["lines"]:
@@ -118,3 +118,32 @@ def test_empty_account_and_explicit_civility(logo_and_qr):
         assert "Aucune opération enregistrée" in text and "Solde : 0 FCFA" in text
     with pytest.raises(ValueError,match="solde"):
         pdfmod.render_credit_statement_pdf(*args[:-1],Decimal("100"))
+
+
+def test_compact_products_group_reference_once_and_visible_grid(logo_and_qr,tmp_path):
+    args=list(sample(paid=Decimal("0")))
+    products=[("CARTON ENVELOPPE A4",1,12500),("ENVELOPPE A3 PAQUET",3,7500),("Frais de transport Zinder - Diffa",1,1000)]
+    args[3][0].update(number="INV-COMPACT-001",amount=Decimal("21000"),lines=[
+        {"description":name,"quantity":quantity,"total_amount":Decimal(amount)} for name,quantity,amount in products])
+    args[-1]=Decimal("21000")
+    content=pdfmod.render_credit_statement_pdf(*args)
+    (tmp_path/"situation-compacte.pdf").write_bytes(content)
+    with fitz.open(stream=content,filetype="pdf") as pdf:
+        assert len(pdf)==1
+        page=pdf[0];text=page.get_text();flat=" ".join(text.split())
+        assert text.count("INV-COMPACT-001")==1
+        assert "Facture : INV-COMPACT-001" in flat
+        assert text.index("INV-COMPACT-001")<text.index("CARTON ENVELOPPE")<text.index("ENVELOPPE A3")<text.index("Frais de transport")
+        assert "21 000 FCFA" in flat and "Solde restant" in flat
+        spans=[s for b in page.get_text("dict")["blocks"] if "lines" in b for line in b["lines"] for s in line["spans"]]
+        first=next(s for s in spans if "CARTON ENVELOPPE A4" in s["text"])
+        second=next(s for s in spans if "ENVELOPPE A3 PAQUET" in s["text"])
+        assert 10<second["bbox"][1]-first["bbox"][1]<18
+        assert "1 x CARTON ENVELOPPE A4" in first["text"]
+        verticals=[item for drawing in page.get_drawings() for item in drawing["items"]
+                   if item[0]=="l" and abs(item[1].x-item[2].x)<.1
+                   and item[1].y>=first["bbox"][1]-5 and item[2].y<=second["bbox"][3]+25
+                   and abs(item[1].y-item[2].y)>10]
+        assert len(verticals)>=4
+        page.get_pixmap(matrix=fitz.Matrix(1.35,1.35)).save(str(tmp_path/"situation-compacte.png"))
+    assert "Solde: 21000" in logo_and_qr[0]
