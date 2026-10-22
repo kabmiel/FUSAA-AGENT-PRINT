@@ -8,14 +8,14 @@ from types import SimpleNamespace
 
 import pytest
 from fastapi import HTTPException
-from sqlalchemy import create_engine
+from sqlalchemy import create_engine, event
 from sqlalchemy.orm import Session
 
 sys.path.insert(0, str(Path(__file__).parents[1] / "backend"))
 from app.database import Base
 from app.models import Customer, CustomerCreditAccount, CustomerCreditOperation, Organization, OrganizationMember, User, BillingHeader, Invoice, InvoiceLine, Payment, Product, ShopProduct
 from app.business_schemas import BillingDocumentIn, CreditRepaymentIn, CreditInvoiceConversionIn, PaymentIn
-from app.main import create_billing_document, update_billing_invoice, record_payment
+from app.main import create_billing_document, update_billing_invoice, record_payment, list_billing_invoices
 from app.credit_routes import accounts, repayment, access, from_invoice
 from app.credit_accounts import history
 from app.billing_pdf import render_credit_statement_pdf
@@ -46,6 +46,35 @@ def document(key, amount=300, initial=0):
 
 def refund(db, user, amount, key):
     return repayment("c", "o", CreditRepaymentIn(amount=amount, request_id=key), user, db)
+
+
+def test_document_list_search_is_scoped_paginated_and_aggregates_only_page(ledger):
+    db,user=ledger
+    db.add_all([Invoice(id=f"doc-{i:02d}",organization_id="o",customer_id="c",number=f"INV-SEARCH-{i:03d}",
+                        total_amount=300,status="PENDING_PAYMENT",created_at=datetime(2026,10,22,tzinfo=timezone.utc)) for i in range(14)])
+    db.add_all([Organization(id="other",name="Autre"),Customer(id="other-c",organization_id="other",name="Client secret"),
+                Invoice(id="foreign",organization_id="other",customer_id="other-c",number="INV-SECRET",total_amount=999),
+                Invoice(id="literal",organization_id="o",customer_id="c",number="INV-100%_TEST",total_amount=1)])
+    db.add_all([Payment(invoice_id="doc-13",amount=50,method="ESPECES"),
+                Payment(invoice_id="doc-13",amount=25,method="ESPECES"),
+                Payment(invoice_id="doc-13",amount=100,method="ESPECES",status="PENDING")])
+    db.commit();db.expire_all();selects=[]
+    def capture(conn,cursor,statement,parameters,context,executemany):
+        if statement.lstrip().upper().startswith("SELECT"):selects.append(statement)
+    event.listen(db.get_bind(),"before_cursor_execute",capture)
+    try:page=list_billing_invoices("o",1,12,user,db)
+    finally:event.remove(db.get_bind(),"before_cursor_execute",capture)
+    assert len(page)==12 and len(selects)<=4
+    assert all("count(" not in sql.lower() for sql in selects)
+    assert any("sum(payments.amount)" in sql.lower() and "group by" in sql.lower() for sql in selects)
+    assert all("invoices.notes" not in sql.lower() for sql in selects)
+    page2=list_billing_invoices("o",2,12,user,db)
+    assert len(page2)==3 and not {item["id"] for item in page}&{item["id"] for item in page2}
+    result=list_billing_invoices("o",1,12,user,db,q="search-013")
+    assert len(result)==1 and result[0]["paid_amount"]==75 and result[0]["balance_amount"]==225
+    assert len(list_billing_invoices("o",1,12,user,db,q="client exemple"))==12
+    assert not list_billing_invoices("o",1,12,user,db,q="secret")
+    assert [item["id"] for item in list_billing_invoices("o",1,12,user,db,q="%_")]==["literal"]
 
 
 def test_repeat_purchases_fifo_full_settlement_and_reactivation(ledger):

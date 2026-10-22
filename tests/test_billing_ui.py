@@ -44,6 +44,71 @@ async function api(path,options={}){
 </script><script src="/billing-workspace.js"></script></body></html>"""
 
 
+def test_documents_direct_page_compact_and_debounced_search_ignores_stale_results(tmp_path):
+    extra="""
+window.documentRequests=[];window.documentDialogs=0;
+const originalShowModal=HTMLDialogElement.prototype.showModal;
+HTMLDialogElement.prototype.showModal=function(){window.documentDialogs++;return originalShowModal.call(this)};
+const documentsApi=api;
+api=async function(path,options={}){
+ if(path.includes('/billing/invoices?')){
+  const params=new URL(path,'http://documents.test').searchParams,q=params.get('q')||'',number=Number(params.get('page'));
+  const call={q,page:number,page_size:Number(params.get('page_size')),aborted:false};window.documentRequests.push(call);
+  options.signal?.addEventListener('abort',()=>call.aborted=true);
+  await new Promise(resolve=>setTimeout(resolve,q==='slow'?900:90));
+  return Array.from({length:q==='fast'?1:12},(_,i)=>({id:'doc-'+i,number:(q==='fast'?'FAST':'INV')+'-'+number+'-'+i,
+    customer_name:'Client exemple',document_type:'INVOICE',document_style:'standard',total_amount:21000,paid_amount:0,
+    status:'PENDING_PAYMENT',created_at:'2026-10-22T12:00:00Z'}));
+ }
+ return documentsApi(path,options);
+};
+"""
+    html=HTML.replace('</script><script src="/billing-workspace.js">',extra+'</script><script src="/billing-workspace.js">')
+    with playwright.sync_playwright() as driver:
+        browser=driver.chromium.launch(headless=True)
+        page=browser.new_page(viewport={'width':1440,'height':1000});page.set_default_timeout(5000)
+        errors=[];page.on('pageerror',lambda error:errors.append(str(error)))
+        def serve(route):
+            path=route.request.url.split('?',1)[0]
+            if path.endswith('/admin'):route.fulfill(content_type='text/html; charset=utf-8',body=html)
+            elif path.endswith('.js'):route.fulfill(content_type='application/javascript',body=(WEB/'billing-workspace.js').read_text(encoding='utf-8'))
+            elif path.endswith('.css'):route.fulfill(content_type='text/css',body=(WEB/'billing-workspace.css').read_text(encoding='utf-8'))
+            else:route.fulfill(status=404)
+        page.route('**/*',serve);page.goto('http://documents.test/admin')
+        page.locator('#billingHomeBadge').click();page.locator('[data-billtab="documents"]').click()
+        search=page.get_by_role('searchbox',name='Rechercher un document');search.wait_for()
+        page.locator('#billingDocumentsList tbody tr').first.wait_for()
+        assert page.evaluate('window.documentDialogs')==0
+        assert page.locator('#billingGlassDialog[open]').count()==0
+        assert page.locator('.billing-documents-table .billing-type-badge').count()==0
+        assert page.locator('.billing-documents-table .billing-row-type select').count()==12
+        assert page.locator('.billing-documents-table tbody tr').first.evaluate('(node)=>node.getBoundingClientRect().height')<58
+        assert page.evaluate('window.documentRequests.length')==1
+        search.press_sequentially('client',delay=20)
+        page.wait_for_function('window.documentRequests.length===2')
+        page.wait_for_function("document.getElementById('billingDocumentsStatus').dataset.loading==='false'")
+        assert search.input_value()=='client'
+        page.locator('#billingDocumentsNext').click();page.wait_for_function('window.documentRequests.length===3')
+        page.wait_for_function("document.getElementById('billingDocumentsPageLabel').textContent==='Page 2'")
+        search.fill('');page.wait_for_function('window.documentRequests.length===4')
+        page.wait_for_function("document.getElementById('billingDocumentsPageLabel').textContent==='Page 1'")
+        search.fill('slow');page.wait_for_function("window.documentRequests.some(x=>x.q==='slow')")
+        search.fill('fast');page.wait_for_function("document.getElementById('billingDocumentsList').textContent.includes('FAST-1-0')")
+        page.wait_for_timeout(950)
+        assert page.locator('#billingDocumentsList tbody tr').count()==1
+        assert 'FAST-1-0' in page.locator('#billingDocumentsList').inner_text()
+        calls=page.evaluate('window.documentRequests')
+        assert len(calls)==6 and next(x for x in calls if x['q']=='slow')['aborted']
+        assert all(x['page_size']==12 for x in calls)
+        assert calls[2]['q']=='client' and calls[2]['page']==2
+        page.screenshot(path=str(tmp_path/'documents-desktop.png'),full_page=True)
+        page.set_viewport_size({'width':390,'height':844})
+        assert page.evaluate('document.documentElement.scrollWidth<=innerWidth+1')
+        page.screenshot(path=str(tmp_path/'documents-mobile.png'),full_page=True)
+        assert not errors
+        browser.close()
+
+
 def test_document_conversion_requires_confirmation_then_opens_credit_account():
     extra="""
 function newId(){return 'conversion-ui-00001'}

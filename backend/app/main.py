@@ -16,7 +16,7 @@ from fastapi import Depends, FastAPI, File, Form, HTTPException, Request, Upload
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.trustedhost import TrustedHostMiddleware
 from fastapi.responses import FileResponse, HTMLResponse, PlainTextResponse, StreamingResponse
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, load_only
 from sqlalchemy import text, or_, JSON, func
 from sqlalchemy.exc import IntegrityError
 from decimal import Decimal
@@ -919,17 +919,33 @@ async def upload_billing_header_logo(header_id:str,file:UploadFile=File(...),use
     audit(db,user.id,"BILLING_HEADER_LOGO_UPLOADED","BillingHeader",item.id,result="SUCCESS");db.commit()
     return billing_header_out(item)
 @app.get("/api/v1/billing/invoices")
-def list_billing_invoices(organization_id:str,page:int=1,page_size:int=0,user:User=Depends(current_user),db:Session=Depends(get_db)):
+def list_billing_invoices(organization_id:str,page:int=1,page_size:int=0,user:User=Depends(current_user),db:Session=Depends(get_db),q:str=""):
     require_member(db,user,organization_id)
-    query=db.query(Invoice,CustomerCreditOperation.invoice_id).outerjoin(CustomerCreditOperation,CustomerCreditOperation.invoice_id==Invoice.id).filter(Invoice.organization_id==organization_id).order_by(Invoice.created_at.desc())
+    query=db.query(Invoice,Customer.name,CustomerCreditOperation.invoice_id).options(load_only(
+        Invoice.id,Invoice.number,Invoice.status,Invoice.document_type,Invoice.document_style,Invoice.subject,
+        Invoice.total_amount,Invoice.currency,Invoice.created_at,Invoice.source_shop_order_id,
+        Invoice.competition_source_invoice_id,Invoice.competition_margin_percent)).outerjoin(
+        Customer,(Customer.id==Invoice.customer_id)&(Customer.organization_id==organization_id)).outerjoin(
+        CustomerCreditOperation,CustomerCreditOperation.invoice_id==Invoice.id).filter(Invoice.organization_id==organization_id)
+    search=q.strip()[:160]
+    if search:
+        # Treat user-entered % and _ literally, not as unbounded SQL wildcards.
+        pattern="%"+search.replace("\\","\\\\").replace("%","\\%").replace("_","\\_")+"%"
+        query=query.filter(or_(Invoice.number.ilike(pattern,escape="\\"),Customer.name.ilike(pattern,escape="\\")))
+    query=query.order_by(Invoice.created_at.desc(),Invoice.id.desc())
     rows=query.offset((max(1,page)-1)*min(page_size,100)).limit(min(page_size,100)).all() if page_size>0 else query.all()
-    items=[row[0] for row in rows];credit_ids={row[1] for row in rows if row[1]}
-    customer_ids={item.customer_id for item in items if item.customer_id}
-    customers={item.id:item for item in db.query(Customer).filter(Customer.id.in_(customer_ids)).all()} if customer_ids else {}
-    invoice_ids=[item.id for item in items]
-    payments=db.query(Payment).filter(Payment.invoice_id.in_(invoice_ids),Payment.status=="CONFIRMED").all() if invoice_ids else [];settled={}
-    for payment in payments:settled[payment.invoice_id]=settled.get(payment.invoice_id,0)+float(payment.amount)
-    return [{"id":item.id,"on_credit":item.id in credit_ids,"number":item.number,"status":item.status,"document_type":item.document_type,"document_style":item.document_style,"subject":item.subject,"total_amount":float(item.total_amount),"paid_amount":settled.get(item.id,0),"balance_amount":max(0,float(item.total_amount)-settled.get(item.id,0)),"customer_name":customers.get(item.customer_id).name if item.customer_id in customers else None,"currency":item.currency,"created_at":item.created_at,"source_shop_order_id":item.source_shop_order_id,"competition_source_invoice_id":item.competition_source_invoice_id,"competition_margin_percent":float(item.competition_margin_percent) if item.competition_margin_percent is not None else None} for item in items]
+    invoice_ids=[item.id for item,_,_ in rows]
+    # Aggregate only this page; never materialize every payment in Python.
+    settled=dict(db.query(Payment.invoice_id,func.sum(Payment.amount)).filter(
+        Payment.invoice_id.in_(invoice_ids),Payment.status=="CONFIRMED").group_by(Payment.invoice_id).all()) if invoice_ids else {}
+    return [{"id":item.id,"on_credit":bool(credit_id),"number":item.number,"status":item.status,
+        "document_type":item.document_type,"document_style":item.document_style,"subject":item.subject,
+        "total_amount":float(item.total_amount),"paid_amount":float(settled.get(item.id,0)),
+        "balance_amount":max(0,float(item.total_amount)-float(settled.get(item.id,0))),
+        "customer_name":customer_name,"currency":item.currency,"created_at":item.created_at,
+        "source_shop_order_id":item.source_shop_order_id,"competition_source_invoice_id":item.competition_source_invoice_id,
+        "competition_margin_percent":float(item.competition_margin_percent) if item.competition_margin_percent is not None else None}
+        for item,customer_name,credit_id in rows]
 @app.get("/api/v1/billing/dashboard")
 def billing_dashboard(organization_id:str,user:User=Depends(current_user),db:Session=Depends(get_db)):
     require_member(db,user,organization_id);default_billing_header(db,organization_id)

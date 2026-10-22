@@ -354,3 +354,34 @@ dialog.billing-assistant-products .billing-assistant-product-row{background:#fff
 @media(max-width:680px){#billing .billing-editor-header{padding:10px}#billing .billing-editor-heading h1{font-size:1.15rem}#billing .billing-editor-fields{grid-template-columns:minmax(0,1fr) 40px;gap:8px}#billing .billing-reference-field{grid-column:1/-1}#billing .billing-reference-field:nth-child(2){grid-column:1}#billing .billing-editor-header .billing-editor-icon{height:40px;width:36px}#billing .billing-reference-controls .billing-reference-combobox{height:40px}#billing .billing-reference-searchbox input{font-size:16px;height:36px}}
 
 @media(max-width:800px){#billing .billing-catalog-name{overflow-x:auto;text-overflow:clip;scrollbar-width:none;-webkit-overflow-scrolling:touch}#billing .billing-catalog-name::-webkit-scrollbar{display:none}#billing .billing-catalog-table .billing-round-action,#billing .billing-products-table .billing-round-action{height:32px;width:29px}#billing .billing-catalog-tools input{font-size:16px;height:34px;min-width:0}#billing .billing-catalog-tools{justify-content:flex-start}#billing .billing-composer>.billing-panel{padding:10px}}
+/* Documents: direct page, compact rows, one local loading indicator. */
+#billing .billing-documents-page{min-width:0}
+#billing .billing-documents-page .billing-hero{padding:16px 18px;margin-bottom:12px}
+#billing .billing-documents-page .billing-hero h1{font-size:1.45rem;margin:3px 0}
+#billing .billing-documents-page .billing-hero p{margin:3px 0;font-size:.8rem}
+#billing .billing-documents-page>.billing-panel{padding:12px;margin-bottom:0}
+#billing .billing-document-search{display:flex;align-items:center;gap:7px;margin-bottom:5px}
+#billing .billing-document-search>label{display:flex;align-items:center;gap:8px;flex:1;min-width:0}
+#billing .billing-document-search svg{width:17px;height:17px;flex:none;color:var(--bill-muted)}
+#billing .billing-document-search input{width:100%;min-width:0;height:36px;margin:0;padding:7px 10px;font-size:.85rem}
+#billing .billing-document-search>button{width:34px;height:34px;padding:0;display:grid;place-items:center;flex:none}
+#billing .billing-documents-status{min-height:18px;font-size:.75rem;color:var(--bill-muted);margin:4px 0 8px;display:flex;align-items:center;gap:7px}
+#billing .billing-documents-status[data-loading="true"]::before{content:"";height:11px;width:11px;flex:none;border:2px solid var(--bill-border);border-top-color:var(--bill-accent);border-radius:50%;animation:billing-document-spin .8s linear infinite}
+#billing .billing-documents-table td,#billing .billing-documents-table th{padding:6px 8px;line-height:1.25}
+#billing .billing-documents-table{font-size:.8rem;min-width:920px}
+#billing .billing-documents-table td:first-child,#billing .billing-documents-table td:nth-child(5),#billing .billing-documents-table td:nth-child(6){white-space:nowrap}
+#billing .billing-documents-table .billing-row-type{display:block;min-width:135px}
+#billing .billing-documents-table .billing-row-type select{min-width:135px}
+#billing .billing-documents-table .billing-row-style{min-width:190px;gap:5px}
+#billing .billing-documents-table .billing-row-style select{min-width:140px;max-width:190px}
+#billing .billing-documents-table select{height:32px;padding:5px 7px;font-size:.75rem;line-height:1.2}
+#billing .billing-documents-table td .billing-document-icon{width:30px;height:30px;border-radius:9px}
+#billing .billing-documents-table .billing-document-actions{gap:4px}
+#billing .billing-documents-table .billing-document-locked{height:30px;min-width:20px}
+#billing .billing-document-locked svg{height:15px;width:15px}
+#billing .billing-documents-table .billing-competition-mark{font-size:.65rem;line-height:1.2;margin-top:3px}
+#billing .billing-documents-page .billing-pagination{margin-top:10px;gap:8px}
+#billing .billing-documents-page .billing-table-wrap{max-width:100%}
+@keyframes billing-document-spin{to{transform:rotate(360deg)}}
+@media(prefers-reduced-motion:reduce){#billing .billing-documents-status[data-loading="true"]::before{animation:none}}
+@media(max-width:680px){#billing .billing-documents-page .billing-hero{padding:12px}#billing .billing-documents-page .billing-hero .billing-actions{gap:6px}#billing .billing-document-search input{font-size:16px}#billing .billing-documents-page .billing-pagination{flex-wrap:wrap}#billing .billing-documents-page>.billing-panel{padding:8px}}

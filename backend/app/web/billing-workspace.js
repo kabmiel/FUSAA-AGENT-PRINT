@@ -170,10 +170,10 @@ function billingHero(title,subtitle,action=""){
 }
 function billingSet(html){const target=document.getElementById(billingState.popupTarget||"billingWorkspaceContent");if(target)target.innerHTML=html}
 function billingActive(tab){document.querySelectorAll("#billing .billing-menu button").forEach(button=>{const active=button.dataset.billtab===tab;button.classList.toggle("active",active);button.setAttribute("aria-pressed",active?"true":"false")})}
-const billingPopupTabs=new Set(["documents","clients","products","headers","categories","reports","maintenance","settings"]);
+const billingPopupTabs=new Set(["clients","products","headers","categories","reports","maintenance","settings"]);
 function billingNavigate(tab){if(tab==="new")billingState.creditMode=false;billingPopupTabs.has(tab)?billingPopup(tab):billingOpen(tab)}
 async function billingPopup(tab){
-  if(tab==="credits"){billingClosePopup();return billingOpen("credits")}
+  if(tab==="credits"||tab==="documents"){billingClosePopup();return billingOpen(tab)}
   let dialog=document.getElementById("billingGlassDialog");
   if(!dialog){document.body.insertAdjacentHTML("beforeend",'<dialog id="billingGlassDialog" class="billing-glass-dialog"><div class="billing-glass-head"><span class="billing-eyebrow">FACTURATION FUSAA</span><button class="secondary" type="button" aria-label="Fermer" onclick="billingClosePopup()">×</button></div><div id="billingGlassContent"></div></dialog>');dialog=document.getElementById("billingGlassDialog")}
   const billingRoot=document.getElementById("billingWorkspace")||document.getElementById("billing");
@@ -185,10 +185,12 @@ async function billingPopup(tab){
 function billingClosePopup(){const dialog=document.getElementById("billingGlassDialog");if(dialog?.open)dialog.close();billingState.popupTarget=null}
 async function billingOpen(tab){
   if(!billingMenuLabels[tab])tab="dashboard";
+  billingCancelDocuments();
+  if(tab==="documents")billingClosePopup();
   billingState.creditDetailRequest=(billingState.creditDetailRequest||0)+1;
   if(tab!=="new"){billingState.creditMode=false;billingState.creditCustomerId=null}
   billingState.tab=tab;billingActive(tab);
-  if(tab!=="dashboard"&&tab!=="new")billingSet(billingLoadingContent(billingMenuLabels[tab]));
+  if(tab!=="dashboard"&&tab!=="new"&&tab!=="documents")billingSet(billingLoadingContent(billingMenuLabels[tab]));
   try{
     if(tab==="dashboard")await billingDashboard();
     if(tab==="new")await billingNew();
@@ -320,11 +322,11 @@ function billingInvoiceTable(items){
 }
 billingInvoiceTable=function(items){
   if(!items.length)return '<p class="billing-empty">Aucun document enregistre.</p>';
-  return '<div class="billing-table-wrap"><table class="billing-table"><thead><tr><th>Numero</th><th>Client</th><th>Type</th><th>Style PDF</th><th>Date</th><th>Montant</th><th>Actions</th></tr></thead><tbody>'+items.map(item=>{
+  return '<div class="billing-table-wrap"><table class="billing-table billing-documents-table"><thead><tr><th>Numero</th><th>Client</th><th>Type</th><th>Style PDF</th><th>Date</th><th>Montant</th><th>Actions</th></tr></thead><tbody>'+items.map(item=>{
     const typeId="billingDocumentType-"+item.id,styleId="billingInvoiceStyle-"+item.id,itemId=esc(item.id),number=esc(item.number),selected=item.document_type||"INVOICE",style=item.document_style||"standard",locked=Boolean(item.source_shop_order_id)||item.on_credit||Number(item.paid_amount||0)>0;
     const competition=item.competition_source_invoice_id?'<small class="billing-competition-mark">Concurrence +'+Number(item.competition_margin_percent||0).toLocaleString("fr-FR",{maximumFractionDigits:2})+' %</small>':"";
-    const edit=locked?'<span class="muted billing-document-locked" title="Commande Boutique, compte crédit ou paiement enregistré">Verrouillé</span>':'<button class="secondary billing-document-icon" type="button" title="Modifier" aria-label="Modifier '+number+'" onclick="billingEditDocument(\''+itemId+'\')">'+billingEditIcon+'</button>';
-    return '<tr><td><b>'+number+'</b>'+competition+(item.on_credit?'<small class="billing-competition-mark">À crédit · historique protégé</small>':'')+'</td><td>'+esc(item.customer_name||item.customer||"Client comptant")+'</td><td><div class="billing-row-type"><span class="billing-type-badge">'+esc(billingDocumentLabel(item.document_type))+'</span><select id="'+typeId+'" aria-label="Type a generer pour '+number+'">'+billingDocumentTypeOptions(selected)+'</select></div></td><td><div class="billing-row-style"><select id="'+styleId+'" aria-label="Style PDF pour '+number+'">'+billingHeaderStyleOptions(style)+'</select><button class="secondary billing-document-icon" type="button" title="Appliquer le style" aria-label="Appliquer le style PDF" onclick="billingUpdateInvoiceStyle(\''+itemId+'\',document.getElementById(\''+styleId+'\').value)">'+billingApplyIcon+'</button></div></td><td>'+billingDate(item.created_at)+'</td><td>'+billingCurrency(item.total_amount)+'</td><td><div class="billing-document-actions"><button class="secondary billing-document-icon" type="button" title="Visualiser le type sélectionné" aria-label="Visualiser le PDF '+number+'" onclick="previewBillingInvoice(\''+itemId+'\',\''+number+'\',document.getElementById(\''+typeId+'\').value)">'+billingEyeIcon+'</button>'+edit+billingCreditDocumentAction(item)+'<button class="secondary billing-document-icon" type="button" title="Dupliquer" aria-label="Dupliquer '+number+'" onclick="billingDuplicate(\''+itemId+'\',document.getElementById(\''+typeId+'\').value)">'+billingDuplicateIcon+'</button><button class="secondary billing-document-icon" type="button" title="Créer une variante concurrence" aria-label="Créer une variante concurrence pour '+number+'" onclick="billingCompetition(\''+itemId+'\')">'+billingCompetitionIcon+'</button></div></td></tr>'
+    const edit=locked?'<span class="muted billing-document-locked" title="Commande Boutique, compte crédit ou paiement enregistré" aria-label="Document verrouillé">'+billingIcon('<rect x="5" y="10" width="14" height="11" rx="2"/><path d="M8 10V7a4 4 0 0 1 8 0v3"/>')+'</span>':'<button class="secondary billing-document-icon" type="button" title="Modifier" aria-label="Modifier '+number+'" onclick="billingEditDocument(\''+itemId+'\')">'+billingEditIcon+'</button>';
+    return '<tr><td><b>'+number+'</b>'+competition+(item.on_credit?'<small class="billing-competition-mark">À crédit · historique protégé</small>':'')+'</td><td>'+esc(item.customer_name||item.customer||"Client comptant")+'</td><td><div class="billing-row-type"><select id="'+typeId+'" aria-label="Type a generer pour '+number+'">'+billingDocumentTypeOptions(selected)+'</select></div></td><td><div class="billing-row-style"><select id="'+styleId+'" aria-label="Style PDF pour '+number+'">'+billingHeaderStyleOptions(style)+'</select><button class="secondary billing-document-icon" type="button" title="Appliquer le style" aria-label="Appliquer le style PDF" onclick="billingUpdateInvoiceStyle(\''+itemId+'\',document.getElementById(\''+styleId+'\').value)">'+billingApplyIcon+'</button></div></td><td>'+billingDate(item.created_at)+'</td><td>'+billingCurrency(item.total_amount)+'</td><td><div class="billing-document-actions"><button class="secondary billing-document-icon" type="button" title="Visualiser le type sélectionné" aria-label="Visualiser le PDF '+number+'" onclick="previewBillingInvoice(\''+itemId+'\',\''+number+'\',document.getElementById(\''+typeId+'\').value)">'+billingEyeIcon+'</button>'+edit+billingCreditDocumentAction(item)+'<button class="secondary billing-document-icon" type="button" title="Dupliquer" aria-label="Dupliquer '+number+'" onclick="billingDuplicate(\''+itemId+'\',document.getElementById(\''+typeId+'\').value)">'+billingDuplicateIcon+'</button><button class="secondary billing-document-icon" type="button" title="Créer une variante concurrence" aria-label="Créer une variante concurrence pour '+number+'" onclick="billingCompetition(\''+itemId+'\')">'+billingCompetitionIcon+'</button></div></td></tr>'
   }).join("")+'</tbody></table></div>';
 };
 function billingCreditDocumentAction(item){
@@ -884,16 +886,65 @@ billingSaveDocument=async function(event){
     openBillingInvoice(result.id);
   }catch(error){tell(error.message)}finally{billingDocumentSaving=false;if(overlayOpen)await hideFusaaOperation(started)}
 };
-async function billingDocuments(){
-  const documentPageSize=12,items=await api("/api/v1/billing/invoices?organization_id="+encodeURIComponent(org)+"&page="+billingState.page+"&page_size="+documentPageSize);
-  billingSet(billingHero("Documents","Chaque ligne possède son type de génération. L’aperçu et le PDF utilisent ce choix sans modifier le document enregistré.",'<label class="billing-document-picker">Type du nouveau document<select id="billingDocumentType" onchange="billingState.documentType=this.value">'+billingDocumentTypeOptions(billingState.documentType||"INVOICE")+'</select></label><button type="button" onclick="billingStartDocument()">+ Créer le document</button>')+
-    '<section class="billing-panel">'+billingInvoiceTable(items)+'<div class="billing-pagination"><button class="secondary" type="button" '+(billingState.page<=1?"disabled":"")+' onclick="billingState.page--;billingOpen(\'documents\')">← Précédent</button><span>Page '+billingState.page+'</span><button class="secondary" type="button" '+(items.length<25?"disabled":"")+' onclick="billingState.page++;billingOpen(\'documents\')">Suivant →</button></div></section>');
+const billingDocumentsState={controller:null,sequence:0,timer:0,loadedKey:null};
+function billingCancelDocuments(){
+  clearTimeout(billingDocumentsState.timer);billingDocumentsState.timer=0;
+  billingDocumentsState.sequence++;billingDocumentsState.controller?.abort();billingDocumentsState.controller=null;
 }
-
-billingDocuments=async function(){
-  const pageSize=12,items=await api("/api/v1/billing/invoices?organization_id="+encodeURIComponent(org)+"&page="+billingState.page+"&page_size="+pageSize);
-  billingSet(billingHero("Documents","Liste allegee : seuls les documents de cette page sont charges. Le PDF est genere uniquement si vous le demandez.",'<label class="billing-document-picker">Type du nouveau document<select id="billingDocumentType" onchange="billingState.documentType=this.value">'+billingDocumentTypeOptions(billingState.documentType||"INVOICE")+'</select></label><button type="button" onclick="billingStartDocument()">+ Creer le document</button>')+'<section class="billing-panel">'+billingInvoiceTable(items)+'<div class="billing-pagination"><button class="secondary" type="button" '+(billingState.page<=1?"disabled":"")+' onclick="billingState.page--;billingOpen(\'documents\')">Precedent</button><span>Page '+billingState.page+'</span><button class="secondary" type="button" '+(items.length<pageSize?"disabled":"")+' onclick="billingState.page++;billingOpen(\'documents\')">Suivant</button></div></section>');
-};
+async function billingDocuments(){
+  if(billingState.documentOrganization!==org){billingState.documentOrganization=org;billingState.documentSearch="";billingState.page=1}
+  billingState.page=Math.max(1,billingState.page||1);billingDocumentsState.loadedKey=null;
+  billingSet('<div class="billing-documents-page">'+billingHero("Documents","Factures, devis, proformas et reçus.",
+    '<label class="billing-document-picker">Nouveau document<select id="billingDocumentType" onchange="billingState.documentType=this.value">'+billingDocumentTypeOptions(billingState.documentType||"INVOICE")+'</select></label><button type="button" onclick="billingStartDocument()">＋ Créer</button><button class="secondary" type="button" data-billing-export onclick="billingExport(\'documents\')">Exporter CSV</button>')+
+    '<section class="billing-panel"><form id="billingDocumentsSearchForm" class="billing-document-search" role="search"><label for="billingDocumentsSearch">'+billingSearchIcon+'<input id="billingDocumentsSearch" type="search" maxlength="160" autocomplete="off" placeholder="N° de document ou nom du client" aria-label="Rechercher un document" value="'+esc(billingState.documentSearch||"")+'"></label><button class="secondary billing-document-icon" type="submit" title="Rechercher" aria-label="Rechercher">'+billingSearchIcon+'</button><button class="secondary billing-document-icon" type="button" onclick="billingLoadDocuments()" title="Actualiser" aria-label="Actualiser les documents">↻</button></form><p id="billingDocumentsStatus" class="billing-documents-status" role="status" aria-live="polite"></p><div id="billingDocumentsList"></div><div class="billing-pagination"><button id="billingDocumentsPrevious" class="secondary" type="button" onclick="billingDocumentsPage(-1)" disabled>← Précédent</button><span id="billingDocumentsPageLabel">Page '+billingState.page+'</span><button id="billingDocumentsNext" class="secondary" type="button" onclick="billingDocumentsPage(1)" disabled>Suivant →</button></div></section></div>');
+  const input=document.getElementById("billingDocumentsSearch");
+  input.oninput=()=>{
+    billingCancelDocuments();
+    document.getElementById("billingDocumentsPrevious").disabled=true;document.getElementById("billingDocumentsNext").disabled=true;
+    billingDocumentsState.timer=setTimeout(billingSearchDocuments,300);
+  };
+  document.getElementById("billingDocumentsSearchForm").onsubmit=event=>{event.preventDefault();billingSearchDocuments()};
+  return billingLoadDocuments();
+}
+function billingSearchDocuments(){
+  clearTimeout(billingDocumentsState.timer);billingDocumentsState.timer=0;
+  const input=document.getElementById("billingDocumentsSearch");if(!input)return;
+  const query=input.value.trim();
+  billingState.documentSearch=query;billingState.page=1;
+  return billingLoadDocuments();
+}
+function billingDocumentsPage(delta){
+  billingState.page=Math.max(1,billingState.page+delta);return billingLoadDocuments();
+}
+async function billingLoadDocuments(){
+  clearTimeout(billingDocumentsState.timer);billingDocumentsState.timer=0;
+  const list=document.getElementById("billingDocumentsList"),status=document.getElementById("billingDocumentsStatus");
+  if(!list||billingState.tab!=="documents")return;
+  billingDocumentsState.controller?.abort();
+  const controller=new AbortController(),request=++billingDocumentsState.sequence,organization=org;
+  const currentPage=billingState.page,query=billingState.documentSearch||"",pageSize=12;
+  billingDocumentsState.controller=controller;let timedOut=false;
+  const timer=setTimeout(()=>{timedOut=true;controller.abort()},12000);
+  list.setAttribute("aria-busy","true");status.dataset.loading="true";status.textContent=query?"Recherche en cours…":"Chargement des documents…";
+  document.getElementById("billingDocumentsPrevious").disabled=true;document.getElementById("billingDocumentsNext").disabled=true;
+  try{
+    const items=await api("/api/v1/billing/invoices?organization_id="+encodeURIComponent(organization)+"&page="+currentPage+"&page_size="+pageSize+"&q="+encodeURIComponent(query),{signal:controller.signal,silentOperation:true});
+    if(controller.signal.aborted||request!==billingDocumentsState.sequence||billingState.tab!=="documents"||org!==organization||!list.isConnected)return;
+    list.innerHTML=items.length?billingInvoiceTable(items):'<p class="billing-empty">'+(query?'Aucun document pour cette recherche.':'Aucun document sur cette page.')+'</p>';
+    status.textContent=items.length+' document(s) affiché(s)'+(query?' · recherche « '+query+' »':'');
+    document.getElementById("billingDocumentsPageLabel").textContent="Page "+currentPage;
+    document.getElementById("billingDocumentsPrevious").disabled=currentPage<=1;
+    document.getElementById("billingDocumentsNext").disabled=items.length<pageSize;
+    billingDocumentsState.loadedKey=[organization,currentPage,query].join("|");
+  }catch(error){
+    if(request!==billingDocumentsState.sequence||!list.isConnected||billingState.tab!=="documents"||(controller.signal.aborted&&!timedOut))return;
+    status.textContent="Chargement impossible";
+    list.innerHTML='<p role="alert">'+esc(timedOut?"Le serveur met trop de temps à répondre. Réessayez.":error.message)+'</p><button class="secondary" type="button" onclick="billingLoadDocuments()">Réessayer</button>';
+  }finally{
+    clearTimeout(timer);
+    if(request===billingDocumentsState.sequence&&list.isConnected){list.setAttribute("aria-busy","false");status.dataset.loading="false";billingDocumentsState.controller=null}
+  }
+}
 async function billingClients(){
   const items=await billingRequest("/api/v1/customers?organization_id="+encodeURIComponent(org));billingState.customers=items;
   billingSet(billingHero("Clients","Répertoire partagé par la Boutique et la facturation.")+'<section class="billing-panel"><h2>Ajouter un client</h2><form id="billClientForm" class="billing-form-grid"><label>Nom<input name="name" required></label><label>Téléphone<input name="phone"></label><label>E-mail<input name="email" type="email"></label><label>Adresse<input name="address"></label><button>Ajouter</button></form></section><section class="billing-panel"><h2>Comptes clients</h2><div class="billing-table-wrap"><table class="billing-table"><thead><tr><th>Nom</th><th>Téléphone</th><th>E-mail</th><th>Actions</th></tr></thead><tbody>'+items.map(item=>'<tr><td>'+esc(item.name)+'</td><td>'+esc(item.phone||"—")+'</td><td>'+esc(item.email||"—")+'</td><td><button class="secondary" type="button" onclick="billingEditClient(\''+esc(item.id)+'\')">Modifier</button><button class="danger" type="button" onclick="billingRemoveClient(\''+esc(item.id)+'\')">Supprimer</button></td></tr>').join("")+'</tbody></table></div></section>');
